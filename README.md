@@ -1,9 +1,9 @@
 # dtv-android
 
 Khronos31 の地デジ環境を Android TV とスマートフォンに載せるための APK 群。
-常駐チューナー（`mirakc`）と常駐 EPGStation サーバーの2本で、番組表の UI は
-[epcltvapp](https://github.com/daig0rian/epcltvapp) に任せる。番組表 APK は
-作らない。
+常駐チューナー（`mirakc`）と常駐 EPGStation サーバーの2本。番組表は
+EPGStation の Web UI をスマートフォンや PC から開いて使う。TV の十字キーで
+操作する番組表 APK は作らない。
 
 | 表示名 | Gradle モジュール | applicationId |
 | --- | --- | --- |
@@ -162,6 +162,6 @@ EPGStation の MIT ライセンス、Node のライセンス、生成した
 `licenses/NOTICE.npm.txt` の依存一覧を含む。`siano-ts`、ファームウェア、
 recisdb、番組表 UI は入っていない。
 
-視聴、ワンタップ録画、再生、番組表は
-[epcltvapp](https://github.com/daig0rian/epcltvapp) の担当で、ここの APK が
+TV 側でのライブ視聴・ワンタップ録画・録画再生は
+[epcltvapp](https://github.com/daig0rian/epcltvapp) を使っている。ここの APK は
 それを置き換えるものではない。
