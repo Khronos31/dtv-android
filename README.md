@@ -1,8 +1,9 @@
 # dtv-android
 
 Khronos31 の地デジ環境を Android TV とスマートフォンに載せるための APK 群。
-マイルストーン1 の範囲は常駐チューナー（`mirakc`）と常駐 EPGStation サーバーで、
-番組表 APK（`:epgstation`）は意図的に含めていない。
+常駐チューナー（`mirakc`）と常駐 EPGStation サーバーの2本で、番組表の UI は
+[epcltvapp](https://github.com/daig0rian/epcltvapp) に任せる。番組表 APK は
+作らない。
 
 | 表示名 | Gradle モジュール | applicationId |
 | --- | --- | --- |
@@ -129,13 +130,13 @@ GetParameters から読み、IFSD は 254 を交渉する。
 ## EPGStation Server
 
 上流の [l3tnun/EPGStation](https://github.com/l3tnun/EPGStation) v2.10.0 を
-固定した、非公式の Android 移植。Play で配布するものではない。APK は
-`dataSync` のフォアグラウンドサービスを起動し、上流のサーバーとクライアントの
-ビルド成果をアプリ専有の `filesDir` に展開して、8888 番ポートで待ち受ける。
+固定した、非公式の Android 移植。APK は `dataSync` のフォアグラウンドサービスを
+起動し、上流のサーバーとクライアントのビルド成果をアプリ専有の `filesDir` に
+展開して、8888 番ポートで待ち受ける。
 ステータス画面には `http://<LAN-IP>:8888/` の QR コードを出すので、スマート
-フォンや PC から素の EPGStation の UI を開ける。TV 用の番組表 APK は無く、
-あの SPA を十字キーで操作することは想定していない。ユーザーが設定できるのは
-他に Mirakurun/mirakc のベース URL だけで、既定値は以下。
+フォンや PC から素の EPGStation の UI を開ける。あの SPA を十字キーで操作する
+ことは想定していない。ユーザーが設定できるのは他に Mirakurun/mirakc のベース
+URL だけで、既定値は以下。
 
 ```text
 http://127.0.0.1:40772/
