@@ -14,8 +14,8 @@ jobs:
     name: Version metadata
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
       - name: Check that every version-bearing place agrees
@@ -25,23 +25,26 @@ jobs:
     name: mirakc APK (debug)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
         with:
           repository: Khronos31/siano-userland
           ref: ${{ env.SIANO_USERLAND_REF }}
           path: siano-userland
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
       - name: Install the pinned NDK
         run: |
           set -euo pipefail
-          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" >/dev/null
+          # A finite feed, not `yes`: under pipefail a SIGPIPE'd `yes` fails the step
+          # even though sdkmanager succeeded.
+          printf 'y\n%.0s' $(seq 20) \
+            | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" >/dev/null
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
       - name: Build
         run: ./gradlew --no-daemon -PsianoUserlandDir="$GITHUB_WORKSPACE/siano-userland" :mirakc:assembleDebug
