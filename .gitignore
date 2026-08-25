@@ -1,4 +1,3 @@
-*.iml
 .gradle/
 local.properties
 /.idea/
@@ -14,5 +13,7 @@ captures/
 !debug.keystore
 .cxx/
 .externalNativeBuild/
-/firmware/
-/siano-userland/
+mirakc/src/main/jniLibs/
+mirakc/src/main/assets/isdbt_rio.inp
+.work/
+epgstation-server/.generated/
