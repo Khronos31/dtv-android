@@ -96,13 +96,11 @@ build_runtime() {
         unzip -p "$node_mobile_zip" "nodejs-mobile-v16.17.0-android/bin/$abi/libnode.so" > "$out/libnode.so"
     fi
     cp "$cxx_lib" "$out/libc++_shared.so"
-    if [[ ! -x "$out/node" ]]; then
-        "$ndk_bin/clang++" --target="$target" -fPIE -pie -O2 \
-            -I"$node_headers/include/node" \
-            -L"$out" -Wl,-rpath,'$ORIGIN' -Wl,--no-as-needed \
-            -lnode -lc++_shared -ldl -llog -lm \
-            "$repo_root/tools/epgstation-node-launcher.cc" -o "$out/node"
-    fi
+    "$ndk_bin/clang++" --target="$target" -fPIE -pie -O2 \
+        -I"$node_headers/include/node" \
+        -L"$out" -Wl,-rpath,'$ORIGIN' -Wl,--no-as-needed \
+        -lnode -lc++_shared -ldl -llog -lm \
+        "$repo_root/tools/epgstation-node-launcher.cc" -o "$out/node"
     if [[ "$triple" == "aarch64-linux-android" ]]; then
         readelf -l "$out/node" | grep -q '/system/bin/linker64'
     else
@@ -115,6 +113,51 @@ build_runtime armeabi-v7a armv7a-linux-androideabi24 arm-linux-androideabi \
     "$sysroot/arm-linux-androideabi/libc++_shared.so"
 build_runtime arm64-v8a aarch64-linux-android24 aarch64-linux-android \
     "$sysroot/aarch64-linux-android/libc++_shared.so"
+
+# Android 10+ refuses to exec or dlopen ELF from app-private filesDir
+# (SELinux execute_no_trans on app_data_file). Package the Node launcher
+# and addons as lib*.so so they land in nativeLibraryDir.
+stage_jni_libs() {
+    local generated_jni="$repo_root/epgstation-server/.generated/jniLibs"
+    stage_one() {
+        local abi="$1"
+        local crc_src="$2"
+        local dest="$generated_jni/$abi"
+        mkdir -p "$dest"
+        cp -f "$work_root/runtime/$abi/libnode.so" "$dest/libnode.so"
+        cp -f "$work_root/runtime/$abi/libc++_shared.so" "$dest/libc++_shared.so"
+        cp -f "$work_root/runtime/$abi/node" "$dest/libepgstation-node.so"
+        cp -f "$work_root/native/$abi/node_sqlite3.node" "$dest/libnode_sqlite3.so"
+        if [[ ! -f "$crc_src" ]]; then
+            echo "EPGStation payload: missing crc32 addon $crc_src" >&2
+            exit 4
+        fi
+        cp -f "$crc_src" "$dest/libcrc32_android.so"
+        chmod 0755 "$dest"/lib*.so
+        # Android dlopen does not see the main executable's DT_NEEDED
+        # symbols. Node addons must themselves NEEDED libnode.so.
+        if ! command -v patchelf >/dev/null; then
+            echo "EPGStation payload: patchelf is required to add libnode.so to Node addons" >&2
+            exit 5
+        fi
+        for addon in libnode_sqlite3.so libcrc32_android.so; do
+            if ! readelf -d "$dest/$addon" | grep -q 'Shared library: \[libnode.so\]'; then
+                patchelf --add-needed libnode.so "$dest/$addon"
+            fi
+        done
+        if [[ "$abi" == "arm64-v8a" ]]; then
+            readelf -l "$dest/libepgstation-node.so" | grep -q '/system/bin/linker64'
+        else
+            readelf -l "$dest/libepgstation-node.so" | grep -q '/system/bin/linker'
+        fi
+    }
+    stage_one armeabi-v7a \
+        "$epg_root/node_modules/@node-rs/crc32-android-arm-eabi/crc32.android-arm-eabi.node"
+    stage_one arm64-v8a \
+        "$epg_root/node_modules/@node-rs/crc32-android-arm64/crc32.android-arm64.node"
+}
+
+stage_jni_libs
 
 if [[ -f "$payload_root/.complete" ]]; then
     if [[ ! -f "$payload_root/payload.version" ]]; then
@@ -129,22 +172,16 @@ mkdir -p "$payload_root/client"
 cp -a "$epg_root/client/dist" "$payload_root/client/dist"
 cp -a "$epg_root/config" "$payload_root/config"
 cp -a "$epg_root/node_modules" "$payload_root/node_modules"
-find "$payload_root/node_modules/@node-rs" -type f -name '*.node' \
-    ! -path '*android-arm64*' ! -path '*android-arm-eabi*' -delete
-find "$payload_root/node_modules/sqlite3/build" -mindepth 1 -delete
-mkdir -p "$payload_root/node_modules/sqlite3/build/Release"
-cp "$work_root/native/arm64-v8a/node_sqlite3.node" \
-    "$payload_root/node_modules/sqlite3/build/Release/node_sqlite3.node"
 cp "$epg_root/package.json" "$payload_root/package.json"
 cp "$epg_root/api.yml" "$payload_root/api.yml"
 node "$repo_root/tools/patch-crc32-android.mjs" \
     "$payload_root/node_modules/@node-rs/crc32/index.js"
-mkdir -p "$payload_root/runtime" "$payload_root/native" "$payload_root/licenses"
-for abi in armeabi-v7a arm64-v8a; do
-    cp -a "$work_root/runtime/$abi" "$payload_root/runtime/$abi"
-    mkdir -p "$payload_root/native/$abi"
-    cp "$work_root/native/$abi/node_sqlite3.node" "$payload_root/native/$abi/node_sqlite3.node"
-done
+mkdir -p "$payload_root/licenses"
+# ELF belongs in jniLibs, not assets. Node will dlopen the nativeLibraryDir
+# copies through symlinks created at runtime.
+find "$payload_root" \( -name '*.node' -o -name '*.so' \) -type f -delete
+rm -rf "$payload_root/runtime" "$payload_root/native"
+rm -rf "$payload_root/node_modules/sqlite3/build"
 cp "$epg_root/LICENSE" "$payload_root/licenses/EPGStation-LICENSE"
 cp "$node_mobile_source/LICENSE" "$payload_root/licenses/Node-LICENSE"
 node "$repo_root/tools/generate-npm-notice.mjs" \

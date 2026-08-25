@@ -149,6 +149,13 @@ android {
     externalNativeBuild {
         cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" }
     }
+
+    packagingOptions {
+        doNotStrip("**/*.so")
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
 }
 
 dependencies {

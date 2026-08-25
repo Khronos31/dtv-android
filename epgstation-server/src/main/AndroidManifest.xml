@@ -15,6 +15,7 @@
         android:banner="@drawable/banner"
         android:supportsRtl="true"
         android:usesCleartextTraffic="true"
+        android:extractNativeLibs="true"
         android:theme="@style/AppTheme">
         <activity
             android:name=".MainActivity"

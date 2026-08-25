@@ -36,17 +36,20 @@ those prerequisites are missing. The resulting debug APKs are under
 
 The EPGStation task pins upstream `l3tnun/EPGStation` v2.10.0, builds the
 server and client, builds `sqlite3` for each Android ABI, and stages the
-payload under app-private storage at first launch. It also packages a
-Node.js-mobile v16.17.0 Android runtime and launcher. A network connection,
-host Node/npm, and the NDK are required the first time the payload is
-prepared.
+JS payload under app-private storage at first launch. The Node.js-mobile
+v16.17.0 launcher (`libepgstation-node.so`), `libnode.so`, `libc++_shared.so`,
+and native addons are packaged as `jniLibs` and executed from
+`nativeLibraryDir`. Android 10+ will not exec ELF copied into `filesDir`.
+A network connection, host Node/npm, the NDK, and `patchelf` are required
+the first time the payload is prepared. `patchelf` adds a `libnode.so`
+dependency to the Node addons so Android's linker can resolve N-API.
 
 The APKs are fat packages for `armeabi-v7a` and `arm64-v8a`. This includes the
 32-bit-only Google TV Streamer userspace. `siano-ts` is built as an Android
 Bionic PIE executable and is checked for `/system/bin/linker` or
-`/system/bin/linker64`; it is not a musl/glibc binary. At runtime it is copied
-from the packaged native library directory to `filesDir`, marked executable,
-and launched by the mirakc foreground service.
+`/system/bin/linker64`; it is not a musl/glibc binary. It is packaged as
+`libsiano-ts.so` and exec'd from `nativeLibraryDir` (`extractNativeLibs=true`).
+Android 10+ will not exec a copy placed in `filesDir`.
 
 ## mirakc
 
@@ -76,19 +79,29 @@ HAOS mirakc addon. The firmware asset is the linux-firmware
 
 ### Implemented HTTP surface
 
-These are the routes actually served by this milestone:
+These are the routes served for EPGStation (mirakc-compatible, not a
+Mirakurun clone of `/api/config`):
 
-* `GET /api/version` — Mirakurun-shaped `current` and `latest` version fields.
-* `GET /api/status` — `{}` as mirakc does.
-* `GET /api/channels` — the fixed GR channel list.
-* `GET /api/tuners` — detected Siano tuner state (`types`, `isAvailable`,
-  `isFree`).
-* `GET /api/channels/GR/{channel}/stream` — raw MPEG-TS from `siano-ts`; both
-  `T27` and `27` are accepted for the channel path.
+* `GET /api/version` — Mirakurun-shaped `current` and `latest`.
+* `GET /api/status` — `{}`.
+* `GET /api/docs` — OpenAPI used by `mirakurun.Client`.
+* `GET /api/channels` — configured GR list plus discovered services.
+* `GET /api/services`, `GET /api/services/{id}`
+* `GET /api/programs`, `GET /api/programs/{id}`
+* `GET /api/services/{id}/programs`
+* `GET /events` — SSE `epg.programs-updated` and `onair.program-changed`.
+* `GET /api/tuners` — Siano tuner state.
+* `GET /api/channels/GR/{channel}/stream` — raw MPEG-TS from `siano-ts`.
+* `GET /api/services/{id}/stream` and `GET /api/programs/{id}/stream`.
 
-The stream is intentionally raw TS. recisdb, B-CAS, service/program/EPG
-decoding, recording, and playback are out of scope. The remaining Mirakurun
-and mirakc routes return 404; no fake EPG or recording API is exposed.
+On USB grant the service scans each configured GR channel (~16s) and
+parses SDT/EIT from the TS. Live streams feed the same parser. Names use
+ARIB STD-B24. recisdb, B-CAS, and ffmpeg stay out of this APK.
+`/api/services/{id}/stream` and `/api/programs/{id}/stream` keep one
+program. 12-seg MPEG-2 is MULTI2-scrambled. When an Identive/CCID
+reader with a B-CAS card is granted USB permission, TS is piped through
+libarib25 (Apache-2.0) before serving. Without a card, the clear 1-seg
+H.264 on the same transponder is substituted. Recording UI remains EPGStation.
 
 ## EPGStation Server
 
@@ -96,8 +109,10 @@ This is an unofficial Android port of upstream
 [l3tnun/EPGStation](https://github.com/l3tnun/EPGStation), pinned to v2.10.0.
 It is not a Play listing. The APK starts a `dataSync` foreground service,
 extracts the upstream server and client build into app-private
-`filesDir`, and listens on port 8888. The only user setting is the
-Mirakurun/mirakc base URL, persisted with this default:
+`filesDir`, and listens on port 8888. The status screen shows a QR code for `http://<LAN-IP>:8888/` so a
+phone or PC can open the stock EPGStation UI. There is no TV program-guide
+APK; D-pad operation of that SPA is out of scope. The only other user
+setting is the Mirakurun/mirakc base URL, persisted with this default:
 
 ```text
 http://127.0.0.1:40772/
@@ -106,17 +121,22 @@ http://127.0.0.1:40772/
 On every service start, the app copies the complete upstream
 `config/config.yml.template` to `config/config.yml`, then changes only the
 Mirakurun URL, `port`, `clientSocketioPort`, and recorded/thumbnail
-locations. The database is the upstream SQLite database under the same
-app-private root; no `subDirectory` is added. Sample log YAML files and the
+locations. Recordings can go on internal storage or a removable USB volume
+(exFAT). The SQLite database stays on internal `filesDir`. The status screen
+lists each volume with free space; the app-specific directory on the USB is
+`/storage/<UUID>/Android/data/dev.khronos31.epgstation.server/files/recorded`.
+No `subDirectory` is added. Sample log YAML files and the
 upstream `enc.js` templates are included. ffmpeg is intentionally not
 bundled in this slice, so unconverted live operation is the supported path.
 
-The resident supervisor holds a partial wake lock, starts the Android Bionic
-Node launcher for the selected ABI, restarts it with backoff after a crash,
-and reports the running/down state in its notification. The APK contains
-EPGStation's MIT license, the Node license, and a generated
-`licenses/NOTICE.npm.txt` dependency list. It contains no `siano-ts`,
-firmware, recisdb, or guide UI.
+The resident supervisor holds a partial wake lock, execs the ABI-matched
+`libepgstation-node.so` from `nativeLibraryDir` (`extractNativeLibs=true`),
+restarts it with backoff after a crash, and reports the running/down state
+in its notification. sqlite3 and `@node-rs/crc32` addons are the same
+extracted native libraries, exposed to Node through symlinks under
+`node_modules`. The APK contains EPGStation's MIT license, the Node license,
+and a generated `licenses/NOTICE.npm.txt` dependency list. It contains no
+`siano-ts`, firmware, recisdb, or guide UI.
 
 Live viewing, one-tap recording, playback, and the program guide remain the
 responsibility of [epcltvapp](https://github.com/daig0rian/epcltvapp); these APKs

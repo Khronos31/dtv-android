@@ -5,10 +5,12 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
-import android.content.pm.ServiceInfo
+import android.system.ErrnoException
+import android.system.Os
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -56,46 +58,58 @@ class EpgStationService : Service() {
         while (!stopping.get()) {
             try {
                 val root = prepareFiles()
-                val abi = androidAbi()
-                installAbiAddon(root, abi)
-                val runtime = File(root, "runtime/$abi")
-                val node = File(runtime, "node")
-                if (!node.isFile || !node.setExecutable(true)) {
-                    throw IOException("Android Node launcher is missing or not executable: ${node.path}")
+                val nativeDir = File(applicationInfo.nativeLibraryDir)
+                val node = File(nativeDir, "libepgstation-node.so")
+                if (!node.isFile) {
+                    throw IOException("Android Node launcher is missing from $nativeDir")
                 }
+                val sqlite = File(nativeDir, "libnode_sqlite3.so")
+                val crc32 = File(nativeDir, "libcrc32_android.so")
+                installNativeLoaders(root, sqlite, crc32)
                 val process = ProcessBuilder(node.absolutePath, "dist/index.js")
                     .directory(root)
                     .redirectErrorStream(true)
                     .apply {
                         environment()["HOME"] = root.absolutePath
                         environment()["NODE_PATH"] = File(root, "node_modules").absolutePath
-                        environment()["LD_LIBRARY_PATH"] = runtime.absolutePath
-                        environment()["PATH"] = "${runtime.absolutePath}:${environment()["PATH"] ?: ""}"
+                        environment()["LD_LIBRARY_PATH"] = nativeDir.absolutePath
+                        environment()["PATH"] = "${nativeDir.absolutePath}:${environment()["PATH"] ?: ""}"
+                        environment()["EPGSTATION_SQLITE3"] = sqlite.absolutePath
+                        environment()["EPGSTATION_CRC32"] = crc32.absolutePath
                     }
                     .start()
                 child = process
                 backoffMs = 1_000L
-                publish("Node process running; waiting for :${PORT}")
+                val media = RecordingStorage.selected(this)
+                publish("Node on :$PORT · ${media.title}")
                 val outputThread = thread(name = "epgstation-output", start = true) {
-                    process.inputStream.bufferedReader().useLines { lines ->
-                        lines.forEach { line ->
-                            android.util.Log.i(TAG, line)
+                    try {
+                        process.inputStream.bufferedReader().useLines { lines ->
+                            lines.forEach { line ->
+                                android.util.Log.i(TAG, line)
+                            }
                         }
+                    } catch (_: Exception) {
                     }
                 }
                 val portThread = thread(name = "epgstation-port-check", start = true) {
-                    while (!stopping.get() && process.isAlive) {
-                        try {
-                            Socket().use { socket ->
-                                socket.connect(InetSocketAddress("127.0.0.1", PORT), 250)
+                    try {
+                        while (!stopping.get() && process.isAlive) {
+                            try {
+                                Socket().use { socket ->
+                                    socket.connect(InetSocketAddress("127.0.0.1", PORT), 250)
+                                }
+                                publish("Listening on 0.0.0.0:${PORT}")
+                                break
+                            } catch (_: IOException) {
+                                try {
+                                    Thread.sleep(500L)
+                                } catch (_: InterruptedException) {
+                                    break
+                                }
                             }
-                            publish("Listening on 0.0.0.0:${PORT}")
-                            break
-                        } catch (_: IOException) {
-                            Thread.sleep(500L)
-                        } catch (_: InterruptedException) {
-                            break
                         }
+                    } catch (_: Exception) {
                     }
                 }
                 val exitCode = process.waitFor()
@@ -137,10 +151,13 @@ class EpgStationService : Service() {
             copyAssetTree("", root)
         }
         File(root, "data").mkdirs()
-        File(root, "recorded").mkdirs()
-        File(root, "thumbnail").mkdirs()
         File(root, "drop").mkdirs()
         File(root, "config").mkdirs()
+        File(root, "logs/Operator").mkdirs()
+        File(root, "logs/Service").mkdirs()
+        File(root, "logs/EPGUpdater").mkdirs()
+        deleteTree(File(root, "runtime"))
+        deleteTree(File(root, "native"))
         writeRuntimeConfig(root)
         return root
     }
@@ -152,6 +169,9 @@ class EpgStationService : Service() {
             .getString(MainActivity.KEY_MIRAKURUN_URL, MainActivity.DEFAULT_MIRAKURUN_URL)
             ?: MainActivity.DEFAULT_MIRAKURUN_URL
         val quotedUrl = "'${url.replace("'", "''")}'"
+        val media = RecordingStorage.prepare(RecordingStorage.selected(this))
+        val recordedPath = media.recordedDir.absolutePath.replace("'", "''")
+        val thumbnailPath = media.thumbnailDir.absolutePath.replace("'", "''")
         var sawPort = false
         var sawClientSocketPort = false
         val lines = template.readLines().map { line ->
@@ -166,9 +186,9 @@ class EpgStationService : Service() {
                 }
                 line.startsWith("mirakurunPath:") -> "mirakurunPath: $quotedUrl"
                 line.trimStart().startsWith("path:") && line.startsWith("      path:") ->
-                    "      path: '${File(root, "recorded").absolutePath.replace("'", "''")}'"
+                    "      path: '$recordedPath'"
                 line.startsWith("thumbnail:") ->
-                    "thumbnail: '${File(root, "thumbnail").absolutePath.replace("'", "''")}'"
+                    "thumbnail: '$thumbnailPath'"
                 else -> line
             }
         }.toMutableList()
@@ -177,20 +197,61 @@ class EpgStationService : Service() {
             val portIndex = lines.indexOfFirst { it.startsWith("port:") }
             lines.add(portIndex + 1, "clientSocketioPort: $PORT")
         }
-        File(root, "config/config.yml").writeText(lines.joinToString("\n") + "\n")
+        File(root, "config/config.yml").writeText(preferRawLiveTs(lines.joinToString("\n") + "\n"))
+        for (name in listOf("operatorLogConfig", "serviceLogConfig", "epgUpdaterLogConfig")) {
+            val dest = File(root, "config/$name.yml")
+            if (dest.isFile) continue
+            val sample = File(root, "config/$name.sample.yml")
+            check(sample.isFile) { "upstream $name.sample.yml is missing" }
+            sample.copyTo(dest, overwrite = false)
+        }
     }
 
-    private fun installAbiAddon(root: File, abi: String) {
-        val source = File(root, "native/$abi/node_sqlite3.node")
-        check(source.isFile) { "sqlite3 Android addon missing for $abi" }
-        val destination = File(root, "node_modules/sqlite3/build/Release/node_sqlite3.node")
-        destination.parentFile?.mkdirs()
-        source.inputStream().use { input -> FileOutputStream(destination).use { input.copyTo(it) } }
+    private fun preferRawLiveTs(yaml: String): String {
+        val marker = "            m2ts:"
+        val liveTs = yaml.indexOf("        ts:\n$marker")
+        if (liveTs < 0) return yaml
+        val m2ts = yaml.indexOf(marker, liveTs)
+        val next = yaml.indexOf("\n            m2tsll:", m2ts)
+        if (m2ts < 0 || next < 0) return yaml
+        return yaml.substring(0, m2ts + marker.length) +
+            "\n                - name: 無変換\n" +
+            yaml.substring(next + 1)
     }
 
-    private fun androidAbi(): String {
-        return Build.SUPPORTED_ABIS.firstOrNull { it == "arm64-v8a" || it == "armeabi-v7a" }
-            ?: error("Unsupported CPU; this APK requires armeabi-v7a or arm64-v8a")
+    private fun installNativeLoaders(root: File, sqlite: File, crc32: File) {
+        if (!sqlite.isFile) throw IOException("sqlite3 addon missing: ${sqlite.path}")
+        if (!crc32.isFile) throw IOException("crc32 addon missing: ${crc32.path}")
+        // Node resolves symlinks before picking a loader. A .so realpath is
+        // parsed as JavaScript, so point the JS bindings at process.dlopen.
+        File(root, "node_modules/sqlite3/lib/sqlite3-binding.js")
+            .writeText("process.dlopen(module, process.env.EPGSTATION_SQLITE3);\n")
+        val loader = "process.dlopen(module, process.env.EPGSTATION_CRC32);\n"
+        for (pkg in listOf("crc32-android-arm-eabi", "crc32-android-arm64")) {
+            val dir = File(root, "node_modules/@node-rs/$pkg")
+            if (!dir.isDirectory) continue
+            File(dir, "dlopen.js").writeText(loader)
+            val pkgJson = File(dir, "package.json")
+            if (pkgJson.isFile) {
+                pkgJson.writeText(
+                    pkgJson.readText().replace(Regex("\"main\"\\s*:\\s*\"[^\"]+\""), "\"main\": \"dlopen.js\"")
+                )
+            }
+        }
+        for (stale in listOf(
+            "node_modules/sqlite3/build/Release/node_sqlite3.node",
+            "node_modules/@node-rs/crc32/crc32.android-arm-eabi.node",
+            "node_modules/@node-rs/crc32/crc32.android-arm64.node",
+            "node_modules/@node-rs/crc32-android-arm-eabi/crc32.android-arm-eabi.node",
+            "node_modules/@node-rs/crc32-android-arm64/crc32.android-arm64.node"
+        )) {
+            val file = File(root, stale)
+            try {
+                Os.remove(file.absolutePath)
+            } catch (_: ErrnoException) {
+                if (file.exists()) file.delete()
+            }
+        }
     }
 
     private fun copyAssetTree(assetPath: String, target: File) {
@@ -254,6 +315,6 @@ class EpgStationService : Service() {
         private const val PAYLOAD_DIR = "epgstation"
         private const val CHANNEL = "epgstation-server-service"
         private const val ID = 40773
-        private const val PORT = 8888
+        internal const val PORT = 8888
     }
 }

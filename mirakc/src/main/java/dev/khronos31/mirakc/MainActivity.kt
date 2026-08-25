@@ -46,41 +46,59 @@ class MainActivity : Activity() {
         super.onPause()
     }
 
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    private fun tvButton(label: String, click: View.OnClickListener): Button {
+        return Button(this).apply {
+            text = label
+            textSize = 18f
+            isFocusable = true
+            isFocusableInTouchMode = false
+            minHeight = dp(48)
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            setOnClickListener(click)
+        }
+    }
+
     private fun buildStatusScreen() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(48, 32, 48, 32)
+            setPadding(dp(24), dp(16), dp(24), dp(16))
             setBackgroundColor(Color.rgb(22, 27, 31))
         }
         val title = TextView(this).apply {
             text = getString(R.string.app_name)
             textSize = 28f
             setTextColor(Color.WHITE)
-            setPadding(0, 0, 0, 18)
+            setPadding(0, 0, 0, dp(12))
         }
         status = TextView(this).apply {
             textSize = 18f
             setTextColor(Color.LTGRAY)
             isFocusable = false
         }
-        val request = Button(this).apply {
-            text = "Request USB permission"
-            setOnClickListener { sendServiceAction(MirakcService.ACTION_REQUEST_USB) }
+        val request = tvButton("Request USB permission") {
+            sendServiceAction(MirakcService.ACTION_REQUEST_USB)
         }
-        val stop = Button(this).apply {
-            text = "Stop mirakc service"
-            setOnClickListener { stopService(Intent(this@MainActivity, MirakcService::class.java)) }
+        val stop = tvButton("Stop mirakc service") {
+            stopService(Intent(this@MainActivity, MirakcService::class.java))
         }
-        val start = Button(this).apply {
-            text = "Start mirakc service"
-            setOnClickListener { startMirakcService() }
+        val start = tvButton("Start mirakc service") {
+            startMirakcService()
         }
-        root.addView(title)
+        val scan = tvButton("Scan EPG") {
+            sendServiceAction(MirakcService.ACTION_SCAN_EPG)
+        }
+        val buttonParams = {
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) }
+        }
+        root.addView(title, LinearLayout.LayoutParams(-1, -2))
         root.addView(status, LinearLayout.LayoutParams(-1, 0, 1f))
-        root.addView(request, LinearLayout.LayoutParams(-1, 56))
-        root.addView(stop, LinearLayout.LayoutParams(-1, 56))
-        root.addView(start, LinearLayout.LayoutParams(-1, 56))
+        root.addView(request, buttonParams())
+        root.addView(scan, buttonParams())
+        root.addView(stop, buttonParams())
+        root.addView(start, buttonParams())
         setContentView(root)
         request.requestFocus()
     }

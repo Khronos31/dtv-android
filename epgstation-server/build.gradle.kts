@@ -32,6 +32,14 @@ android {
     kotlinOptions { jvmTarget = "11" }
 
     sourceSets["main"].assets.srcDir(layout.buildDirectory.dir("epgstation-assets"))
+    sourceSets["main"].jniLibs.srcDir(layout.buildDirectory.dir("epgstation-jniLibs"))
+
+    packagingOptions {
+        doNotStrip("**/*.so")
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
 }
 
 val prepareEpgStationPayload = tasks.register<Exec>("prepareEpgStationPayload") {
@@ -41,12 +49,29 @@ val prepareEpgStationPayload = tasks.register<Exec>("prepareEpgStationPayload") 
 
 val stageEpgStationPayload = tasks.register<Sync>("stageEpgStationPayload") {
     dependsOn(prepareEpgStationPayload)
-    from(rootProject.file("epgstation-server/.generated/epgstation-payload"))
+    from(rootProject.file("epgstation-server/.generated/epgstation-payload")) {
+        exclude("runtime/**")
+        exclude("native/**")
+        exclude("**/*.node")
+        exclude("**/*.so")
+    }
     into(layout.buildDirectory.dir("epgstation-assets"))
 }
 
-tasks.named("preBuild").configure { dependsOn(stageEpgStationPayload) }
+val stageEpgStationJniLibs = tasks.register<Sync>("stageEpgStationJniLibs") {
+    dependsOn(prepareEpgStationPayload)
+    from(rootProject.file("epgstation-server/.generated/jniLibs"))
+    into(layout.buildDirectory.dir("epgstation-jniLibs"))
+}
+
+tasks.matching {
+    it.name == "preBuild" || it.name.endsWith("JniLibFolders")
+}.configureEach {
+    dependsOn(stageEpgStationPayload)
+    dependsOn(stageEpgStationJniLibs)
+}
 
 dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.24")
+    implementation("com.google.zxing:core:3.5.3")
 }

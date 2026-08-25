@@ -7,8 +7,8 @@ internal object NativeUsbProcess {
         System.loadLibrary("usb_process")
     }
 
-    fun start(executable: String, firmware: String, channel: Int, usbFd: Int): StartedProcess {
-        val handles = nativeStart(executable, firmware, channel, usbFd)
+    fun start(executable: String, firmware: String, channel: Int, usbFd: Int, readerFd: Int = -1): StartedProcess {
+        val handles = nativeStart(executable, firmware, channel, usbFd, readerFd)
         check(handles != null && handles.size == 2) { "Unable to start siano-ts" }
         val readFd = handles[0]
         val pid = handles[1]
@@ -20,6 +20,6 @@ internal object NativeUsbProcess {
 
     data class StartedProcess(val pid: Int, val output: ParcelFileDescriptor)
 
-    private external fun nativeStart(executable: String, firmware: String, channel: Int, usbFd: Int): IntArray?
+    private external fun nativeStart(executable: String, firmware: String, channel: Int, usbFd: Int, readerFd: Int): IntArray?
     private external fun nativeStop(pid: Int)
 }
