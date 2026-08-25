@@ -117,6 +117,9 @@ build_runtime arm64-v8a aarch64-linux-android24 aarch64-linux-android \
     "$sysroot/aarch64-linux-android/libc++_shared.so"
 
 if [[ -f "$payload_root/.complete" ]]; then
+    if [[ ! -f "$payload_root/payload.version" ]]; then
+        printf 'EPGStation-v2.10.0-nodejs-mobile-v16.17.0\n' > "$payload_root/payload.version"
+    fi
     echo "EPGStation payload already prepared: $payload_root"
     exit 0
 fi

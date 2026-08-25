@@ -1,3 +1,4 @@
+import java.io.ByteArrayOutputStream
 import java.net.URI
 
 plugins {
@@ -88,11 +89,14 @@ val prepareFirmware = tasks.register("prepareFirmware") {
             URI("https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/isdbt_rio.inp")
                 .toURL()
                 .openStream()
-                .use { it.copyTo(out) }
+                .use { stream -> stream.copyTo(out) }
         }
-        val md5 = java.security.MessageDigest.getInstance("MD5")
-            .digest(dest.readBytes())
-            .joinToString("") { "%02x".format(it) }
+        val checksum = ByteArrayOutputStream()
+        exec {
+            commandLine("md5sum", dest.absolutePath)
+            standardOutput = checksum
+        }
+        val md5 = checksum.toString().trim().substringBefore(' ')
         if (md5 != "9b762c1808fd8da81bbec3e24ddb04a3") {
             dest.delete()
             throw GradleException("isdbt_rio.inp checksum mismatch: $md5")

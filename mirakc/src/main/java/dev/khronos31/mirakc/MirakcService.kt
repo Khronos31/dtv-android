@@ -113,7 +113,10 @@ class MirakcService : Service() {
             .setOngoing(true)
             .build()
         if (Build.VERSION.SDK_INT >= 29) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+            // USB Device permission is only granted after the dialog. Android 14
+            // connectedDevice FGS requires that permission already, so the
+            // resident HTTP listener starts as dataSync.
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }

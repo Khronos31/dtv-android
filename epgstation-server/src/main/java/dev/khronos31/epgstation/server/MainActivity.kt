@@ -8,7 +8,9 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
+import android.text.InputType
 import android.view.Gravity
+import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -51,21 +53,36 @@ class MainActivity : Activity() {
         }
         urlInput = EditText(this).apply {
             setSingleLine(true)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            imeOptions = EditorInfo.IME_ACTION_DONE or EditorInfo.IME_FLAG_NO_EXTRACT_UI
             textSize = 18f
             setText(preferences.getString(KEY_MIRAKURUN_URL, DEFAULT_MIRAKURUN_URL))
             hint = DEFAULT_MIRAKURUN_URL
             contentDescription = "Mirakurun or mirakc base URL"
+            setPadding(24, 20, 24, 20)
+            minHeight = (48 * resources.displayMetrics.density).toInt()
+            setTextColor(Color.WHITE)
+            setHintTextColor(Color.GRAY)
+            isFocusable = true
+            isFocusableInTouchMode = true
         }
         val save = Button(this).apply {
             text = "Save base URL"
             setOnClickListener { saveUrl() }
+            minHeight = (48 * resources.displayMetrics.density).toInt()
         }
-        root.addView(title)
+        root.addView(title, LinearLayout.LayoutParams(-1, -2))
         root.addView(explanation, LinearLayout.LayoutParams(-1, -2))
-        root.addView(urlInput, LinearLayout.LayoutParams(-1, 64))
-        root.addView(save, LinearLayout.LayoutParams(-1, 56))
+        root.addView(
+            urlInput,
+            LinearLayout.LayoutParams(-1, -2).apply {
+                topMargin = 8
+                bottomMargin = 16
+            }
+        )
+        root.addView(save, LinearLayout.LayoutParams(-1, -2))
         setContentView(root)
-        urlInput.requestFocus()
+        save.requestFocus()
     }
 
     private fun saveUrl() {
