@@ -90,24 +90,6 @@ USB ストレージをおすすめします。
 リモコン操作のために作られたアプリで、接続先にこの EPGStation Server
 （`http://127.0.0.1:8888/`）を指定すれば、そのまま使えます。
 
-### EPGStation Server が繰り返し落ちるとき
-
-Android 12 以降には、アプリが起動した子プロセスを監視して打ち切る仕組み
-（phantom process killer）があります。EPGStation はサーバー本体・録画管理・
-EPG 更新をそれぞれ別プロセスで動かす作りなので、これに引っかかると数十秒ごとに
-再起動を繰り返し、番組表がいつまでも開けません。ログには
-`Process PhantomProcessRecord {... libepgstation-node.so ...} died` が並びます。
-
-一度だけ adb から次を実行すると止まります。
-
-```sh
-adb shell settings put global settings_enable_monitor_phantom_procs false
-adb shell device_config set_sync_disabled_for_tests persistent
-adb shell device_config put activity_manager max_phantom_processes 2147483647
-```
-
-元に戻すなら `settings_enable_monitor_phantom_procs` を `true` にします。
-
 ### 再起動したら
 
 どちらの APK も自動では起動しません。テレビを再起動したあとは、mirakc と

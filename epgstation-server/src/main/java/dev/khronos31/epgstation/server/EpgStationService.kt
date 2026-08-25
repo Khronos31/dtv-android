@@ -36,7 +36,7 @@ class EpgStationService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // A saved Mirakurun URL is applied by the next supervised process.
-        child?.destroy()
+        stopNode()
         return START_STICKY
     }
 
@@ -44,13 +44,53 @@ class EpgStationService : Service() {
 
     override fun onDestroy() {
         stopping.set(true)
-        child?.destroy()
-        child = null
+        stopNode()
         supervisor?.interrupt()
         supervisor = null
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
         super.onDestroy()
+    }
+
+    /**
+     * EPGStation runs its service and EPG updater as child processes of
+     * dist/index.js. Process.destroy() signals only index.js, so those
+     * grandchildren survive as orphans, hold the IPC socket, and make the next
+     * index.js time out — which restarts it and orphans another pair. Sweep the
+     * whole family by hand; Android has no process-group kill for us.
+     */
+    private fun stopNode() {
+        child?.destroy()
+        child = null
+        killStrayNodeProcesses()
+    }
+
+    private fun killStrayNodeProcesses() {
+        val self = android.os.Process.myPid()
+        val uid = android.os.Process.myUid()
+        val victims = File("/proc").listFiles { file -> file.name.all(Char::isDigit) } ?: return
+        for (entry in victims) {
+            val pid = entry.name.toIntOrNull() ?: continue
+            if (pid == self) continue
+            val cmdline = try {
+                File(entry, "cmdline").readText()
+            } catch (_: Exception) {
+                continue
+            }
+            if (!cmdline.contains(NODE_LAUNCHER)) continue
+            val owner = try {
+                File(entry, "status").readLines()
+                    .firstOrNull { it.startsWith("Uid:") }
+                    ?.split(Regex("\\s+"))
+                    ?.getOrNull(1)
+                    ?.toIntOrNull()
+            } catch (_: Exception) {
+                null
+            }
+            if (owner != uid) continue
+            android.util.Log.i(TAG, "killing stray $NODE_LAUNCHER pid=$pid")
+            android.os.Process.killProcess(pid)
+        }
     }
 
     private fun supervise() {
@@ -66,6 +106,9 @@ class EpgStationService : Service() {
                 val sqlite = File(nativeDir, "libnode_sqlite3.so")
                 val crc32 = File(nativeDir, "libcrc32_android.so")
                 installNativeLoaders(root, sqlite, crc32)
+                // A previous supervisor round, or a crash, can leave the old
+                // family behind; index.js cannot bind or talk to IPC until it is gone.
+                killStrayNodeProcesses()
                 val process = ProcessBuilder(node.absolutePath, "dist/index.js")
                     .directory(root)
                     .redirectErrorStream(true)
@@ -125,7 +168,7 @@ class EpgStationService : Service() {
             } catch (interrupted: InterruptedException) {
                 if (!stopping.get()) publish("Supervisor interrupted: ${interrupted.message ?: "unknown error"}")
             } catch (error: Throwable) {
-                child = null
+                stopNode()
                 android.util.Log.e(TAG, "EPGStation failed", error)
                 publish("EPGStation down: ${error.message ?: error.javaClass.simpleName}")
                 try {
@@ -312,6 +355,7 @@ class EpgStationService : Service() {
 
     companion object {
         private const val TAG = "EPGStationServer"
+        private const val NODE_LAUNCHER = "libepgstation-node.so"
         private const val PAYLOAD_DIR = "epgstation"
         private const val CHANNEL = "epgstation-server-service"
         private const val ID = 40773
