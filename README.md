@@ -2,8 +2,7 @@
 
 Khronos31 の地デジ環境を Android TV とスマートフォンに載せるための APK 群。
 常駐チューナー（`mirakc`）と常駐 EPGStation サーバーの2本。番組表は
-EPGStation の Web UI をスマートフォンや PC から開いて使う。TV の十字キーで
-操作する番組表 APK は作らない。
+EPGStation の Web UI をスマートフォンや PC から開いて使う。
 
 | 表示名 | Gradle モジュール | applicationId |
 | --- | --- | --- |
@@ -160,7 +159,7 @@ backoff をかけて再起動し、稼働/停止を通知に出す。sqlite3 と
 シンボリックリンクを通して Node から見えるようにしている。APK には
 EPGStation の MIT ライセンス、Node のライセンス、生成した
 `licenses/NOTICE.npm.txt` の依存一覧を含む。`siano-ts`、ファームウェア、
-recisdb、番組表 UI は入っていない。
+recisdb は入っていない。
 
 TV 側でのライブ視聴・ワンタップ録画・録画再生は
 [epcltvapp](https://github.com/daig0rian/epcltvapp) を使っている。ここの APK は
