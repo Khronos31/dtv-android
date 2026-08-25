@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  # Pinned so that a runner image refresh cannot change what ships in the APK.
+  NDK_VERSION: "27.0.12077973"
+  SIANO_USERLAND_REF: v0.1.1
+
+jobs:
+  version:
+    name: Version metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Check that every version-bearing place agrees
+        run: python3 tools/scripts/release_version.py check
+
+  mirakc:
+    name: mirakc APK (debug)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: Khronos31/siano-userland
+          ref: ${{ env.SIANO_USERLAND_REF }}
+          path: siano-userland
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install the pinned NDK
+        run: |
+          set -euo pipefail
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" >/dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+      - name: Build
+        run: ./gradlew --no-daemon -PsianoUserlandDir="$GITHUB_WORKSPACE/siano-userland" :mirakc:assembleDebug
+      - name: Verify the APK carries the canonical version
+        run: |
+          python3 tools/scripts/release_version.py check \
+            --apk mirakc/build/outputs/apk/debug/mirakc-debug.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mirakc-debug-apk
+          path: mirakc/build/outputs/apk/debug/mirakc-debug.apk

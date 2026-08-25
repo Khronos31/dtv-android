@@ -1,0 +1,284 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable version without a v prefix (for example, 0.1.1)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dtv-android-release
+  cancel-in-progress: false
+
+env:
+  NDK_VERSION: "27.0.12077973"
+  SIANO_USERLAND_REF: v0.1.1
+
+jobs:
+  prepare:
+    name: Tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.prepare.outputs.tag }}
+      publish: ${{ steps.prepare.outputs.publish }}
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Verify the dispatch source
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "Release must be dispatched from main, not $GITHUB_REF" >&2
+            exit 1
+          fi
+          git fetch --force origin main --tags
+          if [[ "$(git rev-parse origin/main)" != "$GITHUB_SHA" ]]; then
+            echo "origin/main changed after this workflow was dispatched" >&2
+            exit 1
+          fi
+
+      - name: Prepare or recover the release tag
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Version must be N.N.N without a v prefix" >&2
+            exit 1
+          fi
+          tag="v$RELEASE_VERSION"
+
+          python3 tools/scripts/release_version.py set "$RELEASE_VERSION"
+
+          latest_tag="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' \
+            --sort=-version:refname \
+            | grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
+            | head -n 1 || true)"
+
+          if git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null; then
+            tag_commit="$(git rev-list -n 1 "$tag")"
+            if [[ "$tag_commit" != "$GITHUB_SHA" ]]; then
+              echo "$tag already exists on a different commit" >&2
+              exit 1
+            fi
+            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "publish=true" >> "$GITHUB_OUTPUT"
+            fi
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ -n "$latest_tag" ]]; then
+            newest="$(printf '%s\n%s\n' "${latest_tag#v}" "$RELEASE_VERSION" | sort -V | tail -n 1)"
+            if [[ "$newest" != "$RELEASE_VERSION" || "${latest_tag#v}" == "$RELEASE_VERSION" ]]; then
+              echo "$RELEASE_VERSION is not newer than ${latest_tag#v}" >&2
+              exit 1
+            fi
+          fi
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "A release exists without a fetched matching tag: $tag" >&2
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet -- VERSION; then
+            git add VERSION
+            git commit -m "Release $tag"
+          fi
+          git tag -a "$tag" -m "Release $tag"
+          git fetch origin main
+          if [[ "$(git rev-parse origin/main)" != "$GITHUB_SHA" ]]; then
+            echo "origin/main changed during release validation" >&2
+            exit 1
+          fi
+          gh auth setup-git --hostname github.com
+          git push --atomic origin "HEAD:refs/heads/main" "refs/tags/$tag"
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  mirakc:
+    name: mirakc APK
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+      - uses: actions/checkout@v4
+        with:
+          repository: Khronos31/siano-userland
+          ref: ${{ env.SIANO_USERLAND_REF }}
+          path: siano-userland
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install the pinned NDK
+        run: |
+          set -euo pipefail
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" >/dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+      - name: Decode the release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${KEYSTORE_BASE64:-}" ]]; then
+            echo "The KEYSTORE_BASE64 secret is not set; refusing to ship an unsigned APK" >&2
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+      - name: Build
+        env:
+          KEYSTORE_FILE: ${{ runner.temp }}/release.keystore
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew --no-daemon -PsianoUserlandDir="$GITHUB_WORKSPACE/siano-userland" :mirakc:assembleRelease
+      - name: Verify version and signature
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          apk=mirakc/build/outputs/apk/release/mirakc-release.apk
+          python3 tools/scripts/release_version.py check --tag "$TAG" --apk "$apk"
+          apksigner="$(ls -d "$ANDROID_SDK_ROOT"/build-tools/*/apksigner | sort -V | tail -n 1)"
+          "$apksigner" verify --print-certs "$apk"
+      - name: Rename for the release
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cp mirakc/build/outputs/apk/release/mirakc-release.apk "out/mirakc-${TAG#v}.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-mirakc
+          path: out/*.apk
+
+  epgstation-server:
+    name: EPGStation Server APK
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Host tools
+        run: sudo apt-get update && sudo apt-get install -y patchelf
+      - name: Install the pinned NDK
+        run: |
+          set -euo pipefail
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" >/dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+      - name: Decode the release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${KEYSTORE_BASE64:-}" ]]; then
+            echo "The KEYSTORE_BASE64 secret is not set; refusing to ship an unsigned APK" >&2
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+      - name: Disk before the payload build
+        run: df -h /
+      - name: Build
+        env:
+          KEYSTORE_FILE: ${{ runner.temp }}/release.keystore
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew --no-daemon :epgstation-server:assembleRelease
+      - name: Disk after the payload build
+        if: always()
+        run: df -h /
+      - name: Verify version and signature
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          apk=epgstation-server/build/outputs/apk/release/epgstation-server-release.apk
+          python3 tools/scripts/release_version.py check --tag "$TAG" --apk "$apk"
+          apksigner="$(ls -d "$ANDROID_SDK_ROOT"/build-tools/*/apksigner | sort -V | tail -n 1)"
+          "$apksigner" verify --print-certs "$apk"
+      - name: Rename for the release
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cp epgstation-server/build/outputs/apk/release/epgstation-server-release.apk \
+            "out/epgstation-server-${TAG#v}.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-epgstation-server
+          path: out/*.apk
+
+  publish:
+    name: Publish
+    needs: [prepare, mirakc, epgstation-server]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Confirm the artifact names carry the release version
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          for apk in "dist/apk-mirakc/mirakc-$version.apk" \
+                     "dist/apk-epgstation-server/epgstation-server-$version.apk"; do
+            if [[ ! -f "$apk" ]]; then
+              echo "Missing expected artifact: $apk" >&2
+              exit 1
+            fi
+          done
+          ls -l dist/*/*.apk
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --generate-notes \
+            --title "$RELEASE_TAG" \
+            dist/apk-mirakc/*.apk dist/apk-epgstation-server/*.apk

@@ -58,6 +58,41 @@ APK は `armeabi-v7a` と `arm64-v8a` を両方含む。前者は Google TV Stre
 `libsiano-ts.so` として同梱し、`nativeLibraryDir` から exec する
 （`extractNativeLibs=true`）。
 
+## バージョンとリリース
+
+リポジトリ直下の `VERSION` が唯一の正本で、両モジュールの `versionName` は
+そこから読む。`versionCode` は `major*10000 + minor*100 + patch` で導出する
+（`0.1.0` なら `100`）。**モジュールのビルドスクリプトにバージョンを直書きしない。**
+
+`tools/scripts/release_version.py` が同期を検査する。
+
+```sh
+python3 tools/scripts/release_version.py check                  # 各ファイルの整合
+python3 tools/scripts/release_version.py check --tag v0.1.0     # タグとの一致も見る
+python3 tools/scripts/release_version.py check --apk path/to.apk # 生成物の中身も見る
+python3 tools/scripts/release_version.py print --code           # 導出した versionCode
+```
+
+`check` は、直書きへの逆戻り・タグとの食い違い・ビルドした APK に埋まった
+`versionName` / `versionCode` の食い違いを、それぞれ別々に落とす。CI は push
+ごとにこれを実行する。
+
+リリースは GitHub Actions の **Release** ワークフローを `main` から
+`workflow_dispatch` で起動する。入力は `v` を付けないバージョン（`0.1.1` など）。
+ワークフローが `VERSION` の書き換え・コミット・タグ付け・`main` とタグの
+atomic push までを一手に行うので、タグと中身がずれた状態を作れない。既存の
+タグが同じコミットに付いていて Release だけ無い場合は、その続きから再開する。
+
+APK には署名が要る。リポジトリの Secrets に以下を設定しておく。未設定なら
+リリースは失敗する（未署名の APK を公開しないため）。
+
+| Secret | 中身 |
+|---|---|
+| `KEYSTORE_BASE64` | リリース用 keystore を base64 にしたもの |
+| `KEYSTORE_PASSWORD` | keystore のパスワード |
+| `KEY_ALIAS` | 鍵の別名 |
+| `KEY_PASSWORD` | 鍵のパスワード |
+
 ## mirakc
 
 `mirakc` を起動すると `connectedDevice` のフォアグラウンドサービスが立ち上がる。

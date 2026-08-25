@@ -21,16 +21,18 @@ val nativeBinaries = listOf(
     nativeOutputDir.file("armeabi-v7a/libsiano-ts.so")
 )
 
+val sianoUserlandDir = providers.gradleProperty("sianoUserlandDir")
+    .orElse("/config/GitHub/siano-userland")
+
 val prepareSianoBinaries = tasks.register("prepareSianoBinaries") {
-    inputs.property("sianoUserlandDir", providers.gradleProperty("sianoUserlandDir")
-        .orElse("/config/GitHub/siano-userland"))
-    inputs.file(file("/config/GitHub/siano-userland/scripts/build-android.sh"))
+    inputs.property("sianoUserlandDir", sianoUserlandDir)
+    // inputs.files, not inputs.file: the path may be absent, and the friendlier
+    // diagnostic below should be what the user sees.
+    inputs.files(sianoUserlandDir.map { file("$it/scripts/build-android.sh") })
     outputs.files(nativeBinaries)
 
     doLast {
-        val userland = providers.gradleProperty("sianoUserlandDir")
-            .orElse("/config/GitHub/siano-userland").get()
-        val userlandDir = file(userland)
+        val userlandDir = file(sianoUserlandDir.get())
         val script = userlandDir.resolve("scripts/build-android.sh")
         if (!script.isFile) {
             throw GradleException(
@@ -112,6 +114,10 @@ plugins.withId("com.android.application") {
         }
 }
 
+// Set by the release workflow. Without it the release build stays unsigned, so
+// a local `assembleRelease` never silently produces something installable.
+val releaseKeystore = providers.environmentVariable("KEYSTORE_FILE").orNull
+
 android {
     namespace = "dev.khronos31.mirakc"
     compileSdk = 34
@@ -121,8 +127,8 @@ android {
         applicationId = "dev.khronos31.mirakc"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = rootProject.extra["appVersionCode"] as Int
+        versionName = rootProject.extra["appVersionName"] as String
 
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a")
@@ -133,10 +139,24 @@ android {
         }
     }
 
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS")
+                keyPassword = System.getenv("KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            if (releaseKeystore != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
