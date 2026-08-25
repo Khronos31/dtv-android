@@ -1,143 +1,166 @@
 # dtv-android
 
-Android TV and phone APKs for the Khronos31地デジ stack. Milestone 1 contains
-the resident tuner (`mirakc`) and the resident EPGStation server. The
-program-guide APK (`:epgstation`) is intentionally not part of this milestone.
+Khronos31 の地デジ環境を Android TV とスマートフォンに載せるための APK 群。
+マイルストーン1 の範囲は常駐チューナー（`mirakc`）と常駐 EPGStation サーバーで、
+番組表 APK（`:epgstation`）は意図的に含めていない。
 
-| Display name | Gradle module | applicationId |
+| 表示名 | Gradle モジュール | applicationId |
 | --- | --- | --- |
 | mirakc | `:mirakc` | `dev.khronos31.mirakc` |
 | EPGStation Server | `:epgstation-server` | `dev.khronos31.epgstation.server` |
 
-## Build
+## ビルド
 
-The checked-in `local.properties` points at the SDK used by this workspace:
+`local.properties` は追跡していないので、自分の環境の SDK を指すものを置く。
 
 ```text
-sdk.dir=/config/.tools/android-sdk
+sdk.dir=/path/to/android-sdk
 ```
 
-Use JDK 17 and an Android NDK r26 or newer. The Gradle task automatically picks
-the newest installed NDK below `/config/.tools/android-sdk/ndk/`; set
-`ANDROID_NDK_HOME` when building elsewhere. It invokes
-`/config/GitHub/siano-userland/scripts/build-android.sh` for both ABIs, then
-places the verified executables in the mirakc APK:
+JDK 17 と Android NDK r26 以降が要る。Gradle タスクは SDK の `ndk/` 配下にある
+最も新しい NDK を自動で選ぶので、別の場所のものを使うなら `ANDROID_NDK_HOME` を
+指定する。
+
+`siano-ts` は別リポジトリ
+[siano-userland](https://github.com/Khronos31/siano-userland) からビルドする。
+その場所は `-PsianoUserlandDir` で渡す（既定値は作者の環境の
+`/config/GitHub/siano-userland`）。ビルドは両 ABI について
+`scripts/build-android.sh` を呼び、検証済みの実行ファイルを mirakc の APK に
+入れる。
 
 ```sh
-export JAVA_HOME=/config/.tools/jdk17
-export ANDROID_NDK_HOME=/config/.tools/android-sdk/ndk/27.0.12077973
-./gradlew :mirakc:assembleDebug :epgstation-server:assembleDebug
+export JAVA_HOME=/path/to/jdk17
+export ANDROID_NDK_HOME=/path/to/android-sdk/ndk/27.0.12077973
+./gradlew -PsianoUserlandDir=/path/to/siano-userland \
+    :mirakc:assembleDebug :epgstation-server:assembleDebug
 ```
 
-The native step fails with an explicit NDK or siano-userland path error when
-those prerequisites are missing. The resulting debug APKs are under
-`mirakc/build/outputs/apk/debug/` and
-`epgstation-server/build/outputs/apk/debug/`.
+NDK か siano-userland のパスが見つからない場合、ネイティブのステップはどちらが
+足りないかを明示して失敗する。生成される debug APK は
+`mirakc/build/outputs/apk/debug/` と
+`epgstation-server/build/outputs/apk/debug/` に置かれる。
 
-The EPGStation task pins upstream `l3tnun/EPGStation` v2.10.0, builds the
-server and client, builds `sqlite3` for each Android ABI, and stages the
-JS payload under app-private storage at first launch. The Node.js-mobile
-v16.17.0 launcher (`libepgstation-node.so`), `libnode.so`, `libc++_shared.so`,
-and native addons are packaged as `jniLibs` and executed from
-`nativeLibraryDir`. Android 10+ will not exec ELF copied into `filesDir`.
-A network connection, host Node/npm, the NDK, and `patchelf` are required
-the first time the payload is prepared. `patchelf` adds a `libnode.so`
-dependency to the Node addons so Android's linker can resolve N-API.
+EPGStation 側のタスクは上流の [l3tnun/EPGStation](https://github.com/l3tnun/EPGStation)
+v2.10.0 を固定して取得し、サーバーとクライアントをビルドし、Android の ABI ごとに
+`sqlite3` をビルドして、JS の payload を初回起動時にアプリ専有ストレージへ展開する。
+Node.js-mobile v16.17.0 のランチャ（`libepgstation-node.so`）、`libnode.so`、
+`libc++_shared.so`、ネイティブアドオンは `jniLibs` として同梱し、
+`nativeLibraryDir` から実行する。**Android 10 以降は `filesDir` にコピーした ELF を
+exec できない**ためである。payload を最初に用意するときだけ、ネットワーク接続と
+ホスト側の Node/npm、NDK、`patchelf` が必要になる。`patchelf` は Node のアドオンに
+`libnode.so` への依存を追加するためのもので、これがないと Android のリンカが
+N-API を解決できない。
 
-The APKs are fat packages for `armeabi-v7a` and `arm64-v8a`. This includes the
-32-bit-only Google TV Streamer userspace. `siano-ts` is built as an Android
-Bionic PIE executable and is checked for `/system/bin/linker` or
-`/system/bin/linker64`; it is not a musl/glibc binary. It is packaged as
-`libsiano-ts.so` and exec'd from `nativeLibraryDir` (`extractNativeLibs=true`).
-Android 10+ will not exec a copy placed in `filesDir`.
+APK は `armeabi-v7a` と `arm64-v8a` を両方含む。前者は Google TV Streamer の
+ユーザーランドが 32bit のみであるため。`siano-ts` は Android Bionic の PIE 実行
+ファイルとしてビルドし、`/system/bin/linker` または `/system/bin/linker64` を
+参照していることを検証している（musl/glibc のバイナリではない）。これも
+`libsiano-ts.so` として同梱し、`nativeLibraryDir` から exec する
+（`extractNativeLibs=true`）。
 
 ## mirakc
 
-Launch `mirakc` to start its `connectedDevice` foreground service. The one
-status screen shows USB permission, the listener address, current stream, and
-the last error. Its controls are ordinary focusable Android buttons so TV
-D-pad navigation does not depend on Leanback rows.
+`mirakc` を起動すると `connectedDevice` のフォアグラウンドサービスが立ち上がる。
+画面は1枚だけで、USB 権限・待ち受けアドレス・現在のストリーム・直近のエラーを
+表示する。操作は通常のフォーカス可能な Android のボタンなので、TV の十字キー
+操作が Leanback の行構造に依存しない。
 
-The service requests Android USB permission for these Siano IDs:
+サービスは以下の Siano の ID について Android の USB 権限を要求する。
 
 * `3275:0080`
 * `187f:0600`
 * `187f:0302`
 
-The service retains the duplicated USB `ParcelFileDescriptor` while a stream
-is active. A small in-app JNI launcher passes that descriptor as fd 3 to:
+ストリームが動いている間、サービスは複製した USB の `ParcelFileDescriptor` を
+保持し続ける。アプリ内の小さな JNI ランチャがそのディスクリプタを fd 3 として
+次のように渡す。
 
 ```text
 siano-ts --channel N --firmware <filesDir>/isdbt_rio.inp --fd 3
 ```
 
-The listener binds unauthenticated to `0.0.0.0:40772`. The configured
-terrestrial channel list is T16, T21–T27, T30, T31, and T32, matching the
-HAOS mirakc addon. The firmware asset is the linux-firmware
-`isdbt_rio.inp` (MD5 `9b762c1808fd8da81bbec3e24ddb04a3`) and
-`LICENCE.siano` is shipped beside it. It is not embedded in a `.so`.
+待ち受けは `0.0.0.0:40772` で認証はない。地上波のチャンネルは T16、T21〜T27、
+T30、T31、T32 を設定してあり、HAOS の mirakc アドオンと揃えてある。ファーム
+ウェアは linux-firmware の `isdbt_rio.inp`（MD5 `9b762c1808fd8da81bbec3e24ddb04a3`）
+をビルド時に取得してチェックサムを検証したもので、`LICENCE.siano` を隣に置いて
+同梱している。`.so` に焼き込んではいない。
 
-### Implemented HTTP surface
+### 実装済みの HTTP API
 
-These are the routes served for EPGStation (mirakc-compatible, not a
-Mirakurun clone of `/api/config`):
+EPGStation から使うぶんに必要な範囲だけを mirakc 互換で実装している
+（Mirakurun の `/api/config` まで真似たクローンではない）。
 
-* `GET /api/version` — Mirakurun-shaped `current` and `latest`.
-* `GET /api/status` — `{}`.
-* `GET /api/docs` — OpenAPI used by `mirakurun.Client`.
-* `GET /api/channels` — configured GR list plus discovered services.
-* `GET /api/services`, `GET /api/services/{id}`
-* `GET /api/programs`, `GET /api/programs/{id}`
+* `GET /api/version` — Mirakurun 形式の `current` と `latest`
+* `GET /api/status` — `{}`
+* `GET /api/docs` — `mirakurun.Client` が読む OpenAPI
+* `GET /api/channels` — 設定した GR の一覧と、発見済みのサービス
+* `GET /api/services`、`GET /api/services/{id}`
+* `GET /api/programs`、`GET /api/programs/{id}`
 * `GET /api/services/{id}/programs`
-* `GET /events` — SSE `epg.programs-updated` and `onair.program-changed`.
-* `GET /api/tuners` — Siano tuner state.
-* `GET /api/channels/GR/{channel}/stream` — raw MPEG-TS from `siano-ts`.
-* `GET /api/services/{id}/stream` and `GET /api/programs/{id}/stream`.
+* `GET /events` — SSE の `epg.programs-updated` と `onair.program-changed`
+* `GET /api/tuners` — Siano チューナーの状態
+* `GET /api/channels/GR/{channel}/stream` — `siano-ts` の生 MPEG-TS
+* `GET /api/services/{id}/stream`、`GET /api/programs/{id}/stream`
 
-On USB grant the service scans each configured GR channel (~16s) and
-parses SDT/EIT from the TS. Live streams feed the same parser. Names use
-ARIB STD-B24. recisdb, B-CAS, and ffmpeg stay out of this APK.
-`/api/services/{id}/stream` and `/api/programs/{id}/stream` keep one
-program. 12-seg MPEG-2 is MULTI2-scrambled. When an Identive/CCID
-reader with a B-CAS card is granted USB permission, TS is piped through
-libarib25 (Apache-2.0) before serving. Without a card, the clear 1-seg
-H.264 on the same transponder is substituted. Recording UI remains EPGStation.
+USB 権限が下りるとサービスは設定済みの GR チャンネルを1つずつ約16秒ずつ走査し、
+TS から SDT/EIT を解析する。ライブのストリームも同じパーサに通る。名前の解釈は
+ARIB STD-B24 に従う。`/api/services/{id}/stream` と
+`/api/programs/{id}/stream` は1番組だけを残す。recisdb と ffmpeg はこの APK には
+入れていない。録画の UI は EPGStation の担当のまま。
+
+### B-CAS による復号
+
+12seg の MPEG-2 は MULTI2 でスクランブルされている。Identive などの CCID
+カードリーダに B-CAS カードを挿し、USB 権限を与えると、`siano-ts` の出力を
+libarib25（stz2012 版・Apache-2.0）に通してから配信する。pcscd は使わず、
+UsbManager から渡された fd を usbfs の ioctl で直接叩いている。
+
+手元のリーダ（Identive/SCM SCR33xx v2.0）は `dwFeatures=0x000100ba` で交換
+レベルが TPDU だったため、生の APDU は通らない。T=1 のブロック層
+（NAD/PCB/LEN/INF/LRC、シーケンス番号、双方向のチェイニング、S-block の
+WTX/IFS 応答、Time Extension 待ち）は自前で実装している。IFSC は
+GetParameters から読み、IFSD は 254 を交渉する。
+
+カードが無い、あるいは復号に失敗した場合は、同じ物理チャンネルに乗っている
+スクランブルなしの 1seg H.264 に差し替える。差し替えるかどうかは PMT の CA
+記述子の有無ではなく、実測したスクランブルビットで判断している（復号が
+成功しても CA 記述子は PMT に残るため）。
 
 ## EPGStation Server
 
-This is an unofficial Android port of upstream
-[l3tnun/EPGStation](https://github.com/l3tnun/EPGStation), pinned to v2.10.0.
-It is not a Play listing. The APK starts a `dataSync` foreground service,
-extracts the upstream server and client build into app-private
-`filesDir`, and listens on port 8888. The status screen shows a QR code for `http://<LAN-IP>:8888/` so a
-phone or PC can open the stock EPGStation UI. There is no TV program-guide
-APK; D-pad operation of that SPA is out of scope. The only other user
-setting is the Mirakurun/mirakc base URL, persisted with this default:
+上流の [l3tnun/EPGStation](https://github.com/l3tnun/EPGStation) v2.10.0 を
+固定した、非公式の Android 移植。Play で配布するものではない。APK は
+`dataSync` のフォアグラウンドサービスを起動し、上流のサーバーとクライアントの
+ビルド成果をアプリ専有の `filesDir` に展開して、8888 番ポートで待ち受ける。
+ステータス画面には `http://<LAN-IP>:8888/` の QR コードを出すので、スマート
+フォンや PC から素の EPGStation の UI を開ける。TV 用の番組表 APK は無く、
+あの SPA を十字キーで操作することは想定していない。ユーザーが設定できるのは
+他に Mirakurun/mirakc のベース URL だけで、既定値は以下。
 
 ```text
 http://127.0.0.1:40772/
 ```
 
-On every service start, the app copies the complete upstream
-`config/config.yml.template` to `config/config.yml`, then changes only the
-Mirakurun URL, `port`, `clientSocketioPort`, and recorded/thumbnail
-locations. Recordings can go on internal storage or a removable USB volume
-(exFAT). The SQLite database stays on internal `filesDir`. The status screen
-lists each volume with free space; the app-specific directory on the USB is
-`/storage/<UUID>/Android/data/dev.khronos31.epgstation.server/files/recorded`.
-No `subDirectory` is added. Sample log YAML files and the
-upstream `enc.js` templates are included. ffmpeg is intentionally not
-bundled in this slice, so unconverted live operation is the supported path.
+サービスを起動するたびに、上流の `config/config.yml.template` をそのまま
+`config/config.yml` へコピーし、Mirakurun の URL、`port`、
+`clientSocketioPort`、録画とサムネイルの保存先だけを書き換える。録画先は
+内蔵ストレージか、取り外し可能な USB ボリューム（exFAT）を選べる。SQLite の
+データベースは内蔵の `filesDir` に置いたまま。ステータス画面は各ボリュームを
+空き容量つきで一覧する。USB 側のアプリ専用ディレクトリは
+`/storage/<UUID>/Android/data/dev.khronos31.epgstation.server/files/recorded`。
+`subDirectory` は足していない。ログの YAML サンプルと上流の `enc.js` の
+テンプレートは同梱している。ffmpeg は意図的に含めていないので、無変換での
+運用が想定する経路になる。
 
-The resident supervisor holds a partial wake lock, execs the ABI-matched
-`libepgstation-node.so` from `nativeLibraryDir` (`extractNativeLibs=true`),
-restarts it with backoff after a crash, and reports the running/down state
-in its notification. sqlite3 and `@node-rs/crc32` addons are the same
-extracted native libraries, exposed to Node through symlinks under
-`node_modules`. The APK contains EPGStation's MIT license, the Node license,
-and a generated `licenses/NOTICE.npm.txt` dependency list. It contains no
-`siano-ts`, firmware, recisdb, or guide UI.
+常駐する supervisor は partial wake lock を保持し、ABI の合う
+`libepgstation-node.so` を `nativeLibraryDir` から exec し、クラッシュ後は
+backoff をかけて再起動し、稼働/停止を通知に出す。sqlite3 と `@node-rs/crc32`
+のアドオンも同じ抽出済みネイティブライブラリで、`node_modules` 配下の
+シンボリックリンクを通して Node から見えるようにしている。APK には
+EPGStation の MIT ライセンス、Node のライセンス、生成した
+`licenses/NOTICE.npm.txt` の依存一覧を含む。`siano-ts`、ファームウェア、
+recisdb、番組表 UI は入っていない。
 
-Live viewing, one-tap recording, playback, and the program guide remain the
-responsibility of [epcltvapp](https://github.com/daig0rian/epcltvapp); these APKs
-do not replace it.
+視聴、ワンタップ録画、再生、番組表は
+[epcltvapp](https://github.com/daig0rian/epcltvapp) の担当で、ここの APK が
+それを置き換えるものではない。
