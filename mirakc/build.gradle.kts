@@ -1,5 +1,5 @@
-import java.io.ByteArrayOutputStream
 import java.net.URI
+import java.security.MessageDigest
 
 plugins {
     id("com.android.application")
@@ -79,6 +79,14 @@ val prepareSianoBinaries = tasks.register("prepareSianoBinaries") {
 }
 
 val firmwareAsset = layout.projectDirectory.file("src/main/assets/isdbt_rio.inp")
+// git.kernel.org answers 403 to some hosts, GitHub Actions runners among them,
+// so the GitLab mirror that upstream linux-firmware now publishes comes first.
+val firmwareSources = listOf(
+    "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/main/isdbt_rio.inp",
+    "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/isdbt_rio.inp"
+)
+val firmwareMd5 = "9b762c1808fd8da81bbec3e24ddb04a3"
+
 val prepareFirmware = tasks.register("prepareFirmware") {
     outputs.file(firmwareAsset)
     doLast {
@@ -87,22 +95,32 @@ val prepareFirmware = tasks.register("prepareFirmware") {
         if (dest.isFile && dest.length() == 85840L) {
             return@doLast
         }
-        dest.outputStream().use { out ->
-            URI("https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/isdbt_rio.inp")
-                .toURL()
-                .openStream()
-                .use { stream -> stream.copyTo(out) }
+        val failures = mutableListOf<String>()
+        var payload: ByteArray? = null
+        for (source in firmwareSources) {
+            try {
+                val connection = URI(source).toURL().openConnection()
+                // The default Java agent is one of the things git.kernel.org rejects.
+                connection.setRequestProperty("User-Agent", "dtv-android-build")
+                connection.connectTimeout = 30_000
+                connection.readTimeout = 120_000
+                val bytes = connection.getInputStream().use { it.readBytes() }
+                val digest = MessageDigest.getInstance("MD5").digest(bytes)
+                    .joinToString("") { "%02x".format(it) }
+                if (digest != firmwareMd5) {
+                    failures += "$source: checksum $digest"
+                    continue
+                }
+                payload = bytes
+                break
+            } catch (error: Exception) {
+                failures += "$source: ${error.message ?: error.javaClass.simpleName}"
+            }
         }
-        val checksum = ByteArrayOutputStream()
-        exec {
-            commandLine("md5sum", dest.absolutePath)
-            standardOutput = checksum
+        if (payload == null) {
+            throw GradleException("Unable to fetch isdbt_rio.inp:\n" + failures.joinToString("\n"))
         }
-        val md5 = checksum.toString().trim().substringBefore(' ')
-        if (md5 != "9b762c1808fd8da81bbec3e24ddb04a3") {
-            dest.delete()
-            throw GradleException("isdbt_rio.inp checksum mismatch: $md5")
-        }
+        dest.writeBytes(payload)
     }
 }
 
