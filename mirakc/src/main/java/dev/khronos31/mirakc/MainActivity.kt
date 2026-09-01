@@ -2,6 +2,7 @@ package dev.khronos31.mirakc
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -14,8 +15,11 @@ import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
+import dev.khronos31.updater.GitHubReleaseUpdater
 
 class MainActivity : Activity() {
+    private val updater by lazy { GitHubReleaseUpdater(this, "mirakc", "dev.khronos31.mirakc") }
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var status: TextView
     private val refresh = object : Runnable {
@@ -87,6 +91,9 @@ class MainActivity : Activity() {
         val start = tvButton("Start mirakc service") {
             startMirakcService()
         }
+        val checkUpdate = tvButton("CHECK UPDATE") {
+            checkForUpdate(it as Button)
+        }
         val scan = tvButton("Scan EPG") {
             sendServiceAction(MirakcService.ACTION_SCAN_EPG)
         }
@@ -99,6 +106,7 @@ class MainActivity : Activity() {
         root.addView(scan, buttonParams())
         root.addView(stop, buttonParams())
         root.addView(start, buttonParams())
+        root.addView(checkUpdate, buttonParams())
         setContentView(root)
         request.requestFocus()
     }
@@ -111,5 +119,51 @@ class MainActivity : Activity() {
     private fun sendServiceAction(action: String) {
         val intent = Intent(this, MirakcService::class.java).setAction(action)
         if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
+    }
+
+    private fun checkForUpdate(button: Button) {
+        button.isEnabled = false
+        updater.check { result ->
+            button.isEnabled = true
+            when (result) {
+                is GitHubReleaseUpdater.CheckResult.UpToDate ->
+                    Toast.makeText(this, "Already up to date (${result.installedVersion})", Toast.LENGTH_LONG).show()
+                is GitHubReleaseUpdater.CheckResult.Failure ->
+                    showUpdateError(result.message)
+                is GitHubReleaseUpdater.CheckResult.UpdateAvailable -> {
+                    val update = result.update
+                    AlertDialog.Builder(this)
+                        .setTitle("Update available")
+                        .setMessage("mirakc ${update.versionText} is available. Download and install it?")
+                        .setNegativeButton("Cancel", null)
+                        .setPositiveButton("Download and install") { _, _ ->
+                            button.isEnabled = false
+                            updater.downloadAndInstall(update, this) { downloadResult ->
+                                button.isEnabled = true
+                                when (downloadResult) {
+                                    GitHubReleaseUpdater.DownloadResult.InstallerLaunched -> Unit
+                                    GitHubReleaseUpdater.DownloadResult.NeedUnknownSourcesPermission ->
+                                        AlertDialog.Builder(this)
+                                            .setTitle("Permission required")
+                                            .setMessage("Allow this app to install updates, then press CHECK UPDATE again.")
+                                            .setPositiveButton("Open settings") { _, _ -> updater.openUnknownSourcesSettings(this) }
+                                            .setNegativeButton("Cancel", null)
+                                            .show()
+                                    is GitHubReleaseUpdater.DownloadResult.Failure -> showUpdateError(downloadResult.message)
+                                }
+                            }
+                        }
+                        .show()
+                }
+            }
+        }
+    }
+
+    private fun showUpdateError(message: String) {
+        AlertDialog.Builder(this)
+            .setTitle("Update check failed")
+            .setMessage(message)
+            .setPositiveButton("OK", null)
+            .show()
     }
 }

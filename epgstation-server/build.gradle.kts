@@ -3,6 +3,12 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val appVersionText = file("VERSION").readText().trim()
+val appVersionParts = Regex("""^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$""").matchEntire(appVersionText)
+    ?: throw GradleException("epgstation-server/VERSION must hold a semantic version such as 1.2.3, found \"$appVersionText\"")
+val (appMajor, appMinor, appPatch) = appVersionParts.destructured
+val appVersionCode = appMajor.toInt() * 10000 + appMinor.toInt() * 100 + appPatch.toInt()
+
 // Set by the release workflow. Without it the release build stays unsigned, so
 // a local `assembleRelease` never silently produces something installable.
 val releaseKeystore = providers.environmentVariable("KEYSTORE_FILE").orNull
@@ -15,8 +21,8 @@ android {
         applicationId = "dev.khronos31.epgstation.server"
         minSdk = 24
         targetSdk = 34
-        versionCode = rootProject.extra["appVersionCode"] as Int
-        versionName = rootProject.extra["appVersionName"] as String
+        versionCode = appVersionCode
+        versionName = appVersionText
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a")
         }
@@ -92,4 +98,5 @@ tasks.matching {
 dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.24")
     implementation("com.google.zxing:core:3.5.3")
+    implementation(project(":updater"))
 }

@@ -11,15 +11,18 @@ env:
 
 jobs:
   version:
-    name: Version metadata
+    name: Version metadata (${{ matrix.component }})
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        component: [mirakc, epgstation-server]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-      - name: Check that every version-bearing place agrees
-        run: python3 tools/scripts/release_version.py check
+      - name: Check version metadata
+        run: python3 tools/scripts/release_version.py check --component "${{ matrix.component }}"
 
   mirakc:
     name: mirakc APK (debug)
@@ -41,18 +44,50 @@ jobs:
       - name: Install the pinned NDK
         run: |
           set -euo pipefail
-          # A finite feed, not `yes`: under pipefail a SIGPIPE'd `yes` fails the step
-          # even though sdkmanager succeeded.
           printf 'y\n%.0s' $(seq 20) \
             | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" >/dev/null
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
       - name: Build
         run: ./gradlew --no-daemon -PsianoUserlandDir="$GITHUB_WORKSPACE/siano-userland" :mirakc:assembleDebug
-      - name: Verify the APK carries the canonical version
+      - name: Verify the APK carries its module version
         run: |
-          python3 tools/scripts/release_version.py check \
+          python3 tools/scripts/release_version.py check --component mirakc \
             --apk mirakc/build/outputs/apk/debug/mirakc-debug.apk
       - uses: actions/upload-artifact@v4
         with:
           name: mirakc-debug-apk
           path: mirakc/build/outputs/apk/debug/mirakc-debug.apk
+
+  epgstation-server:
+    name: EPGStation Server APK (debug)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Host tools
+        run: sudo apt-get update && sudo apt-get install -y patchelf
+      - name: Install the pinned NDK
+        run: |
+          set -euo pipefail
+          printf 'y\n%.0s' $(seq 20) \
+            | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" >/dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+      - name: Build
+        run: ./gradlew --no-daemon :epgstation-server:assembleDebug
+      - name: Verify the APK carries its module version
+        run: |
+          python3 tools/scripts/release_version.py check --component epgstation-server \
+            --apk epgstation-server/build/outputs/apk/debug/epgstation-server-debug.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: epgstation-server-debug-apk
+          path: epgstation-server/build/outputs/apk/debug/epgstation-server-debug.apk

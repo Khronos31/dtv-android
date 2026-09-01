@@ -10,6 +10,10 @@ APK は2本あります。
 | mirakc | チューナーを掴んで TS を配信する | `dev.khronos31.mirakc` |
 | EPGStation Server | 番組表と録画予約を受け持つサーバー | `dev.khronos31.epgstation.server` |
 
+各APKは独立してバージョン管理しています。Releasesも
+`mirakc-vX.Y.Z` と `epgstation-server-vX.Y.Z` に分かれているため、必要なAPKの
+リリースから対応するファイルを選んでください。
+
 番組表や録画予約の画面は、スマートフォンや PC のブラウザから開きます。
 テレビの画面で録画を見るときは
 [epcltvapp](https://github.com/daig0rian/epcltvapp) がよくできているので、
@@ -37,8 +41,8 @@ APK は2本あります。
 
    ```sh
    adb connect <テレビのIPアドレス>:5555
-   adb install -r mirakc-0.1.0.apk
-   adb install -r epgstation-server-0.1.0.apk
+   adb install -r mirakc-X.Y.Z.apk
+   adb install -r epgstation-server-X.Y.Z.apk
    ```
 
    ファイルマネージャー系のアプリから入れても構いません。提供元不明のアプリの
@@ -73,6 +77,13 @@ mirakc や Mirakurun を使いたい場合だけ書き換えて **Save base URL*
 ストレージを挿していればそれも出るので、押して選ぶと `✓` が付きます。
 選ばなければ本体の内蔵ストレージに録りますが、容量に余裕が無いことが多いので
 USB ストレージをおすすめします。
+
+### APKを手動で更新する
+
+各アプリの画面に **CHECK UPDATE** ボタンがあります。押したときだけ、そのアプリ
+専用のGitHub Releasesを確認し、更新があればAPKをダウンロードしてAndroidの
+インストール確認画面を開きます。初回だけ、設定からそのアプリに「不明なアプリの
+インストール」を許可してください。起動時やバックグラウンドでは確認しません。
 
 ### 3. スマホや PC から番組表を開く
 
@@ -213,6 +224,14 @@ APK には EPGStation の MIT ライセンス、Node のライセンス、生成
 `licenses/NOTICE.npm.txt` の依存一覧を含みます。`siano-ts`、ファームウェア、
 recisdb は入っていません。
 
+## ライセンス
+
+このリポジトリで新規に作成したコードは Apache-2.0 (`LICENSE`) で提供します。
+同梱している外部コンポーネントはそれぞれのライセンスに従います。特に mirakc
+APKに別プロセスとして同梱する `siano-userland` の `siano-ts` は
+GPL-2.0-or-later であり、対応するソースとライセンスは
+[siano-userland](https://github.com/Khronos31/siano-userland) にあります。
+
 ## ビルド
 
 `local.properties` は追跡していないので、自分の環境の SDK を指すものを置きます。
@@ -254,6 +273,10 @@ ELF を exec できない**ためです。payload を最初に用意するとき
 接続とホスト側の Node/npm、NDK、`patchelf` が必要になります。`patchelf` は
 Node のアドオンに `libnode.so` への依存を追加するためのもので、これがないと
 Android のリンカが N-API を解決できません。
+
+APKのバージョンは各モジュールの `VERSION` が正本です。リリースタグは
+`mirakc-vX.Y.Z` または `epgstation-server-vX.Y.Z` とし、タグを付けたモジュール
+だけをCIがビルドして、そのAPKだけをReleaseに添付します。
 
 APK は `armeabi-v7a` と `arm64-v8a` を両方含みます。前者は Google TV Streamer の
 ユーザーランドが 32bit のみであるためです。`siano-ts` は Android Bionic の PIE

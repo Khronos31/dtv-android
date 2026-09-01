@@ -2,6 +2,7 @@ package dev.khronos31.epgstation.server
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
@@ -18,9 +19,12 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
+import dev.khronos31.updater.GitHubReleaseUpdater
 import java.net.URI
 
 class MainActivity : Activity() {
+    private val updater by lazy { GitHubReleaseUpdater(this, "epgstation-server", "dev.khronos31.epgstation.server") }
     private lateinit var preferences: SharedPreferences
     private lateinit var urlInput: EditText
     private lateinit var storageList: LinearLayout
@@ -99,6 +103,9 @@ class MainActivity : Activity() {
             isFocusableInTouchMode = true
         }
         val save = tvButton("Save base URL") { saveUrl() }
+        val checkUpdate = tvButton("CHECK UPDATE") {
+            checkForUpdate(it as Button)
+        }
         val storageHeading = TextView(this).apply {
             text = "Recording storage"
             textSize = 18f
@@ -127,6 +134,7 @@ class MainActivity : Activity() {
             }
         )
         root.addView(save, LinearLayout.LayoutParams(-1, -2))
+        root.addView(checkUpdate, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
         root.addView(storageHeading, LinearLayout.LayoutParams(-1, -2))
         root.addView(storageStatus, LinearLayout.LayoutParams(-1, -2))
         root.addView(storageList, LinearLayout.LayoutParams(-1, -2))
@@ -197,6 +205,52 @@ class MainActivity : Activity() {
     private fun startServerService() {
         val intent = Intent(this, EpgStationService::class.java)
         if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
+    }
+
+    private fun checkForUpdate(button: Button) {
+        button.isEnabled = false
+        updater.check { result ->
+            button.isEnabled = true
+            when (result) {
+                is GitHubReleaseUpdater.CheckResult.UpToDate ->
+                    Toast.makeText(this, "Already up to date (${result.installedVersion})", Toast.LENGTH_LONG).show()
+                is GitHubReleaseUpdater.CheckResult.Failure ->
+                    showUpdateError(result.message)
+                is GitHubReleaseUpdater.CheckResult.UpdateAvailable -> {
+                    val update = result.update
+                    AlertDialog.Builder(this)
+                        .setTitle("Update available")
+                        .setMessage("EPGStation Server ${update.versionText} is available. Download and install it?")
+                        .setNegativeButton("Cancel", null)
+                        .setPositiveButton("Download and install") { _, _ ->
+                            button.isEnabled = false
+                            updater.downloadAndInstall(update, this) { downloadResult ->
+                                button.isEnabled = true
+                                when (downloadResult) {
+                                    GitHubReleaseUpdater.DownloadResult.InstallerLaunched -> Unit
+                                    GitHubReleaseUpdater.DownloadResult.NeedUnknownSourcesPermission ->
+                                        AlertDialog.Builder(this)
+                                            .setTitle("Permission required")
+                                            .setMessage("Allow this app to install updates, then press CHECK UPDATE again.")
+                                            .setPositiveButton("Open settings") { _, _ -> updater.openUnknownSourcesSettings(this) }
+                                            .setNegativeButton("Cancel", null)
+                                            .show()
+                                    is GitHubReleaseUpdater.DownloadResult.Failure -> showUpdateError(downloadResult.message)
+                                }
+                            }
+                        }
+                        .show()
+                }
+            }
+        }
+    }
+
+    private fun showUpdateError(message: String) {
+        AlertDialog.Builder(this)
+            .setTitle("Update check failed")
+            .setMessage(message)
+            .setPositiveButton("OK", null)
+            .show()
     }
 
     companion object {

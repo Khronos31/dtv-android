@@ -15,4 +15,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "dtv-android"
-include(":mirakc", ":epgstation-server")
+include(":mirakc", ":epgstation-server", ":updater")

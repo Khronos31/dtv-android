@@ -6,6 +6,12 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val appVersionText = file("VERSION").readText().trim()
+val appVersionParts = Regex("""^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$""").matchEntire(appVersionText)
+    ?: throw GradleException("mirakc/VERSION must hold a semantic version such as 1.2.3, found \"$appVersionText\"")
+val (appMajor, appMinor, appPatch) = appVersionParts.destructured
+val appVersionCode = appMajor.toInt() * 10000 + appMinor.toInt() * 100 + appPatch.toInt()
+
 val nativeOutputDir = layout.projectDirectory.dir("src/main/jniLibs")
 val configuredNdkVersion = providers.environmentVariable("ANDROID_NDK_HOME").orNull
     ?.let { file(it) }
@@ -145,8 +151,8 @@ android {
         applicationId = "dev.khronos31.mirakc"
         minSdk = 24
         targetSdk = 34
-        versionCode = rootProject.extra["appVersionCode"] as Int
-        versionName = rootProject.extra["appVersionName"] as String
+        versionCode = appVersionCode
+        versionName = appVersionText
 
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a")
@@ -198,4 +204,5 @@ android {
 
 dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.24")
+    implementation(project(":updater"))
 }
