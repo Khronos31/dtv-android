@@ -7,6 +7,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <cstring>
 #include <string>
 
 extern "C" int b25_stdio_filter(int reader_fd);
@@ -213,33 +214,69 @@ Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStop(JNIEnv*, jclass, jint pid)
     }
 }
 
-extern "C" JNIEXPORT jint JNICALL
+extern "C" JNIEXPORT jintArray JNICALL
 Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStartMirakc(
     JNIEnv* env, jclass, jstring executable, jstring config) {
     const std::string executablePath = stringFromJni(env, executable);
     const std::string configPath = stringFromJni(env, config);
-    if (executablePath.empty() || configPath.empty()) return -1;
+    if (executablePath.empty() || configPath.empty()) return nullptr;
 
+    // Keep the upstream process' bounded logs observable by the Android
+    // service. A pipe is preferable to native logcat: Kotlin can cap each
+    // line and retain the exact startup diagnostics alongside the exit code.
+    int logPipe[2];
+    if (pipe(logPipe) != 0) return nullptr;
     const pid_t mirakc = fork();
-    if (mirakc < 0) return -1;
+    if (mirakc < 0) {
+        close(logPipe[0]);
+        close(logPipe[1]);
+        return nullptr;
+    }
     if (mirakc == 0) {
         setpgid(0, 0);
         // If the Android service process dies, do not leave the server behind.
         prctl(PR_SET_PDEATHSIG, SIGTERM);
         if (getppid() == 1) _exit(127);
-        close_inherited_descriptors();
-        const int nullFd = open("/dev/null", O_RDWR);
+        // Preserve only the write end while dropping Binder/socket FDs from
+        // the app process. Kotlin consumes this pipe on a daemon reader.
+        close_inherited_descriptors(logPipe[1]);
+        close(logPipe[0]);
+        if (dup2(logPipe[1], STDOUT_FILENO) < 0 ||
+            dup2(logPipe[1], STDERR_FILENO) < 0) {
+            _exit(127);
+        }
+        if (logPipe[1] > STDERR_FILENO) close(logPipe[1]);
+        const int nullFd = open("/dev/null", O_RDONLY);
         if (nullFd >= 0) {
             dup2(nullFd, STDIN_FILENO);
-            dup2(nullFd, STDOUT_FILENO);
-            dup2(nullFd, STDERR_FILENO);
             if (nullFd > STDERR_FILENO) close(nullFd);
         }
+        // All generated paths are absolute, but a stable app-private cwd
+        // prevents an upstream relative fallback resolving under /data/local/tmp.
+        const std::string::size_type slash = configPath.rfind('/');
+        if (slash != std::string::npos && slash > 0) {
+            const std::string directory = configPath.substr(0, slash);
+            if (chdir(directory.c_str()) != 0) {
+                dprintf(STDERR_FILENO, "mirakc: chdir(%s): %s\n", directory.c_str(), strerror(errno));
+                _exit(127);
+            }
+        }
         execl(executablePath.c_str(), executablePath.c_str(), "--config", configPath.c_str(), nullptr);
+        dprintf(STDERR_FILENO, "mirakc: exec %s: %s\n", executablePath.c_str(), strerror(errno));
         _exit(127);
     }
     setpgid(mirakc, mirakc);
-    return static_cast<jint>(mirakc);
+    close(logPipe[1]);
+    jint values[] = {logPipe[0], mirakc};
+    jintArray result = env->NewIntArray(2);
+    if (result == nullptr) {
+        close(logPipe[0]);
+        kill(-mirakc, SIGTERM);
+        waitpid(mirakc, nullptr, 0);
+        return nullptr;
+    }
+    env->SetIntArrayRegion(result, 0, 2, values);
+    return result;
 }
 
 extern "C" JNIEXPORT jint JNICALL
@@ -256,9 +293,11 @@ Java_dev_khronos31_mirakc_NativeUsbProcess_nativePollMirakc(JNIEnv*, jclass, jin
         kill(-static_cast<pid_t>(pid), SIGTERM);
         kill(-static_cast<pid_t>(pid), SIGKILL);
         reap_process_group(static_cast<pid_t>(pid));
+        if (WIFEXITED(status)) return 2 + WEXITSTATUS(status);
+        if (WIFSIGNALED(status)) return -2 - WTERMSIG(status);
         return 1;
     }
-    if (result < 0 && errno == ECHILD) return 1;
+    if (result < 0 && (errno == ECHILD || errno == ESRCH)) return 1;
     if (result == 0) return 0;
     return -1;
 }

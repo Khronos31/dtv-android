@@ -1,6 +1,7 @@
 package dev.khronos31.mirakc
 
 import android.content.Context
+import android.util.Log
 import java.io.File
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -19,6 +20,7 @@ internal class MirakcSupervisor(
     private val runtimeDir = File(context.filesDir, "mirakc-runtime")
     private val epgDir = File(context.filesDir, "epg")
     private var process: NativeUsbProcess.StartedMirakc? = null
+    private var diagnosticReader: Thread? = null
     private var startup: Thread? = null
     private var monitor: Thread? = null
     private var restart: Thread? = null
@@ -69,7 +71,7 @@ internal class MirakcSupervisor(
         }
         // nativeStop terminates the complete process group.  Do this outside
         // the lock so a state callback cannot ever wait on process teardown.
-        current?.let { NativeUsbProcess.stop(it.pid) }
+        current?.let { stopStarted(it) }
         broker.close()
     }
 
@@ -147,17 +149,27 @@ internal class MirakcSupervisor(
 
             val launched = NativeUsbProcess.startMirakc(executable.absolutePath, config.absolutePath)
             started = launched
-            synchronized(lock) {
+            startDiagnostics(launched)
+            val abortStartup = synchronized(lock) {
                 if (stopping) {
-                    NativeUsbProcess.stop(launched.pid)
-                    return
+                    true
+                } else {
+                    process = launched
+                    setStateLocked("probing (pid ${launched.pid})")
+                    false
                 }
-                process = launched
-                setStateLocked("probing (pid ${launched.pid})")
+            }
+            if (abortStartup) {
+                stopStarted(launched)
+                return
             }
             probeVersion(launched.pid)
-            if (NativeUsbProcess.pollMirakc(launched.pid) != NativeUsbProcess.PollResult.ALIVE) {
-                throw IOException("mirakc exited after /api/version probe")
+            when (val result = NativeUsbProcess.pollMirakc(launched.pid)) {
+                NativeUsbProcess.PollResult.ALIVE -> Unit
+                is NativeUsbProcess.PollResult.EXITED ->
+                    throw IOException("mirakc exited after /api/version probe (${describe(result)})")
+                NativeUsbProcess.PollResult.ERROR ->
+                    throw IOException("unable to poll mirakc after /api/version probe")
             }
             val rerun = synchronized(lock) {
                 if (process?.pid != launched.pid || stopping) return
@@ -180,10 +192,7 @@ internal class MirakcSupervisor(
             // marker is alive; its finally block handles that coalesced event.
             if (rerun && synchronized(lock) { restart?.isAlive != true }) reconfigure()
         } catch (error: Exception) {
-            started?.let {
-                // Covers probe failures and startup exceptions after fork.
-                NativeUsbProcess.stop(it.pid)
-            }
+            started?.let { stopStarted(it) }
             synchronized(lock) {
                 if (stopping) {
                     startup = null
@@ -212,7 +221,7 @@ internal class MirakcSupervisor(
             monitor?.interrupt()
             monitor = null
         }
-        current?.let { NativeUsbProcess.stop(it.pid) }
+        current?.let { stopStarted(it) }
         try {
             broker.rotateGeneration()
             synchronized(lock) {
@@ -234,9 +243,10 @@ internal class MirakcSupervisor(
         val deadline = System.nanoTime() + STARTUP_TIMEOUT_NS
         var lastError = "no response"
         while (!Thread.currentThread().isInterrupted && System.nanoTime() < deadline) {
-            when (NativeUsbProcess.pollMirakc(pid)) {
+            when (val result = NativeUsbProcess.pollMirakc(pid)) {
                 NativeUsbProcess.PollResult.ALIVE -> Unit
-                NativeUsbProcess.PollResult.EXITED -> throw IOException("mirakc exited during startup probe")
+                is NativeUsbProcess.PollResult.EXITED ->
+                    throw IOException("mirakc exited during startup probe (${describe(result)})")
                 NativeUsbProcess.PollResult.ERROR -> throw IOException("unable to poll mirakc during startup probe")
             }
             try {
@@ -271,9 +281,9 @@ internal class MirakcSupervisor(
             } catch (_: InterruptedException) {
                 return
             }
-            when (NativeUsbProcess.pollMirakc(started.pid)) {
+            when (val result = NativeUsbProcess.pollMirakc(started.pid)) {
                 NativeUsbProcess.PollResult.ALIVE -> continue
-                NativeUsbProcess.PollResult.EXITED,
+                is NativeUsbProcess.PollResult.EXITED,
                 NativeUsbProcess.PollResult.ERROR -> {
                     // pollMirakc reaps an exited child; do not call
                     // nativeStop on a reaped/reused PID.
@@ -281,9 +291,16 @@ internal class MirakcSupervisor(
                         if (process?.pid != started.pid) return
                         process = null
                         monitor = null
-                        setStateLocked("crashed (pid ${started.pid})")
+                        setStateLocked(
+                            if (result is NativeUsbProcess.PollResult.EXITED) {
+                                "crashed (pid ${started.pid}, ${describe(result)})"
+                            } else {
+                                "crashed (pid ${started.pid}, poll error)"
+                            }
+                        )
                         launchRetryLocked()
                     }
+                    closeDiagnostics(started)
                     return
                 }
             }
@@ -341,6 +358,82 @@ internal class MirakcSupervisor(
         // The callback only rebuilds the service status text and never takes
         // this supervisor's lock, so state notifications cannot deadlock.
         onStateChanged()
+    }
+
+    /** Drain upstream stdout/stderr without allowing an unbounded log pipe. */
+    private fun startDiagnostics(started: NativeUsbProcess.StartedMirakc) {
+        val reader = Thread({
+            try {
+                android.os.ParcelFileDescriptor.AutoCloseInputStream(started.output).use { input ->
+                    val buffer = ByteArray(1024)
+                    val line = StringBuilder()
+                    var emitted = 0
+                    // Continue draining after the log budget is exhausted;
+                    // closing the read end here would turn a noisy upstream
+                    // into SIGPIPE and obscure the actual server failure.
+                    while (!Thread.currentThread().isInterrupted) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        if (emitted >= MAX_DIAGNOSTICS_BYTES) continue
+                        for (index in 0 until count) {
+                            val value = buffer[index].toInt() and 0xff
+                            if (value == '\n'.code) {
+                                val remaining = MAX_DIAGNOSTICS_BYTES - emitted
+                                if (remaining > 0) {
+                                    val diagnostic = line.toString().take(remaining)
+                                    logDiagnostic(started.pid, diagnostic)
+                                    emitted += diagnostic.length
+                                }
+                                line.setLength(0)
+                            } else if (line.length < MAX_DIAGNOSTIC_LINE) {
+                                line.append(if (value in 0x20..0x7e || value >= 0xa0) value.toChar() else '?')
+                            }
+                        }
+                    }
+                    if (line.isNotEmpty() && emitted < MAX_DIAGNOSTICS_BYTES) {
+                        logDiagnostic(started.pid, line.toString().take(MAX_DIAGNOSTICS_BYTES - emitted))
+                    }
+                }
+            } catch (_: IOException) {
+                // Closing the descriptor during normal stop is expected.
+            } finally {
+                synchronized(lock) {
+                    if (diagnosticReader === Thread.currentThread()) diagnosticReader = null
+                }
+            }
+        }, "mirakc-diagnostics-${started.pid}").also {
+            it.isDaemon = true
+        }
+        synchronized(lock) { diagnosticReader = reader }
+        reader.start()
+    }
+
+    private fun logDiagnostic(pid: Int, line: String) {
+        if (line.isNotBlank()) Log.e(TAG, "upstream[$pid] ${line.take(MAX_DIAGNOSTIC_LINE)}")
+    }
+
+    private fun closeDiagnostics(started: NativeUsbProcess.StartedMirakc) {
+        try { started.output.close() } catch (_: IOException) { }
+        synchronized(lock) {
+            if (diagnosticReader?.name == "mirakc-diagnostics-${started.pid}") {
+                diagnosticReader?.interrupt()
+                diagnosticReader = null
+            }
+        }
+    }
+
+    private fun stopStarted(started: NativeUsbProcess.StartedMirakc) {
+        try {
+            NativeUsbProcess.stop(started.pid)
+        } finally {
+            closeDiagnostics(started)
+        }
+    }
+
+    private fun describe(result: NativeUsbProcess.PollResult.EXITED): String = when {
+        result.code != null -> "exit=${result.code}"
+        result.signal != null -> "signal=${result.signal}"
+        else -> "exit=unknown"
     }
 
     private fun mkdir(directory: File) {
@@ -451,5 +544,8 @@ internal class MirakcSupervisor(
         const val STARTUP_TIMEOUT_NS = 900_000_000_000L
         const val MAX_CRASH_RESTARTS = 3
         const val CRASH_RESTART_BACKOFF_MS = 1_000L
+        const val MAX_DIAGNOSTICS_BYTES = 64 * 1024
+        const val MAX_DIAGNOSTIC_LINE = 512
+        const val TAG = "MirakcSupervisor"
     }
 }
