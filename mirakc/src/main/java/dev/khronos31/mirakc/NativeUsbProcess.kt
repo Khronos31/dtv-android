@@ -121,6 +121,14 @@ internal object NativeUsbProcess {
         else -> PollResult.ERROR
     }
 
+    fun pollSiano(pid: Int): PollResult = when (val result = nativePollSiano(pid)) {
+        0 -> PollResult.ALIVE
+        1 -> PollResult.EXITED(code = null, signal = null)
+        in 2..257 -> PollResult.EXITED(code = result - 2, signal = null)
+        in -129..-2 -> PollResult.EXITED(code = null, signal = -result - 2)
+        else -> PollResult.ERROR
+    }
+
     data class StartedProcess(
         val pid: Int,
         val output: ParcelFileDescriptor,
@@ -141,4 +149,5 @@ internal object NativeUsbProcess {
     private external fun nativeStop(pid: Int)
     private external fun nativeStartMirakc(executable: String, config: String): IntArray?
     private external fun nativePollMirakc(pid: Int): Int
+    private external fun nativePollSiano(pid: Int): Int
 }

@@ -236,11 +236,11 @@ internal class SianoTunerBroker(
                 }
             } finally {
                 watcher.interrupt()
-                stop()
+                stop("ts-eof")
             }
         }
 
-        fun stop() {
+        fun stop(reason: String = "stop") {
             val process: NativeUsbProcess.StartedProcess?
             val handle: SianoUsbHandle?
             synchronized(lifecycleLock) {
@@ -251,6 +251,7 @@ internal class SianoTunerBroker(
                 usb = null
             }
             process?.let {
+                logPoll(it, reason)
                 try {
                     NativeUsbProcess.stop(it.pid)
                 } finally {
@@ -267,6 +268,21 @@ internal class SianoTunerBroker(
             }
         }
 
+        private fun logPoll(process: NativeUsbProcess.StartedProcess, reason: String) {
+            when (val result = NativeUsbProcess.pollSiano(process.pid)) {
+                NativeUsbProcess.PollResult.ALIVE ->
+                    Log.i(TAG, "siano-ts poll stage=$reason index=$index channel=$channel state=ALIVE")
+                is NativeUsbProcess.PollResult.EXITED ->
+                    Log.i(
+                        TAG,
+                        "siano-ts poll stage=$reason index=$index channel=$channel " +
+                            "state=EXITED code=${result.code ?: "unknown"} signal=${result.signal ?: "none"}"
+                    )
+                NativeUsbProcess.PollResult.ERROR ->
+                    Log.e(TAG, "siano-ts poll stage=$reason index=$index channel=$channel state=ERROR")
+            }
+        }
+
         private fun closeHandle(handle: SianoUsbHandle) {
             try { handle.close() } catch (_: Exception) { }
         }
@@ -279,7 +295,7 @@ internal class SianoTunerBroker(
                 }
             } catch (_: IOException) {
             } finally {
-                stop()
+                stop("client-eof")
             }
         }
     }

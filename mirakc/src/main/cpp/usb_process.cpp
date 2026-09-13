@@ -41,6 +41,27 @@ void reap_process_group(pid_t pgid) {
     }
 }
 
+int poll_process(pid_t pid) {
+    if (pid <= 0) return -1;
+    int status = 0;
+    pid_t result;
+    do {
+        result = waitpid(pid, &status, WNOHANG);
+    } while (result < 0 && errno == EINTR);
+    if (result == pid) {
+        // Reap descendants while the leader PID is still owned by us.
+        kill(-pid, SIGTERM);
+        kill(-pid, SIGKILL);
+        reap_process_group(pid);
+        if (WIFEXITED(status)) return 2 + WEXITSTATUS(status);
+        if (WIFSIGNALED(status)) return -2 - WTERMSIG(status);
+        return 1;
+    }
+    if (result < 0 && (errno == ECHILD || errno == ESRCH)) return 1;
+    if (result == 0) return 0;
+    return -1;
+}
+
 }  // namespace
 
 extern "C" JNIEXPORT jintArray JNICALL
@@ -128,6 +149,7 @@ Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStart(
             const_cast<char*>("3"),
             nullptr,
         };
+        dprintf(STDERR_FILENO, "siano: exec starting\n");
         execv(executablePath.c_str(), argv);
         const int error = errno;
         dprintf(STDERR_FILENO, "siano: exec %s: %s\n", executablePath.c_str(), strerror(error));
@@ -306,23 +328,10 @@ Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStartMirakc(
 
 extern "C" JNIEXPORT jint JNICALL
 Java_dev_khronos31_mirakc_NativeUsbProcess_nativePollMirakc(JNIEnv*, jclass, jint pid) {
-    if (pid <= 0) return -1;
-    int status = 0;
-    pid_t result;
-    do {
-        result = waitpid(static_cast<pid_t>(pid), &status, WNOHANG);
-    } while (result < 0 && errno == EINTR);
-    if (result == static_cast<pid_t>(pid)) {
-        // Clean descendants immediately after collecting this leader's exit;
-        // nativeStop must not later signal a reused numeric PID.
-        kill(-static_cast<pid_t>(pid), SIGTERM);
-        kill(-static_cast<pid_t>(pid), SIGKILL);
-        reap_process_group(static_cast<pid_t>(pid));
-        if (WIFEXITED(status)) return 2 + WEXITSTATUS(status);
-        if (WIFSIGNALED(status)) return -2 - WTERMSIG(status);
-        return 1;
-    }
-    if (result < 0 && (errno == ECHILD || errno == ESRCH)) return 1;
-    if (result == 0) return 0;
-    return -1;
+    return poll_process(static_cast<pid_t>(pid));
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_dev_khronos31_mirakc_NativeUsbProcess_nativePollSiano(JNIEnv*, jclass, jint pid) {
+    return poll_process(static_cast<pid_t>(pid));
 }
