@@ -1,82 +1,64 @@
+diff --git CMakeLists.txt CMakeLists.txt
+index c4f3ad9..f8c0ae7 100644
 --- CMakeLists.txt
 +++ CMakeLists.txt
-@@ -312,1 +312,1 @@
+@@ -312 +312 @@ add_dependencies(vendor vendor-docopt)
 -find_package(docopt CONFIG PATHS ${MIRAKC_ARIB_VENDOR_DIR} NO_DEFAULT_PATH)
 +find_package(docopt CONFIG PATHS ${MIRAKC_ARIB_VENDOR_DIR} NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-@@ -350,1 +350,1 @@
+@@ -350 +350 @@ add_dependencies(vendor vendor-fmt)
 -find_package(fmt CONFIG PATHS ${MIRAKC_ARIB_VENDOR_DIR} NO_DEFAULT_PATH)
 +find_package(fmt CONFIG PATHS ${MIRAKC_ARIB_VENDOR_DIR} NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-@@ -395,1 +395,1 @@
+@@ -395 +395 @@ add_dependencies(vendor vendor-spdlog)
 -find_package(spdlog CONFIG PATHS ${MIRAKC_ARIB_VENDOR_DIR} NO_DEFAULT_PATH)
 +find_package(spdlog CONFIG PATHS ${MIRAKC_ARIB_VENDOR_DIR} NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-@@ -435,1 +435,1 @@
+@@ -435 +435 @@ add_dependencies(vendor vendor-rapidjson)
 -find_package(RapidJSON CONFIG PATHS ${MIRAKC_ARIB_VENDOR_DIR} NO_DEFAULT_PATH)
 +find_package(RapidJSON CONFIG PATHS ${MIRAKC_ARIB_VENDOR_DIR} NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-@@ -472,2 +472,2 @@
- find_file(cppcodec cppcodec/base64_rfc4648.hpp
+@@ -473 +473 @@ find_file(cppcodec cppcodec/base64_rfc4648.hpp
 -  PATHS ${MIRAKC_ARIB_VENDOR_DIR}/include NO_DEFAULT_PATH)
 +  PATHS ${MIRAKC_ARIB_VENDOR_DIR}/include NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-@@ -512,2 +512,2 @@
- find_library(aribb24_LIB aribb24 PATHS ${MIRAKC_ARIB_VENDOR_DIR}/lib
+@@ -513 +513 @@ find_library(aribb24_LIB aribb24 PATHS ${MIRAKC_ARIB_VENDOR_DIR}/lib
 -  NO_DEFAULT_PATH)
 +  NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-@@ -537,16 +537,20 @@ if(NOT MIRAKC_ARIB_VENDOR_TEST)
-   list(APPEND MIRAKC_ARIB_TSDUCK_DEFS NOTEST=1)
- endif()
--
-+
+@@ -539,0 +540,2 @@ endif()
 +set(MIRAKC_ARIB_TSDUCK_TARGET_FLAGS "" CACHE STRING "Additional target flags for TSDuck")
-
- if(CMAKE_CROSSCOMPILING)
-   # TSDuck supports the cross compilation.  But it's not suitable for
-   # Debian/Ubuntu.  Define variables for the cross compilation directly instead
-   # of the CROSS, CROSS_PREFIX and CROSS_TARGET variables.
-   list(APPEND MIRAKC_ARIB_TSDUCK_DEFS
-     MAIN_ARCH=${CMAKE_SYSTEM_PROCESSOR}
++
+@@ -546 +548 @@ if(CMAKE_CROSSCOMPILING)
 -    TARGET_FLAGS=
 +    TARGET_FLAGS=${MIRAKC_ARIB_TSDUCK_TARGET_FLAGS}
-     CC=${CMAKE_C_COMPILER}
-     GCC=${CMAKE_C_COMPILER}
-     CXX=${CMAKE_CXX_COMPILER}
-     LD=${CMAKE_C_COMPILER_TARGET}-ld
+@@ -550,0 +553,2 @@ if(CMAKE_CROSSCOMPILING)
 +    ANDROID=1
 +    STATIC_ONLY=1
-   )
- endif()
-@@ -639,3 +643,3 @@
- find_library(tsduck-arib_LIB tsduck
-   PATHS ${MIRAKC_ARIB_VENDOR_DIR}/lib ${MIRAKC_ARIB_VENDOR_DIR}/lib64
+@@ -640 +644 @@ find_library(tsduck-arib_LIB tsduck
 -  NO_DEFAULT_PATH)
 +  NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-@@ -683,3 +687,3 @@
- find_library(libisdb_LIB isdb
-   PATHS ${MIRAKC_ARIB_VENDOR_DIR}/lib ${MIRAKC_ARIB_VENDOR_DIR}/lib64
+@@ -684 +688 @@ find_library(libisdb_LIB isdb
 -  NO_DEFAULT_PATH)
 +  NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+diff --git src/libtsduck/Makefile src/libtsduck/Makefile
+index a5f41074..68c08a76 100644
+--- vendor/tsduck-arib/src/libtsduck/Makefile
++++ vendor/tsduck-arib/src/libtsduck/Makefile
+@@ -111 +111 @@ OBJS += $(DTAPI_OBJECT)
+-libs: $(OBJDIR)/$(STATIC_LIBTSDUCK) $(OBJDIR)/$(SHARED_LIBTSDUCK)
++libs: $(OBJDIR)/$(STATIC_LIBTSDUCK) $(if $(STATIC_ONLY),,$(OBJDIR)/$(SHARED_LIBTSDUCK))
+diff --git src/libtsduck/base/tsPlatform.h src/libtsduck/base/tsPlatform.h
+index 93850124..6451a067 100644
 --- vendor/tsduck-arib/src/libtsduck/base/tsPlatform.h
 +++ vendor/tsduck-arib/src/libtsduck/base/tsPlatform.h
-@@ -2139,6 +2139,10 @@ namespace ts {
- #elif defined(TS_WINDOWS)
-     // Second parameter of ::DeviceIoControl().
-     typedef ::DWORD ioctl_request_t;
+@@ -2141,0 +2142,4 @@ namespace ts {
 +#elif defined(__ANDROID__)
 +    // Bionic declares overloadable int and unsigned ioctl forms, so taking
 +    // &::ioctl is ambiguous; Android's request parameter is unsigned int.
 +    typedef unsigned int ioctl_request_t;
- #else
-     // Extract the type of the second parameter of ::ioctl().
-     // It is "unsigned long" on most Linux systems but "int" on Alpine Linux.
+diff --git src/libtsduck/base/tsSysUtilsTemplate.h src/libtsduck/base/tsSysUtilsTemplate.h
+index e31f785f..11abb18d 100644
 --- vendor/tsduck-arib/src/libtsduck/base/tsSysUtilsTemplate.h
 +++ vendor/tsduck-arib/src/libtsduck/base/tsSysUtilsTemplate.h
-@@ -28,5 +28,80 @@
- #pragma once
--
-+
+@@ -32 +32 @@
 -#if defined(TS_UNIX)
 +#if defined(TS_UNIX) && !defined(__ANDROID__)
- #include <glob.h>
- #endif
-
+@@ -35,0 +36,75 @@
 +#if defined(__ANDROID__)
 +#include <dirent.h>
 +#include <fnmatch.h>
@@ -84,13 +66,13 @@
 +#include <algorithm>
 +#include <string>
 +#include <vector>
-
++
 +namespace ts_android_glob {
 +    inline bool has_meta(const std::string& component)
 +    {
 +        return component.find_first_of("*?[") != std::string::npos;
 +    }
-
++
 +    inline std::string join(const std::string& base, const std::string& name)
 +    {
 +        return base.empty() ? name : (base == "/" ? "/" + name : base + "/" + name);
@@ -151,10 +133,8 @@
 +    }
 +}
 +#endif
-@@ -79,16 +79,24 @@
- #elif defined(TS_UNIX)
--
 +
+@@ -80,0 +156,7 @@ bool ts::ExpandWildcardAndAppend(CONTAINER& container, const UString& pattern)
 +#if defined(__ANDROID__)
 +    const std::vector<std::string> files = ts_android_glob::expand(pattern.toUTF8());
 +    for (const std::string& file : files) {
@@ -162,45 +142,19 @@
 +    }
 +    return true;
 +#else
-     ::glob_t gl;
-     ::memset(&gl, 0, sizeof (gl));
-     int status = ::glob(pattern.toUTF8().c_str(), 0, nullptr, &gl);
-     if (status == 0) {
-         for (size_t n = 0; n < gl.gl_pathc; n++) {
-             const UString file(UString::FromUTF8(gl.gl_pathv[n]));
-             // Filter out . and ..
-             if (file != u"." && file != u"..") {
-                 container.push_back(file);
-             }
-         }
-     }
-     ::globfree (&gl);
-     return status == 0 || status == GLOB_NOMATCH;
+@@ -94,0 +177 @@ bool ts::ExpandWildcardAndAppend(CONTAINER& container, const UString& pattern)
 +#endif
---- vendor/tsduck-arib/src/libtsduck/Makefile
-+++ vendor/tsduck-arib/src/libtsduck/Makefile
-@@ -110,2 +110,2 @@
- .PHONY: libs
--libs: $(OBJDIR)/$(STATIC_LIBTSDUCK) $(OBJDIR)/$(SHARED_LIBTSDUCK)
-+libs: $(OBJDIR)/$(STATIC_LIBTSDUCK) $(if $(STATIC_ONLY),,$(OBJDIR)/$(SHARED_LIBTSDUCK))
+diff --git src/libtsduck/base/tsThread.cpp src/libtsduck/base/tsThread.cpp
+index 07eee847..ad4f7855 100644
 --- vendor/tsduck-arib/src/libtsduck/base/tsThread.cpp
 +++ vendor/tsduck-arib/src/libtsduck/base/tsThread.cpp
-@@ -132,5 +132,7 @@
- #elif defined(TS_MAC) || defined(_GLIBCXX_USE_SCHED_YIELD)
-     ::sched_yield();
+@@ -134 +134 @@ void ts::Thread::Yield()
 -#else
 +#elif !defined(__ANDROID__)
-     ::pthread_yield();
+@@ -135,0 +136,2 @@ void ts::Thread::Yield()
 +#else
 +    ::sched_yield();
- #endif
-@@ -271,6 +273,8 @@
--
-+
-     // Use explicit scheduling attributes, do not inherit them from the current thread.
+@@ -272,0 +275 @@ bool ts::Thread::start()
 +#if !defined(__ANDROID__) || __ANDROID_API__ >= 28
-     if (::pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED) != 0) {
-         ::pthread_attr_destroy(&attr);
-         return false;
-     }
+@@ -276,0 +280 @@ bool ts::Thread::start()
 +#endif
