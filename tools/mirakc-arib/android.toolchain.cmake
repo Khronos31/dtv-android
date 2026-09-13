@@ -22,6 +22,11 @@ if(DEFINED ENV{CMAKE_PREFIX_PATH})
   set(CMAKE_PREFIX_PATH "$ENV{CMAKE_PREFIX_PATH}" CACHE STRING "Vendor package prefix" FORCE)
   set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE BOTH CACHE STRING "Package root search mode" FORCE)
 endif()
+# NDK r27's flags.cmake uses IN_LIST.  CMake 3.31 does not infer CMP0057
+# from the toolchain's old minimum version, so enable it before the include.
+if(POLICY CMP0057)
+  cmake_policy(SET CMP0057 NEW)
+endif()
 include("$ENV{MIRAKC_ARIB_NDK}/build/cmake/android.toolchain.cmake")
 
 # ExternalProject children use this toolchain too.  Their target packages are
