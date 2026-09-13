@@ -3,6 +3,7 @@ package dev.khronos31.mirakc
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicBoolean
 
 internal object NativeUsbProcess {
     init {
@@ -26,47 +27,74 @@ internal object NativeUsbProcess {
     fun stop(pid: Int) = nativeStop(pid)
 
     /** Drain Siano stderr so a noisy child cannot block on its pipe. */
-    fun startDiagnostics(process: StartedProcess, context: String): Thread = Thread({
-        try {
-            ParcelFileDescriptor.AutoCloseInputStream(process.diagnostics).use { input ->
-                val buffer = ByteArray(1024)
-                val line = StringBuilder(MAX_DIAGNOSTIC_LINE)
-                var loggedBytes = 0
-                fun emitLine() {
-                    if (line.isEmpty() || loggedBytes >= MAX_DIAGNOSTICS_BYTES) {
+    fun startDiagnostics(process: StartedProcess, context: String): Thread {
+        val reader = Thread({
+            try {
+                ParcelFileDescriptor.AutoCloseInputStream(process.diagnostics).use { input ->
+                    val buffer = ByteArray(1024)
+                    val line = StringBuilder(MAX_DIAGNOSTIC_LINE)
+                    var loggedBytes = 0
+                    fun emitLine() {
+                        if (line.isEmpty() || loggedBytes >= MAX_DIAGNOSTICS_BYTES) {
+                            line.setLength(0)
+                            return
+                        }
+                        val text = line.toString()
+                        val remaining = MAX_DIAGNOSTICS_BYTES - loggedBytes
+                        val clipped = if (text.length > remaining) text.substring(0, remaining) else text
+                        if (clipped.isNotEmpty()) {
+                            Log.e(TAG, "siano[$context, pid=${process.pid}] $clipped")
+                            loggedBytes += clipped.length
+                        }
                         line.setLength(0)
-                        return
                     }
-                    val text = line.toString()
-                    val remaining = MAX_DIAGNOSTICS_BYTES - loggedBytes
-                    val clipped = if (text.length > remaining) text.substring(0, remaining) else text
-                    if (clipped.isNotEmpty()) {
-                        Log.e(TAG, "siano[$context, pid=${process.pid}] $clipped")
-                        loggedBytes += clipped.length
-                    }
-                    line.setLength(0)
-                }
-                while (true) {
-                    val count = input.read(buffer)
-                    if (count < 0) break
-                    for (offset in 0 until count) {
-                        when (val value = buffer[offset].toInt() and 0xff) {
-                            '\n'.code -> emitLine()
-                            '\r'.code -> Unit
-                            else -> if (line.length < MAX_DIAGNOSTIC_LINE) {
-                                line.append(if (value in 0x20..0x7e) value.toChar() else '?')
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        for (offset in 0 until count) {
+                            when (val value = buffer[offset].toInt() and 0xff) {
+                                '\n'.code -> emitLine()
+                                '\r'.code -> Unit
+                                else -> if (line.length < MAX_DIAGNOSTIC_LINE) {
+                                    line.append(if (value in 0x20..0x7e) value.toChar() else '?')
+                                }
                             }
                         }
                     }
+                    emitLine()
                 }
-                emitLine()
+            } catch (_: IOException) {
+                // Closing the descriptor is the normal stop path.
             }
-        } catch (_: IOException) {
-            // Closing the descriptor is the normal stop path.
+        }, "siano-diagnostics-${process.pid}").apply { isDaemon = true }
+        synchronized(process.diagnosticsLock) {
+            check(!process.diagnosticsFinished.get() && process.diagnosticsThread == null) {
+                "Siano diagnostics reader already started or finished"
+            }
+            process.diagnosticsThread = reader
+            reader.start()
         }
-    }, "siano-diagnostics-${process.pid}").apply {
-        isDaemon = true
-        start()
+        return reader
+    }
+
+    /** Stop the reader only after a bounded chance to drain post-exit stderr. */
+    fun finishDiagnostics(process: StartedProcess) {
+        if (!process.diagnosticsFinished.compareAndSet(false, true)) return
+        val reader = synchronized(process.diagnosticsLock) { process.diagnosticsThread }
+        if (reader != null && reader !== Thread.currentThread()) {
+            try {
+                reader.join(DIAGNOSTICS_DRAIN_TIMEOUT_MS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
+        try {
+            process.diagnostics.close()
+        } catch (_: IOException) {
+        }
+        synchronized(process.diagnosticsLock) {
+            if (process.diagnosticsThread === reader) process.diagnosticsThread = null
+        }
     }
 
     fun startMirakc(executable: String, config: String): StartedMirakc {
@@ -97,11 +125,16 @@ internal object NativeUsbProcess {
         val pid: Int,
         val output: ParcelFileDescriptor,
         val diagnostics: ParcelFileDescriptor
-    )
+    ) {
+        internal val diagnosticsLock = Any()
+        internal var diagnosticsThread: Thread? = null
+        internal val diagnosticsFinished = AtomicBoolean(false)
+    }
     data class StartedMirakc(val pid: Int, val output: ParcelFileDescriptor)
 
     private const val MAX_DIAGNOSTICS_BYTES = 64 * 1024
     private const val MAX_DIAGNOSTIC_LINE = 512
+    private const val DIAGNOSTICS_DRAIN_TIMEOUT_MS = 500L
     private const val TAG = "SianoTunerBroker"
 
     private external fun nativeStart(executable: String, firmware: String, channel: Int, usbFd: Int, readerFd: Int): IntArray?

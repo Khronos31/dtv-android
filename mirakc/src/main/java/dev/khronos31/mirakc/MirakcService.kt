@@ -484,8 +484,20 @@ class MirakcService : Service() {
                 usbFd,
                 readerFd
             )
-            process = started
-            NativeUsbProcess.startDiagnostics(started, "legacy-stream channel=${channel.channel}")
+            try {
+                // Publish only after the sole diagnostics consumer is live;
+                // stop() may otherwise close its pipe before this call.
+                NativeUsbProcess.startDiagnostics(started, "legacy-stream channel=${channel.channel}")
+                process = started
+            } catch (error: Exception) {
+                try {
+                    NativeUsbProcess.stop(started.pid)
+                } finally {
+                    try { started.output.close() } catch (_: Exception) { }
+                    NativeUsbProcess.finishDiagnostics(started)
+                }
+                throw error
+            }
             reader = ParcelFileDescriptor.AutoCloseInputStream(started.output)
             Thread({ readLoop(started) }, "mirakc-ts-${channel.channel}").apply {
                 isDaemon = true
@@ -538,7 +550,7 @@ class MirakcService : Service() {
                 try {
                     NativeUsbProcess.stop(started.pid)
                 } finally {
-                    try { started.diagnostics.close() } catch (_: Exception) { }
+                    NativeUsbProcess.finishDiagnostics(started)
                 }
                 streamEnded(this, failure)
             }
@@ -549,7 +561,7 @@ class MirakcService : Service() {
                 try {
                     NativeUsbProcess.stop(it.pid)
                 } finally {
-                    try { it.diagnostics.close() } catch (_: Exception) { }
+                    NativeUsbProcess.finishDiagnostics(it)
                 }
             }
             try { reader?.close() } catch (_: Exception) { }

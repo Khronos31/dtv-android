@@ -89,8 +89,21 @@ Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStart(
         prctl(PR_SET_PDEATHSIG, SIGTERM);
         if (getppid() == 1) _exit(127);
         setpgid(0, 0);
-        if (dup2(usbFd, 3) < 0 || dup2(sianoStdout, STDOUT_FILENO) < 0 ||
-            dup2(diagnosticPipe[1], STDERR_FILENO) < 0) _exit(127);
+        if (dup2(usbFd, 3) < 0) {
+            const int error = errno;
+            dprintf(diagnosticPipe[1], "siano: dup2(usb): %s\n", strerror(error));
+            _exit(127);
+        }
+        if (dup2(sianoStdout, STDOUT_FILENO) < 0) {
+            const int error = errno;
+            dprintf(diagnosticPipe[1], "siano: dup2(stdout): %s\n", strerror(error));
+            _exit(127);
+        }
+        if (dup2(diagnosticPipe[1], STDERR_FILENO) < 0) {
+            const int error = errno;
+            dprintf(diagnosticPipe[1], "siano: dup2(stderr): %s\n", strerror(error));
+            _exit(127);
+        }
         close(outPipe[0]);
         close(diagnosticPipe[0]);
         if (sianoStdout != STDOUT_FILENO) close(sianoStdout);
@@ -116,6 +129,8 @@ Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStart(
             nullptr,
         };
         execv(executablePath.c_str(), argv);
+        const int error = errno;
+        dprintf(STDERR_FILENO, "siano: exec %s: %s\n", executablePath.c_str(), strerror(error));
         _exit(127);
     }
     setpgid(siano, siano);
