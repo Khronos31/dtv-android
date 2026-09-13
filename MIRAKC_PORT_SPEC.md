@@ -1,0 +1,181 @@
+# mirakc Android port specification
+
+Status: Draft; implementation blocked on the Phase 0 feasibility gates below
+Date: 2026-09-13
+
+## Objective
+
+Replace the Kotlin Mirakurun-compatible server in the `mirakc` APK with an
+Android port of upstream mirakc, while keeping Android-specific lifecycle and
+USB-permission handling in a thin Kotlin/JNI supervisor.  Package the latest
+stable releases of both tuner backends so one APK can operate either Siano RIO
+devices or a PLEX PX-Q3U4 without a kernel driver.
+
+The pinned inputs for the first port are:
+
+- mirakc `3.4.85` (`b7a20d75d95595e0bca83dfb1b5473cfa5be6a93`);
+- mirakc-arib `0.24.37` (`6fef5309b9d93868cbfad37c8a0c4537742f6501`);
+- siano-userland `v0.1.5` (`d4f8930ab56d13c479037f2e242461062d96c127`);
+- px4-userland `v0.1.3` (`639e65feee7c9f503d44023edd9ab9bba12d5d74`).
+
+`latest` means the newest non-prerelease release/tag observed on 2026-09-13.
+Builds remain reproducible by pinning these exact refs rather than following a
+moving branch.
+
+## Acceptance criteria
+
+1. `./gradlew --no-daemon :mirakc:assembleDebug` exits 0 from a clean checkout
+   and builds every bundled native program from the four pinned source trees.
+2. An APK inventory check finds Android API 24 PIE executables for every enabled
+   ABI: `mirakc`, `mirakc-arib`, `siano-ts`, `px4d`, `px4-ts`, and `px4ctl`.
+   `readelf` must show the Android loader, 16 KiB-compatible `PT_LOAD`
+   alignment, no `RPATH`/`RUNPATH`, and only an explicit allow-list of Bionic
+   shared libraries.
+3. The APK contains the exact upstream licenses/notices and a machine-readable
+   source manifest containing component name, version, commit and source URL.
+   Each release also publishes a corresponding-source bundle containing the
+   pinned source and submodules, every Android patch, generated build input,
+   toolchain manifest, build script, and any object/relink material required by
+   a statically linked LGPL dependency.  An independent clean-room job rebuilds
+   every shipped native program using only that bundle.  CI fails if the
+   manifest, source ref, binary version, license inventory, or rebuild differs;
+   a documented license review remains a release gate.
+4. `./gradlew --no-daemon test :mirakc:lintDebug` exits 0.  Existing tests and
+   their expected values are not weakened or skipped.
+5. On the Google TV Streamer, the Android foreground service starts the bundled
+   upstream mirakc, `GET /api/version` reports `3.4.85`, and stopping/restarting
+   the service leaves no mirakc, mirakc-arib, siano or px4 child processes.
+   Across ten tune/job/stop/reconnect cycles, `/proc/<pid>/fd` confirms that
+   mirakc and unrelated children inherit no USB or smart-card descriptors and
+   only the active owner holds each descriptor.
+6. With a Siano tuner and external CCID B-CAS reader, service scan produces at
+   least one service and EPGStation can play a service stream.  A captured
+   12-seg stream is descrambled and accepted by `ffprobe`.
+7. With a PX-Q3U4, Android grants both bridge permissions, one `px4d` owns both
+   descriptors, mirakc exposes eight tuners (four GR and four BS/CS), and at
+   least one GR and one BS service stream pass MPEG-TS integrity checks.  The
+   built-in card path descrambles 12-seg content.  This criterion is
+   `unverified` until the Q3U4 is connected to the Android device.
+8. EPGStation Server using `http://127.0.0.1:40772/` can scan channels, receive
+   schedule updates and start/stop live streams without API-shape workarounds
+   in EPGStation.
+9. CI reports, for each ABI, native binary sizes, final APK download size,
+   installed size, cold-start time, idle RSS and RSS during one EPG collection
+   job.  Full mirakc-arib is kept unless those observations show a concrete
+   device limit or regression; any pruning requires a separate recorded
+   decision and behavior-equivalence tests.
+
+## Non-goals
+
+- Port mirakc-timeshift-fs/FUSE.
+- Add a television-side program-guide UI.
+- Change the EPGStation Server APK or its stored database.
+- Add unsupported tuner hardware beyond the device matrices of the two pinned
+  userland projects.
+- Publish a release, create a tag, push commits, install an APK, or restart a
+  Home Assistant/add-on service in this implementation phase.
+- Reimplement mirakc HTTP endpoints in Kotlin or Java.
+
+## Constraints
+
+- Preserve the current `dev.khronos31.mirakc` application ID and the update
+  path from version `0.2.0`.
+- Kotlin owns Android foreground-service lifecycle, status presentation,
+  UsbManager permission flow and restart policy only.  Upstream mirakc owns the
+  HTTP API, tuner arbitration, jobs, EPG store and streaming pipeline.
+- Native executables run from `nativeLibraryDir`; Android-owned USB descriptors
+  are duplicated to documented fixed descriptors by a descriptor-sanitizing
+  native launcher.  The launcher closes every descriptor except stdio and an
+  explicit per-process allow-list before `exec`.  Dedicated device-owner
+  processes receive the USB/smart-card descriptors and expose local IPC to
+  mirakc command adapters; mirakc itself receives no device descriptor.  Owner
+  death or USB detach invalidates the IPC generation and triggers bounded
+  teardown/reacquisition rather than reusing a stale descriptor.
+- `px4d` is the only owner of a Q3U4 pair.  mirakc tuner commands use `px4-ts`
+  over px4-userland's versioned local IPC.
+- The full upstream mirakc-arib command set is the baseline.  Size or feature
+  reductions must not substitute the current Kotlin parser or invent a second
+  wire/API compatibility layer.
+- Do not modify existing tests to make a failing implementation pass.
+- Do not touch `secrets.yaml`, `.ssh/`, `.storage/`, release signing material or
+  production EPGStation data.
+- Do not release, push, version-bump or install on a device without an explicit
+  phase-boundary decision.
+
+## Prior art
+
+| Candidate | Classification | Evidence |
+| --- | --- | --- |
+| Current Kotlin server in this repository | adapt/reference | Reuse its Android lifecycle, UsbManager and proven CCID/libarib25 code.  Reject it as the server because it implements only a mirakc-compatible API subset. |
+| `mirakc/mirakc` 3.4.85 | adapt/port | Canonical server.  Its unmodified Rust workspace cross-builds for `armv7-linux-androideabi` API 24 with NDK r27; the stripped binary is 17,753,224 bytes and gzip-compresses to 6,763,891 bytes.  On the 32-bit Google TV Streamer it reports the correct version, serves `/api/version` and `/api/status`, and uses 8,616 KiB idle PSS with an empty temporary config.  Android packaging and descriptor inheritance are not upstream features. |
+| `mirakc/mirakc-arib` 0.24.37 | adapt/port | Canonical companion commands used by mirakc jobs and filters.  The checked-out source plus pinned submodules is about 111 MB; upstream has cross-compilation support but no Android toolchain. |
+| Linux/musl mirakc container binaries | reject | Wrong ABI/runtime for Bionic and cannot receive Android UsbManager descriptors. |
+| Public Android mirakc ports | build | GitHub repository and code searches on 2026-09-13 found no maintained Android port to adopt. |
+| `hassio-addons/mirakc` | adapt/reference | Reuse configuration and process topology concepts; its container/device access model cannot be adopted on Android. |
+
+## Increment plan
+
+1. **Android feasibility harness.** Cross-build pinned mirakc for armv7a and
+   aarch64, run `--version` on Android, then start it with a no-tuner temporary
+   config.  Verify loader, HTTP health, signals, filesystem paths and measured
+   RSS.  The armv7a build, version/HTTP checks, SIGTERM shutdown and idle PSS
+   measurement are green on the Google TV Streamer; aarch64 runtime remains
+   unverified because that device exposes no 64-bit ABI.  Risk: Linux
+   assumptions compile but fail at runtime.
+2. **Mandatory mirakc-arib feasibility gate.** Before replacing any Kotlin
+   server path, cross-build the exact, unpruned `0.24.37` source and submodules
+   for armv7a, package and execute it from `nativeLibraryDir`, and pass upstream
+   or behavior-equivalent fixtures for `scan-services`, `sync-clocks`,
+   `collect-eits`, `filter-service`, and `filter-program`.  Measure one live
+   Siano EPG job on the Google TV Streamer, including peak RSS, elapsed time and
+   output validity.  Repeat compile/fixture checks for aarch64 in CI.  Any red
+   result stops migration work; pruning is a later decision, not a workaround.
+   Risk: vendor projects contain Linux-only assumptions or exceed armv7 device
+   limits.
+3. **Reproducible native supply chain.** Add source-ref inputs, build scripts,
+   complete corresponding-source/relink bundle generation, source manifest,
+   license inventory and ELF checks for all four pinned projects and their
+   bundled dependencies.  Verify both ABIs and the clean-room rebuild in CI.
+   Risk: stale local artifacts make Gradle appear green or published sources do
+   not reconstruct the APK payload.
+4. **Android supervisor and descriptor contract.** Replace the Kotlin HTTP/EPG
+   implementation with a supervisor that generates config, launches native
+   owner daemons through the descriptor-sanitizing launcher, passes only
+   per-process allow-listed descriptors, and reaps the whole process group.
+   mirakc commands communicate with device owners over generation-scoped local
+   IPC, never inherited device FDs.  Verify process FD tables, detach/crash
+   handling, ten immediate restarts, port release and orphan checks.  Risk:
+   descriptor leakage or a restart loop monopolizes USB devices/port 40772.
+5. **Siano path.** Wire a dedicated Siano owner and mirakc tuner adapter around
+   `siano-ts`, plus an executable decode filter using a dedicated external CCID
+   owner.  Verify real GR scan, EPG and 12-seg playback.  Risk: owner failure or
+   backpressure corrupts the adapter stream.
+6. **PX4 path.** Start one `px4d` from the Q3U4 bridge pair, expose eight mirakc
+   tuner entries through `px4-ts`, and add a decode-filter card adapter over
+   portable IPC.  Verify offline config/process tests, then the hardware matrix.
+   Risk: bridge pairing, LNB state, or card ownership survives a failed child.
+7. **End-to-end compatibility.** Run EPGStation and stream workflows, detach and
+   reconnect USB, stop/restart the APK, and produce the final evidence receipt.
+   Risk: individually green components fail under concurrent job/stream load.
+
+The two least-known mandatory components are increments 1 and 2.  No supply
+chain or migration increment proceeds until both feasibility gates are green.
+
+## Rollback
+
+Before implementation, record the starting commit
+`5a4d647c9e4b46f3f637165fa107f87d34ea22ed`.  Keep all migration changes as
+reviewable commits after the specification.  Source rollback reverts those
+commits without rewriting history.
+
+The released `0.2.0` APK is not an on-device rollback mechanism: Android user
+builds reject a lower `versionCode`, and uninstalling would clear application
+data.  Before any migration release, prove on a staging user-build device that
+a same-key **forward-versioned rescue APK** containing the legacy `0.2.0`
+server can install over the candidate and restore service without clearing
+representative data.  The migration must preserve legacy preferences and keep
+new native state in a separate, disposable namespace; it must not perform an
+irreversible schema conversion.  Record the exact install command, package
+manager result, restored configuration and service behavior.  A failed rescue
+test blocks release.  Temporary native probes under `/data/local/tmp` are
+removed after measurement.

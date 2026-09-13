@@ -41,7 +41,7 @@ private data class StreamClient(
 class MirakcService : Service() {
     private val usbManager by lazy { getSystemService(USB_SERVICE) as UsbManager }
     private val streamLock = Any()
-    private var httpServer: MirakcHttpServer? = null
+    private var mirakcSupervisor: MirakcSupervisor? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var receiverRegistered = false
     private var usbConnection: UsbDeviceConnection? = null
@@ -56,7 +56,7 @@ class MirakcService : Service() {
     @Volatile private var scanning = false
     @Volatile private var scanLabel = "idle"
 
-    private val usbReceiver = object : BroadcastReceiver() {
+    private val usbPermissionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action != USB_PERMISSION_ACTION) return
             val device = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
@@ -65,10 +65,23 @@ class MirakcService : Service() {
                 lastError = "none"
                 statusText = "USB permission granted: ${device.deviceName}"
                 requestUsbPermissionIfNeeded()
+                mirakcSupervisor?.reconfigure()
             } else {
                 lastError = "USB permission was denied"
                 publishStatus()
             }
+        }
+    }
+
+    private val usbLifecycleReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action != UsbManager.ACTION_USB_DEVICE_ATTACHED &&
+                intent.action != UsbManager.ACTION_USB_DEVICE_DETACHED) return
+            if (intent.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) {
+                requestUsbPermissionIfNeeded()
+            }
+            mirakcSupervisor?.reconfigure()
+            publishStatus()
         }
     }
 
@@ -78,14 +91,27 @@ class MirakcService : Service() {
         acquireWakeLock()
         createNotificationChannel()
         startResidentForeground()
-        httpServer = MirakcHttpServer(this).also { it.start() }
+        mirakcSupervisor = MirakcSupervisor(
+            context = this,
+            tunerDevices = {
+                supportedDevices().filter { usbManager.hasPermission(it) }
+                    .take(2).map { it.deviceName }
+            },
+            openTuner = ::openUsbForTuner,
+            firmware = ::firmwareFile,
+            onStateChanged = ::publishStatus
+        )
+        try {
+            mirakcSupervisor?.start()
+        } catch (error: Exception) {
+            lastError = "upstream mirakc failed to start: ${error.message ?: error.javaClass.simpleName}"
+        }
         initialized = true
         try {
             epg.load(epgCacheFile())
         } catch (_: Exception) {
         }
         requestUsbPermissionIfNeeded()
-        if (supportedDevices().any { usbManager.hasPermission(it) }) startEpgScan()
         publishStatus()
     }
 
@@ -93,7 +119,12 @@ class MirakcService : Service() {
         if (!initialized) onCreate()
         when (intent?.action) {
             ACTION_REQUEST_USB -> requestUsbPermissionIfNeeded()
-            ACTION_SCAN_EPG -> startEpgScan()
+            ACTION_SCAN_EPG -> {
+                // Upstream mirakc owns the enabled startup/cron jobs. Its
+                // 3.4.85 API has no manual job-trigger endpoint, so this UI
+                // action cannot start an immediate scan.
+                lastError = "EPG scan is scheduled by upstream mirakc; manual trigger unavailable"
+            }
         }
         publishStatus()
         return START_STICKY
@@ -104,14 +135,18 @@ class MirakcService : Service() {
     override fun onDestroy() {
         scanning = false
         scanThread?.interrupt()
-        httpServer?.stop()
+        mirakcSupervisor?.stop()
+        mirakcSupervisor = null
         synchronized(streamLock) {
             streamSession?.stop()
             streamSession = null
             closeUsb()
             closeReaderUsb()
         }
-        if (receiverRegistered) unregisterReceiver(usbReceiver)
+        if (receiverRegistered) {
+            unregisterReceiver(usbPermissionReceiver)
+            unregisterReceiver(usbLifecycleReceiver)
+        }
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
         statusText = "Stopped"
@@ -158,11 +193,21 @@ class MirakcService : Service() {
     }
 
     private fun registerUsbReceiver() {
+        val permissionFilter = IntentFilter(USB_PERMISSION_ACTION)
+        val lifecycleFilter = IntentFilter().apply {
+            addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
+            addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
+        }
         if (Build.VERSION.SDK_INT >= 33) {
-            registerReceiver(usbReceiver, IntentFilter(USB_PERMISSION_ACTION), RECEIVER_NOT_EXPORTED)
+            // Permission responses are app-private; system USB lifecycle
+            // broadcasts require an exported dynamic receiver on API 33+.
+            registerReceiver(usbPermissionReceiver, permissionFilter, RECEIVER_NOT_EXPORTED)
+            registerReceiver(usbLifecycleReceiver, lifecycleFilter, RECEIVER_EXPORTED)
         } else {
             @Suppress("DEPRECATION")
-            registerReceiver(usbReceiver, IntentFilter(USB_PERMISSION_ACTION))
+            registerReceiver(usbPermissionReceiver, permissionFilter)
+            @Suppress("DEPRECATION")
+            registerReceiver(usbLifecycleReceiver, lifecycleFilter)
         }
         receiverRegistered = true
     }
@@ -186,14 +231,13 @@ class MirakcService : Service() {
             return
         }
         lastError = "none"
-        startEpgScan()
         publishStatus()
     }
 
     private fun supportedDevices(): List<UsbDevice> = usbManager.deviceList.values.filter {
         (it.vendorId == 0x3275 && it.productId == 0x0080) ||
             (it.vendorId == 0x187f && (it.productId == 0x0600 || it.productId == 0x0302))
-    }
+    }.sortedBy { it.deviceName }
 
     private fun isSmartCardReader(device: UsbDevice): Boolean {
         if (device.vendorId == 0x3275 || device.vendorId == 0x187f) return false
@@ -226,6 +270,25 @@ class MirakcService : Service() {
             usbConnection = connection
             usbParcel = parcel
             return parcel.fd
+        }
+    }
+
+    private fun openUsbForTuner(index: Int, deviceName: String): SianoUsbHandle {
+        val device = supportedDevices().firstOrNull {
+            it.deviceName == deviceName && usbManager.hasPermission(it)
+        }
+            ?: throw IOException("No permitted Siano tuner at index $index")
+        val connection = usbManager.openDevice(device)
+            ?: throw IOException("UsbManager.openDevice failed for ${device.deviceName}")
+        val parcel = try {
+            ParcelFileDescriptor.fromFd(connection.fileDescriptor)
+        } catch (error: Exception) {
+            connection.close()
+            throw IOException("Unable to duplicate USB fd", error)
+        }
+        return SianoUsbHandle(parcel.fd) {
+            parcel.close()
+            connection.close()
         }
     }
 
@@ -498,7 +561,6 @@ class MirakcService : Service() {
     private fun publishStatus() {
         val device = supportedDevices().firstOrNull()
         val granted = device != null && usbManager.hasPermission(device)
-        val stream = synchronized(streamLock) { streamSession?.channel?.channel ?: "none" }
         val reader = readerDevices().firstOrNull()
         val readerGranted = reader != null && usbManager.hasPermission(reader)
         statusText = buildString {
@@ -512,10 +574,7 @@ class MirakcService : Service() {
                 else -> append("reader ${reader.productName ?: reader.deviceName}")
             }
             append("\nListener: 0.0.0.0:40772")
-            append("\nStream: ").append(stream)
-            val counts = epg.counts()
-            append("\nEPG: ").append(counts.first).append(" services, ").append(counts.second).append(" programs")
-            append("\nScan: ").append(if (scanning) scanLabel else "idle")
+            append("\nUpstream: ").append(mirakcSupervisor?.status() ?: "stopped")
             append("\nLast error: ").append(lastError)
         }
     }

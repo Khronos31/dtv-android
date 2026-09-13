@@ -3,6 +3,7 @@
 #include <cerrno>
 #include <csignal>
 #include <fcntl.h>
+#include <sys/prctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -26,6 +27,24 @@ void redirect_stderr_null() {
     if (nullFd >= 0) {
         dup2(nullFd, STDERR_FILENO);
         if (nullFd != STDERR_FILENO) close(nullFd);
+    }
+}
+
+void close_inherited_descriptors(int preserved_fd = -1) {
+    long limit = sysconf(_SC_OPEN_MAX);
+    if (limit < 0 || limit > 65536) limit = 65536;
+    for (int fd = STDERR_FILENO + 1; fd < limit; ++fd) {
+        if (fd != preserved_fd) close(fd);
+    }
+}
+
+void reap_process_group(pid_t pgid) {
+    int status = 0;
+    for (int attempt = 0; attempt < 200; ++attempt) {
+        const pid_t child = waitpid(-pgid, &status, WNOHANG);
+        if (child > 0) continue;
+        if (child < 0 && (errno == ECHILD || errno == ESRCH)) return;
+        usleep(10 * 1000);
     }
 }
 
@@ -61,6 +80,9 @@ Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStart(
         return nullptr;
     }
     if (siano == 0) {
+        // Do not leave a tuner process behind if the Android service dies.
+        prctl(PR_SET_PDEATHSIG, SIGTERM);
+        if (getppid() == 1) _exit(127);
         setpgid(0, 0);
         if (dup2(usbFd, 3) < 0 || dup2(sianoStdout, STDOUT_FILENO) < 0) _exit(127);
         close(outPipe[0]);
@@ -71,6 +93,9 @@ Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStart(
         }
         if (usbFd != 3) close(usbFd);
         if (readerFd >= 0 && readerFd != 3) close(readerFd);
+        // The Siano child only needs USB fd 3 plus stdio. Do not leak the
+        // service's Binder/socket/pipe descriptors into the exec'd binary.
+        close_inherited_descriptors(3);
         redirect_stderr_null();
         const std::string channelText = std::to_string(channel);
         char* const argv[] = {
@@ -100,6 +125,9 @@ Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStart(
             return nullptr;
         }
         if (b25 == 0) {
+            // Keep the B-CAS filter tied to the service lifetime as well.
+            prctl(PR_SET_PDEATHSIG, SIGTERM);
+            if (getppid() == 1) _exit(127);
             setpgid(0, siano);
             if (dup2(tsPipe[0], STDIN_FILENO) < 0 || dup2(outPipe[1], STDOUT_FILENO) < 0) _exit(127);
             int cardFd = readerFd;
@@ -113,6 +141,9 @@ Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStart(
             close(outPipe[1]);
             if (usbFd != 4) close(usbFd);
             if (readerFd != 4) close(readerFd);
+            // The filter only needs card fd 4 plus stdio. In particular, do
+            // not pass the Android service's descriptors through exec.
+            close_inherited_descriptors(4);
             b25_stdio_filter(cardFd);
             _exit(0);
         }
@@ -139,11 +170,95 @@ Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStart(
 extern "C" JNIEXPORT void JNICALL
 Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStop(JNIEnv*, jclass, jint pid) {
     if (pid <= 0) return;
+    int observed_status = 0;
+    pid_t observed;
+    do {
+        observed = waitpid(static_cast<pid_t>(pid), &observed_status, WNOHANG);
+    } while (observed < 0 && errno == EINTR);
+    // A poll may already have reaped this child. Never signal the numeric
+    // PID/group as a whole after ownership is lost, since the PID could have
+    // been reused. If this call itself reaped the leader, however, clean its
+    // still-owned descendants before returning.
+    if (observed == static_cast<pid_t>(pid)) {
+        kill(-static_cast<pid_t>(pid), SIGTERM);
+        kill(-static_cast<pid_t>(pid), SIGKILL);
+        reap_process_group(static_cast<pid_t>(pid));
+        return;
+    }
+    if (observed < 0 && (errno == ECHILD || errno == ESRCH)) return;
+    if (observed < 0) return;
     kill(-static_cast<pid_t>(pid), SIGTERM);
     kill(static_cast<pid_t>(pid), SIGTERM);
     int status = 0;
-    while (waitpid(-static_cast<pid_t>(pid), &status, 0) > 0) {
+    bool exited = false;
+    for (int attempt = 0; attempt < 200; ++attempt) {
+        const pid_t result = waitpid(static_cast<pid_t>(pid), &status, WNOHANG);
+        if (result == static_cast<pid_t>(pid) || (result < 0 && errno == ECHILD)) {
+            exited = true;
+            break;
+        }
+        usleep(10 * 1000);
     }
-    while (waitpid(static_cast<pid_t>(pid), &status, 0) < 0 && errno == EINTR) {
+    // Also kill descendants that ignored SIGTERM or outlived their parent.
+    kill(-static_cast<pid_t>(pid), SIGKILL);
+    if (!exited) {
+        kill(static_cast<pid_t>(pid), SIGKILL);
+        while (waitpid(static_cast<pid_t>(pid), &status, 0) < 0 && errno == EINTR) {}
     }
+    for (;;) {
+        const pid_t child = waitpid(-static_cast<pid_t>(pid), &status, 0);
+        if (child > 0) continue;
+        if (child < 0 && errno == EINTR) continue;
+        break;
+    }
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStartMirakc(
+    JNIEnv* env, jclass, jstring executable, jstring config) {
+    const std::string executablePath = stringFromJni(env, executable);
+    const std::string configPath = stringFromJni(env, config);
+    if (executablePath.empty() || configPath.empty()) return -1;
+
+    const pid_t mirakc = fork();
+    if (mirakc < 0) return -1;
+    if (mirakc == 0) {
+        setpgid(0, 0);
+        // If the Android service process dies, do not leave the server behind.
+        prctl(PR_SET_PDEATHSIG, SIGTERM);
+        if (getppid() == 1) _exit(127);
+        close_inherited_descriptors();
+        const int nullFd = open("/dev/null", O_RDWR);
+        if (nullFd >= 0) {
+            dup2(nullFd, STDIN_FILENO);
+            dup2(nullFd, STDOUT_FILENO);
+            dup2(nullFd, STDERR_FILENO);
+            if (nullFd > STDERR_FILENO) close(nullFd);
+        }
+        execl(executablePath.c_str(), executablePath.c_str(), "--config", configPath.c_str(), nullptr);
+        _exit(127);
+    }
+    setpgid(mirakc, mirakc);
+    return static_cast<jint>(mirakc);
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_dev_khronos31_mirakc_NativeUsbProcess_nativePollMirakc(JNIEnv*, jclass, jint pid) {
+    if (pid <= 0) return -1;
+    int status = 0;
+    pid_t result;
+    do {
+        result = waitpid(static_cast<pid_t>(pid), &status, WNOHANG);
+    } while (result < 0 && errno == EINTR);
+    if (result == static_cast<pid_t>(pid)) {
+        // Clean descendants immediately after collecting this leader's exit;
+        // nativeStop must not later signal a reused numeric PID.
+        kill(-static_cast<pid_t>(pid), SIGTERM);
+        kill(-static_cast<pid_t>(pid), SIGKILL);
+        reap_process_group(static_cast<pid_t>(pid));
+        return 1;
+    }
+    if (result < 0 && errno == ECHILD) return 1;
+    if (result == 0) return 0;
+    return -1;
 }

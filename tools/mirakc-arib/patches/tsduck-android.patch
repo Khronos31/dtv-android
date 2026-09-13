@@ -1,0 +1,206 @@
+--- CMakeLists.txt
++++ CMakeLists.txt
+@@ -312,1 +312,1 @@
+-find_package(docopt CONFIG PATHS ${MIRAKC_ARIB_VENDOR_DIR} NO_DEFAULT_PATH)
++find_package(docopt CONFIG PATHS ${MIRAKC_ARIB_VENDOR_DIR} NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+@@ -350,1 +350,1 @@
+-find_package(fmt CONFIG PATHS ${MIRAKC_ARIB_VENDOR_DIR} NO_DEFAULT_PATH)
++find_package(fmt CONFIG PATHS ${MIRAKC_ARIB_VENDOR_DIR} NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+@@ -395,1 +395,1 @@
+-find_package(spdlog CONFIG PATHS ${MIRAKC_ARIB_VENDOR_DIR} NO_DEFAULT_PATH)
++find_package(spdlog CONFIG PATHS ${MIRAKC_ARIB_VENDOR_DIR} NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+@@ -435,1 +435,1 @@
+-find_package(RapidJSON CONFIG PATHS ${MIRAKC_ARIB_VENDOR_DIR} NO_DEFAULT_PATH)
++find_package(RapidJSON CONFIG PATHS ${MIRAKC_ARIB_VENDOR_DIR} NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+@@ -472,2 +472,2 @@
+ find_file(cppcodec cppcodec/base64_rfc4648.hpp
+-  PATHS ${MIRAKC_ARIB_VENDOR_DIR}/include NO_DEFAULT_PATH)
++  PATHS ${MIRAKC_ARIB_VENDOR_DIR}/include NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+@@ -512,2 +512,2 @@
+ find_library(aribb24_LIB aribb24 PATHS ${MIRAKC_ARIB_VENDOR_DIR}/lib
+-  NO_DEFAULT_PATH)
++  NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+@@ -537,16 +537,20 @@ if(NOT MIRAKC_ARIB_VENDOR_TEST)
+   list(APPEND MIRAKC_ARIB_TSDUCK_DEFS NOTEST=1)
+ endif()
+-
++
++set(MIRAKC_ARIB_TSDUCK_TARGET_FLAGS "" CACHE STRING "Additional target flags for TSDuck")
+
+ if(CMAKE_CROSSCOMPILING)
+   # TSDuck supports the cross compilation.  But it's not suitable for
+   # Debian/Ubuntu.  Define variables for the cross compilation directly instead
+   # of the CROSS, CROSS_PREFIX and CROSS_TARGET variables.
+   list(APPEND MIRAKC_ARIB_TSDUCK_DEFS
+     MAIN_ARCH=${CMAKE_SYSTEM_PROCESSOR}
+-    TARGET_FLAGS=
++    TARGET_FLAGS=${MIRAKC_ARIB_TSDUCK_TARGET_FLAGS}
+     CC=${CMAKE_C_COMPILER}
+     GCC=${CMAKE_C_COMPILER}
+     CXX=${CMAKE_CXX_COMPILER}
+     LD=${CMAKE_C_COMPILER_TARGET}-ld
++    ANDROID=1
++    STATIC_ONLY=1
+   )
+ endif()
+@@ -639,3 +643,3 @@
+ find_library(tsduck-arib_LIB tsduck
+   PATHS ${MIRAKC_ARIB_VENDOR_DIR}/lib ${MIRAKC_ARIB_VENDOR_DIR}/lib64
+-  NO_DEFAULT_PATH)
++  NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+@@ -683,3 +687,3 @@
+ find_library(libisdb_LIB isdb
+   PATHS ${MIRAKC_ARIB_VENDOR_DIR}/lib ${MIRAKC_ARIB_VENDOR_DIR}/lib64
+-  NO_DEFAULT_PATH)
++  NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+--- vendor/tsduck-arib/src/libtsduck/base/tsPlatform.h
++++ vendor/tsduck-arib/src/libtsduck/base/tsPlatform.h
+@@ -2139,6 +2139,10 @@ namespace ts {
+ #elif defined(TS_WINDOWS)
+     // Second parameter of ::DeviceIoControl().
+     typedef ::DWORD ioctl_request_t;
++#elif defined(__ANDROID__)
++    // Bionic declares overloadable int and unsigned ioctl forms, so taking
++    // &::ioctl is ambiguous; Android's request parameter is unsigned int.
++    typedef unsigned int ioctl_request_t;
+ #else
+     // Extract the type of the second parameter of ::ioctl().
+     // It is "unsigned long" on most Linux systems but "int" on Alpine Linux.
+--- vendor/tsduck-arib/src/libtsduck/base/tsSysUtilsTemplate.h
++++ vendor/tsduck-arib/src/libtsduck/base/tsSysUtilsTemplate.h
+@@ -28,5 +28,80 @@
+ #pragma once
+-
++
+-#if defined(TS_UNIX)
++#if defined(TS_UNIX) && !defined(__ANDROID__)
+ #include <glob.h>
+ #endif
+
++#if defined(__ANDROID__)
++#include <dirent.h>
++#include <fnmatch.h>
++#include <unistd.h>
++#include <algorithm>
++#include <string>
++#include <vector>
+
++namespace ts_android_glob {
++    inline bool has_meta(const std::string& component)
++    {
++        return component.find_first_of("*?[") != std::string::npos;
++    }
+
++    inline std::string join(const std::string& base, const std::string& name)
++    {
++        return base.empty() ? name : (base == "/" ? "/" + name : base + "/" + name);
++    }
++
++    inline void expand(const std::string& base, const std::string& rest, std::vector<std::string>& result)
++    {
++        if (rest.empty()) {
++            result.push_back(base.empty() ? "." : base);
++            return;
++        }
++        const std::string::size_type slash = rest.find('/');
++        const std::string component = rest.substr(0, slash);
++        const std::string tail = slash == std::string::npos ? std::string() : rest.substr(slash + 1);
++        if (!has_meta(component)) {
++            const std::string next = join(base, component);
++            if (tail.empty()) {
++                if (::access(next.c_str(), F_OK) == 0) {
++                    result.push_back(next);
++                }
++            }
++            else {
++                expand(next, tail, result);
++            }
++            return;
++        }
++        DIR* directory = ::opendir(base.empty() ? "." : base.c_str());
++        if (directory == nullptr) {
++            return;
++        }
++        for (struct dirent* entry = ::readdir(directory); entry != nullptr; entry = ::readdir(directory)) {
++            const std::string name(entry->d_name);
++            if ((name == "." || name == "..") || ::fnmatch(component.c_str(), name.c_str(), FNM_PERIOD) != 0) {
++                continue;
++            }
++            const std::string next = join(base, name);
++            if (tail.empty()) {
++                result.push_back(next);
++            }
++            else {
++                expand(next, tail, result);
++            }
++        }
++        ::closedir(directory);
++    }
++
++    inline std::vector<std::string> expand(const std::string& pattern)
++    {
++        std::vector<std::string> result;
++        if (!pattern.empty() && pattern[0] == '/') {
++            expand("/", pattern.substr(1), result);
++        }
++        else {
++            expand(std::string(), pattern, result);
++        }
++        std::sort(result.begin(), result.end());
++        return result;
++    }
++}
++#endif
+@@ -79,16 +79,24 @@
+ #elif defined(TS_UNIX)
+-
++
++#if defined(__ANDROID__)
++    const std::vector<std::string> files = ts_android_glob::expand(pattern.toUTF8());
++    for (const std::string& file : files) {
++        container.push_back(UString::FromUTF8(file));
++    }
++    return true;
++#else
+     ::glob_t gl;
+     ::memset(&gl, 0, sizeof (gl));
+     int status = ::glob(pattern.toUTF8().c_str(), 0, nullptr, &gl);
+     if (status == 0) {
+         for (size_t n = 0; n < gl.gl_pathc; n++) {
+             const UString file(UString::FromUTF8(gl.gl_pathv[n]));
+             // Filter out . and ..
+             if (file != u"." && file != u"..") {
+                 container.push_back(file);
+             }
+         }
+     }
+     ::globfree (&gl);
+     return status == 0 || status == GLOB_NOMATCH;
++#endif
+--- vendor/tsduck-arib/src/libtsduck/Makefile
++++ vendor/tsduck-arib/src/libtsduck/Makefile
+@@ -110,2 +110,2 @@
+ .PHONY: libs
+-libs: $(OBJDIR)/$(STATIC_LIBTSDUCK) $(OBJDIR)/$(SHARED_LIBTSDUCK)
++libs: $(OBJDIR)/$(STATIC_LIBTSDUCK) $(if $(STATIC_ONLY),,$(OBJDIR)/$(SHARED_LIBTSDUCK))
+--- vendor/tsduck-arib/src/libtsduck/base/tsThread.cpp
++++ vendor/tsduck-arib/src/libtsduck/base/tsThread.cpp
+@@ -132,5 +132,7 @@
+ #elif defined(TS_MAC) || defined(_GLIBCXX_USE_SCHED_YIELD)
+     ::sched_yield();
+-#else
++#elif !defined(__ANDROID__)
+     ::pthread_yield();
++#else
++    ::sched_yield();
+ #endif
+@@ -271,6 +273,8 @@
+-
++
+     // Use explicit scheduling attributes, do not inherit them from the current thread.
++#if !defined(__ANDROID__) || __ANDROID_API__ >= 28
+     if (::pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED) != 0) {
+         ::pthread_attr_destroy(&attr);
+         return false;
+     }
++#endif
