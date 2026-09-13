@@ -20,7 +20,7 @@ internal class MirakcSupervisor(
     private val runtimeDir = File(context.filesDir, "mirakc-runtime")
     private val epgDir = File(context.filesDir, "epg")
     private var process: NativeUsbProcess.StartedMirakc? = null
-    private var diagnosticReader: Thread? = null
+    private var diagnosticReader: DiagnosticReader? = null
     private var startup: Thread? = null
     private var monitor: Thread? = null
     private var restart: Thread? = null
@@ -300,7 +300,7 @@ internal class MirakcSupervisor(
                         )
                         launchRetryLocked()
                     }
-                    closeDiagnostics(started)
+                    finishDiagnostics(started)
                     return
                 }
             }
@@ -360,8 +360,14 @@ internal class MirakcSupervisor(
         onStateChanged()
     }
 
+    private data class DiagnosticReader(
+        val process: NativeUsbProcess.StartedMirakc,
+        val thread: Thread
+    )
+
     /** Drain upstream stdout/stderr without allowing an unbounded log pipe. */
     private fun startDiagnostics(started: NativeUsbProcess.StartedMirakc) {
+        lateinit var handle: DiagnosticReader
         val reader = Thread({
             try {
                 android.os.ParcelFileDescriptor.AutoCloseInputStream(started.output).use { input ->
@@ -371,7 +377,7 @@ internal class MirakcSupervisor(
                     // Continue draining after the log budget is exhausted;
                     // closing the read end here would turn a noisy upstream
                     // into SIGPIPE and obscure the actual server failure.
-                    while (!Thread.currentThread().isInterrupted) {
+                    while (true) {
                         val count = input.read(buffer)
                         if (count < 0) break
                         if (emitted >= MAX_DIAGNOSTICS_BYTES) continue
@@ -398,13 +404,14 @@ internal class MirakcSupervisor(
                 // Closing the descriptor during normal stop is expected.
             } finally {
                 synchronized(lock) {
-                    if (diagnosticReader === Thread.currentThread()) diagnosticReader = null
+                    if (diagnosticReader === handle) diagnosticReader = null
                 }
             }
         }, "mirakc-diagnostics-${started.pid}").also {
             it.isDaemon = true
         }
-        synchronized(lock) { diagnosticReader = reader }
+        handle = DiagnosticReader(started, reader)
+        synchronized(lock) { diagnosticReader = handle }
         reader.start()
     }
 
@@ -412,13 +419,26 @@ internal class MirakcSupervisor(
         if (line.isNotBlank()) Log.e(TAG, "upstream[$pid] ${line.take(MAX_DIAGNOSTIC_LINE)}")
     }
 
-    private fun closeDiagnostics(started: NativeUsbProcess.StartedMirakc) {
-        try { started.output.close() } catch (_: IOException) { }
-        synchronized(lock) {
-            if (diagnosticReader?.name == "mirakc-diagnostics-${started.pid}") {
-                diagnosticReader?.interrupt()
-                diagnosticReader = null
+    private fun finishDiagnostics(started: NativeUsbProcess.StartedMirakc) {
+        val reader = synchronized(lock) {
+            val current = diagnosticReader
+            if (current?.process === started) current else null
+        }
+        if (reader != null && reader.thread !== Thread.currentThread()) {
+            try {
+                reader.thread.join(DIAGNOSTICS_DRAIN_TIMEOUT_MS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
             }
+        }
+        // The writer is already gone after nativeStop/poll. Closing only this
+        // process' descriptor cannot affect a newer generation's reader.
+        try { started.output.close() } catch (_: IOException) { }
+        if (reader != null && reader.thread.isAlive && reader.thread !== Thread.currentThread()) {
+            reader.thread.interrupt()
+        }
+        synchronized(lock) {
+            if (diagnosticReader === reader) diagnosticReader = null
         }
     }
 
@@ -426,7 +446,7 @@ internal class MirakcSupervisor(
         try {
             NativeUsbProcess.stop(started.pid)
         } finally {
-            closeDiagnostics(started)
+            finishDiagnostics(started)
         }
     }
 
@@ -546,6 +566,7 @@ internal class MirakcSupervisor(
         const val CRASH_RESTART_BACKOFF_MS = 1_000L
         const val MAX_DIAGNOSTICS_BYTES = 64 * 1024
         const val MAX_DIAGNOSTIC_LINE = 512
+        const val DIAGNOSTICS_DRAIN_TIMEOUT_MS = 500L
         const val TAG = "MirakcSupervisor"
     }
 }

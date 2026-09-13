@@ -34,4 +34,5 @@ if(MIRAKC_BUILD_SIANO_ADAPTER)
     set_target_properties(siano_adapter PROPERTIES
         OUTPUT_NAME "libmirakc-siano-adapter.so"
     )
+    target_link_libraries(siano_adapter log)
 endif()
