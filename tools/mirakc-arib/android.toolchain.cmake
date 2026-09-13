@@ -23,7 +23,9 @@ if(DEFINED ENV{CMAKE_PREFIX_PATH})
   set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE BOTH CACHE STRING "Package root search mode" FORCE)
 endif()
 # NDK r27's flags.cmake uses IN_LIST.  CMake 3.31 does not infer CMP0057
-# from the toolchain's old minimum version, so enable it before the include.
+# from the toolchain's old minimum version.  Keep the default in the cache so
+# it also applies when CMake re-enters its Android platform files later.
+set(CMAKE_POLICY_DEFAULT_CMP0057 NEW CACHE STRING "Use IN_LIST in Android toolchains")
 if(POLICY CMP0057)
   cmake_policy(SET CMP0057 NEW)
 endif()

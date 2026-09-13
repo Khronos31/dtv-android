@@ -1,40 +1,48 @@
 diff --git CMakeLists.txt CMakeLists.txt
-index c4f3ad9..f8c0ae7 100644
+index c4f3ad9..06dc491 100644
 --- CMakeLists.txt
 +++ CMakeLists.txt
-@@ -312 +312 @@ add_dependencies(vendor vendor-docopt)
+@@ -302,0 +303 @@ ExternalProject_Add(vendor-docopt
++    -D CMAKE_POLICY_DEFAULT_CMP0057=NEW
+@@ -312 +313 @@ add_dependencies(vendor vendor-docopt)
 -find_package(docopt CONFIG PATHS ${MIRAKC_ARIB_VENDOR_DIR} NO_DEFAULT_PATH)
 +find_package(docopt CONFIG PATHS ${MIRAKC_ARIB_VENDOR_DIR} NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-@@ -350 +350 @@ add_dependencies(vendor vendor-fmt)
+@@ -350 +351 @@ add_dependencies(vendor vendor-fmt)
 -find_package(fmt CONFIG PATHS ${MIRAKC_ARIB_VENDOR_DIR} NO_DEFAULT_PATH)
 +find_package(fmt CONFIG PATHS ${MIRAKC_ARIB_VENDOR_DIR} NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-@@ -395 +395 @@ add_dependencies(vendor vendor-spdlog)
+@@ -395 +396 @@ add_dependencies(vendor vendor-spdlog)
 -find_package(spdlog CONFIG PATHS ${MIRAKC_ARIB_VENDOR_DIR} NO_DEFAULT_PATH)
 +find_package(spdlog CONFIG PATHS ${MIRAKC_ARIB_VENDOR_DIR} NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-@@ -435 +435 @@ add_dependencies(vendor vendor-rapidjson)
+@@ -421,0 +423 @@ ExternalProject_Add(vendor-rapidjson
++    -D CMAKE_POLICY_DEFAULT_CMP0057=NEW
+@@ -435 +437 @@ add_dependencies(vendor vendor-rapidjson)
 -find_package(RapidJSON CONFIG PATHS ${MIRAKC_ARIB_VENDOR_DIR} NO_DEFAULT_PATH)
 +find_package(RapidJSON CONFIG PATHS ${MIRAKC_ARIB_VENDOR_DIR} NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-@@ -473 +473 @@ find_file(cppcodec cppcodec/base64_rfc4648.hpp
+@@ -461,0 +464 @@ ExternalProject_Add(vendor-cppcodec
++    -D CMAKE_POLICY_DEFAULT_CMP0057=NEW
+@@ -473 +476 @@ find_file(cppcodec cppcodec/base64_rfc4648.hpp
 -  PATHS ${MIRAKC_ARIB_VENDOR_DIR}/include NO_DEFAULT_PATH)
 +  PATHS ${MIRAKC_ARIB_VENDOR_DIR}/include NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-@@ -513 +513 @@ find_library(aribb24_LIB aribb24 PATHS ${MIRAKC_ARIB_VENDOR_DIR}/lib
+@@ -513 +516 @@ find_library(aribb24_LIB aribb24 PATHS ${MIRAKC_ARIB_VENDOR_DIR}/lib
 -  NO_DEFAULT_PATH)
 +  NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-@@ -539,0 +540,2 @@ endif()
+@@ -539,0 +543,2 @@ endif()
 +set(MIRAKC_ARIB_TSDUCK_TARGET_FLAGS "" CACHE STRING "Additional target flags for TSDuck")
 +
-@@ -546 +548 @@ if(CMAKE_CROSSCOMPILING)
+@@ -546 +551 @@ if(CMAKE_CROSSCOMPILING)
 -    TARGET_FLAGS=
 +    TARGET_FLAGS=${MIRAKC_ARIB_TSDUCK_TARGET_FLAGS}
-@@ -550,0 +553,2 @@ if(CMAKE_CROSSCOMPILING)
+@@ -550,0 +556,2 @@ if(CMAKE_CROSSCOMPILING)
 +    ANDROID=1
 +    STATIC_ONLY=1
-@@ -640 +644 @@ find_library(tsduck-arib_LIB tsduck
+@@ -640 +647 @@ find_library(tsduck-arib_LIB tsduck
 -  NO_DEFAULT_PATH)
 +  NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-@@ -684 +688 @@ find_library(libisdb_LIB isdb
+@@ -684 +691 @@ find_library(libisdb_LIB isdb
 -  NO_DEFAULT_PATH)
 +  NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+@@ -715,0 +723 @@ if(MIRAKC_ARIB_TEST)
++      -D CMAKE_POLICY_DEFAULT_CMP0057=NEW
 diff --git src/libtsduck/Makefile src/libtsduck/Makefile
 index a5f41074..68c08a76 100644
 --- vendor/tsduck-arib/src/libtsduck/Makefile
