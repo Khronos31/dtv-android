@@ -485,6 +485,7 @@ class MirakcService : Service() {
                 readerFd
             )
             process = started
+            NativeUsbProcess.startDiagnostics(started, "legacy-stream channel=${channel.channel}")
             reader = ParcelFileDescriptor.AutoCloseInputStream(started.output)
             Thread({ readLoop(started) }, "mirakc-ts-${channel.channel}").apply {
                 isDaemon = true
@@ -534,13 +535,23 @@ class MirakcService : Service() {
             } finally {
                 alive = false
                 try { reader?.close() } catch (_: Exception) { }
-                NativeUsbProcess.stop(started.pid)
+                try {
+                    NativeUsbProcess.stop(started.pid)
+                } finally {
+                    try { started.diagnostics.close() } catch (_: Exception) { }
+                }
                 streamEnded(this, failure)
             }
         }
 
         fun stop() {
-            process?.let { NativeUsbProcess.stop(it.pid) }
+            process?.let {
+                try {
+                    NativeUsbProcess.stop(it.pid)
+                } finally {
+                    try { it.diagnostics.close() } catch (_: Exception) { }
+                }
+            }
             try { reader?.close() } catch (_: Exception) { }
             closeClients()
         }

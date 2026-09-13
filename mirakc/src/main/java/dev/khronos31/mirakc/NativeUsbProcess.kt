@@ -1,6 +1,8 @@
 package dev.khronos31.mirakc
 
 import android.os.ParcelFileDescriptor
+import android.util.Log
+import java.io.IOException
 
 internal object NativeUsbProcess {
     init {
@@ -9,14 +11,63 @@ internal object NativeUsbProcess {
 
     fun start(executable: String, firmware: String, channel: Int, usbFd: Int, readerFd: Int = -1): StartedProcess {
         val handles = nativeStart(executable, firmware, channel, usbFd, readerFd)
-        check(handles != null && handles.size == 2) { "Unable to start siano-ts" }
+        check(handles != null && handles.size == 3) { "Unable to start siano-ts" }
         val readFd = handles[0]
         val pid = handles[1]
-        check(readFd >= 0 && pid > 0) { "Invalid siano-ts process handle" }
-        return StartedProcess(pid, ParcelFileDescriptor.adoptFd(readFd))
+        val diagnosticsFd = handles[2]
+        check(readFd >= 0 && diagnosticsFd >= 0 && pid > 0) { "Invalid siano-ts process handle" }
+        return StartedProcess(
+            pid,
+            ParcelFileDescriptor.adoptFd(readFd),
+            ParcelFileDescriptor.adoptFd(diagnosticsFd)
+        )
     }
 
     fun stop(pid: Int) = nativeStop(pid)
+
+    /** Drain Siano stderr so a noisy child cannot block on its pipe. */
+    fun startDiagnostics(process: StartedProcess, context: String): Thread = Thread({
+        try {
+            ParcelFileDescriptor.AutoCloseInputStream(process.diagnostics).use { input ->
+                val buffer = ByteArray(1024)
+                val line = StringBuilder(MAX_DIAGNOSTIC_LINE)
+                var loggedBytes = 0
+                fun emitLine() {
+                    if (line.isEmpty() || loggedBytes >= MAX_DIAGNOSTICS_BYTES) {
+                        line.setLength(0)
+                        return
+                    }
+                    val text = line.toString()
+                    val remaining = MAX_DIAGNOSTICS_BYTES - loggedBytes
+                    val clipped = if (text.length > remaining) text.substring(0, remaining) else text
+                    if (clipped.isNotEmpty()) {
+                        Log.e(TAG, "siano[$context, pid=${process.pid}] $clipped")
+                        loggedBytes += clipped.length
+                    }
+                    line.setLength(0)
+                }
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    for (offset in 0 until count) {
+                        when (val value = buffer[offset].toInt() and 0xff) {
+                            '\n'.code -> emitLine()
+                            '\r'.code -> Unit
+                            else -> if (line.length < MAX_DIAGNOSTIC_LINE) {
+                                line.append(if (value in 0x20..0x7e) value.toChar() else '?')
+                            }
+                        }
+                    }
+                }
+                emitLine()
+            }
+        } catch (_: IOException) {
+            // Closing the descriptor is the normal stop path.
+        }
+    }, "siano-diagnostics-${process.pid}").apply {
+        isDaemon = true
+        start()
+    }
 
     fun startMirakc(executable: String, config: String): StartedMirakc {
         val handles = nativeStartMirakc(executable, config)
@@ -42,8 +93,16 @@ internal object NativeUsbProcess {
         else -> PollResult.ERROR
     }
 
-    data class StartedProcess(val pid: Int, val output: ParcelFileDescriptor)
+    data class StartedProcess(
+        val pid: Int,
+        val output: ParcelFileDescriptor,
+        val diagnostics: ParcelFileDescriptor
+    )
     data class StartedMirakc(val pid: Int, val output: ParcelFileDescriptor)
+
+    private const val MAX_DIAGNOSTICS_BYTES = 64 * 1024
+    private const val MAX_DIAGNOSTIC_LINE = 512
+    private const val TAG = "SianoTunerBroker"
 
     private external fun nativeStart(executable: String, firmware: String, channel: Int, usbFd: Int, readerFd: Int): IntArray?
     private external fun nativeStop(pid: Int)

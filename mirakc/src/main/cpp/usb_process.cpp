@@ -23,14 +23,6 @@ std::string stringFromJni(JNIEnv* env, jstring value) {
     return result;
 }
 
-void redirect_stderr_null() {
-    const int nullFd = open("/dev/null", O_WRONLY);
-    if (nullFd >= 0) {
-        dup2(nullFd, STDERR_FILENO);
-        if (nullFd != STDERR_FILENO) close(nullFd);
-    }
-}
-
 void close_inherited_descriptors(int preserved_fd = -1) {
     long limit = sysconf(_SC_OPEN_MAX);
     if (limit < 0 || limit > 65536) limit = 65536;
@@ -62,10 +54,20 @@ Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStart(
 
     int tsPipe[2];
     int outPipe[2];
+    int diagnosticPipe[2];
     if (pipe(outPipe) != 0) return nullptr;
     if (readerFd >= 0 && pipe(tsPipe) != 0) {
         close(outPipe[0]);
         close(outPipe[1]);
+        return nullptr;
+    }
+    if (pipe(diagnosticPipe) != 0) {
+        close(outPipe[0]);
+        close(outPipe[1]);
+        if (readerFd >= 0) {
+            close(tsPipe[0]);
+            close(tsPipe[1]);
+        }
         return nullptr;
     }
 
@@ -78,6 +80,8 @@ Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStart(
             close(tsPipe[0]);
             close(tsPipe[1]);
         }
+        close(diagnosticPipe[0]);
+        close(diagnosticPipe[1]);
         return nullptr;
     }
     if (siano == 0) {
@@ -85,9 +89,12 @@ Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStart(
         prctl(PR_SET_PDEATHSIG, SIGTERM);
         if (getppid() == 1) _exit(127);
         setpgid(0, 0);
-        if (dup2(usbFd, 3) < 0 || dup2(sianoStdout, STDOUT_FILENO) < 0) _exit(127);
+        if (dup2(usbFd, 3) < 0 || dup2(sianoStdout, STDOUT_FILENO) < 0 ||
+            dup2(diagnosticPipe[1], STDERR_FILENO) < 0) _exit(127);
         close(outPipe[0]);
+        close(diagnosticPipe[0]);
         if (sianoStdout != STDOUT_FILENO) close(sianoStdout);
+        if (diagnosticPipe[1] != STDERR_FILENO) close(diagnosticPipe[1]);
         if (readerFd >= 0) {
             close(tsPipe[0]);
             if (tsPipe[1] != sianoStdout) close(tsPipe[1]);
@@ -97,7 +104,6 @@ Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStart(
         // The Siano child only needs USB fd 3 plus stdio. Do not leak the
         // service's Binder/socket/pipe descriptors into the exec'd binary.
         close_inherited_descriptors(3);
-        redirect_stderr_null();
         const std::string channelText = std::to_string(channel);
         char* const argv[] = {
             const_cast<char*>(executablePath.c_str()),
@@ -123,6 +129,8 @@ Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStart(
             close(outPipe[1]);
             close(tsPipe[0]);
             close(tsPipe[1]);
+            close(diagnosticPipe[0]);
+            close(diagnosticPipe[1]);
             return nullptr;
         }
         if (b25 == 0) {
@@ -156,15 +164,17 @@ Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStart(
         close(outPipe[1]);
     }
 
-    jint values[] = {outPipe[0], siano};
-    jintArray result = env->NewIntArray(2);
+    close(diagnosticPipe[1]);
+    jint values[] = {outPipe[0], siano, diagnosticPipe[0]};
+    jintArray result = env->NewIntArray(3);
     if (result == nullptr) {
         close(outPipe[0]);
+        close(diagnosticPipe[0]);
         kill(-siano, SIGTERM);
         waitpid(-siano, nullptr, 0);
         return nullptr;
     }
-    env->SetIntArrayRegion(result, 0, 2, values);
+    env->SetIntArrayRegion(result, 0, 3, values);
     return result;
 }
 

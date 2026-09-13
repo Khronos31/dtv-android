@@ -194,6 +194,7 @@ internal class SianoTunerBroker(
                 // generation rotation cannot miss a just-created process.
                 started = process
             }
+            NativeUsbProcess.startDiagnostics(process, "tuner=$index, channel=$channel")
             val watcher = Thread({ watchClient() }, "siano-broker-watch-$index").also {
                 it.isDaemon = true
                 it.start()
@@ -228,8 +229,15 @@ internal class SianoTunerBroker(
                 usb = null
             }
             process?.let {
-                NativeUsbProcess.stop(it.pid)
-                try { it.output.close() } catch (_: IOException) { }
+                try {
+                    NativeUsbProcess.stop(it.pid)
+                } finally {
+                    try { it.output.close() } catch (_: IOException) { }
+                    // The diagnostics reader owns the other pipe end. Closing
+                    // it here also unblocks a reader while the child is being
+                    // stopped, without ever mixing stderr into the TS stream.
+                    try { it.diagnostics.close() } catch (_: IOException) { }
+                }
             }
             try {
                 handle?.close?.invoke()
