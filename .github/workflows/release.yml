@@ -167,7 +167,10 @@ jobs:
           if [[ "$COMPONENT" == mirakc ]]; then
             cert_sha256="$("$apksigner" verify --print-certs "$apk" \
               | awk -F': ' '/certificate SHA-256 digest/ { print $NF; exit }')"
-            [[ "$cert_sha256" == 1fd02c94f29a5756ed1d560ac4ecb6813fa0b2e634473a6f31da210ffd5223c ]] \
+            expected_cert_sha256=1fd02c94f29a5756ed1d560ac4ecb6813fa0b2e634473a6f31da210ffd5223c4
+            [[ "${#expected_cert_sha256}" -eq 64 ]] \
+              || { echo "Internal error: expected mirakc certificate fingerprint is not 64 hex characters" >&2; exit 1; }
+            [[ "$cert_sha256" == "$expected_cert_sha256" ]] \
               || { echo "Unexpected mirakc signing certificate: $cert_sha256" >&2; exit 1; }
           fi
           mkdir -p out
