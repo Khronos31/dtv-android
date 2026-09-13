@@ -2,6 +2,7 @@ package dev.khronos31.mirakc
 
 import android.net.LocalServerSocket
 import android.net.LocalSocket
+import android.util.Log
 import java.io.Closeable
 import java.io.File
 import java.io.IOException
@@ -120,27 +121,44 @@ internal class SianoTunerBroker(
             return
         }
         var session: Session? = null
+        var stage = "read-request"
+        var requestIndex: Int? = null
+        var requestChannel: Int? = null
         try {
             client.soTimeout = REQUEST_TIMEOUT_MS
             val request = readRequest(client.inputStream)
             client.soTimeout = 0
+            stage = "validate-request"
             val fields = request.trim().split(' ')
             if (fields.size != 4 || fields[0] != PROTOCOL) throw IOException("invalid tuner request")
             val requestToken = fields[1]
             val index = fields[2].toIntOrNull() ?: throw IOException("invalid tuner index")
             val channel = fields[3].toIntOrNull() ?: throw IOException("invalid tuner channel")
+            requestIndex = index
+            requestChannel = channel
             val current = generation
             if (requestToken != current.token || index !in 0 until current.tunerCount ||
                 channel !in 13..62) throw IOException("stale or invalid tuner request")
             val candidate = Session(client, index, current.deviceNames[index], channel, current.token)
+            stage = "reserve-session"
             synchronized(lock) {
                 if (generation.token != current.token || sessions.putIfAbsent(index, candidate) != null) {
                     throw IOException("tuner is busy or generation changed")
                 }
                 session = candidate
             }
+            Log.i(TAG, "tuner request accepted index=$index channel=$channel")
+            stage = "run-session"
             candidate.run()
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            val context = buildString {
+                append("stage=").append(stage)
+                requestIndex?.let { append(" index=").append(it) }
+                requestChannel?.let { append(" channel=").append(it) }
+            }
+            // Never include the request itself or the generation token. The
+            // exception type is sufficient to identify the failure class.
+            Log.e(TAG, "tuner request failed $context exception=${error.javaClass.simpleName}")
             try { client.close() } catch (_: IOException) { }
         } finally {
             pendingClients -= client
@@ -184,6 +202,7 @@ internal class SianoTunerBroker(
                     return
                 }
                 usb = handle
+                Log.i(TAG, "starting siano-ts index=$index channel=$channel")
                 process = NativeUsbProcess.start(
                     executable = sianoExecutable().absolutePath,
                     firmware = firmware().absolutePath,
@@ -196,6 +215,7 @@ internal class SianoTunerBroker(
                 // Start the sole stderr consumer before releasing the same
                 // lock stop() uses to claim and finish this process.
                 NativeUsbProcess.startDiagnostics(process, "tuner=$index, channel=$channel")
+                Log.i(TAG, "siano-ts started index=$index channel=$channel pid=${process.pid}")
             }
             val watcher = Thread({ watchClient() }, "siano-broker-watch-$index").also {
                 it.isDaemon = true
@@ -277,5 +297,6 @@ internal class SianoTunerBroker(
         const val MAX_CLIENTS = 4
         const val PROTOCOL = "SIAO/1"
         const val REQUEST_TIMEOUT_MS = 2_000
+        const val TAG = "SianoTunerBroker"
     }
 }
