@@ -124,7 +124,7 @@ jobs:
           package_name="$("$aapt2" dump badging "$unsigned" | awk -F"'" '/^package: name=/{ print $2; exit }')"
           [[ "$package_name" == dev.khronos31.mirakc ]] \
             || { echo "Unexpected APK package: $package_name" >&2; exit 1; }
-          version="$("$aapt2" dump badging "$unsigned" | awk -F"'" '/^package: name=/{ for (i = 1; i <= NF; i++) if ($i ~ /versionName=/) { split($i, v, "="); print v[2]; exit } }')"
+          version="$("$aapt2" dump badging "$unsigned" | awk -F"'" '/^package: name=/{ for (i = 1; i <= NF; i++) if ($i ~ /versionName=$/) { print $(i + 1); exit } }')"
           [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] \
             || { echo "Invalid candidate version: $version" >&2; exit 1; }
           "$apksigner" sign --ks "$RUNNER_TEMP/release.keystore" \
