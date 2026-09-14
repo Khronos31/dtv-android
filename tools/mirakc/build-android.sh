@@ -96,6 +96,8 @@ rustup target list --installed | grep -Fx "$rust_target" >/dev/null \
 # Deterministic digests of the pinned Git tree and lockfile.
 source_tree_sha256=e52b10a87c9fafecbb59641a7989075c1a4e0fa0e4c98ea6cdfb88e2da723551
 cargo_lock_sha256=e0a246be3977014523f46e15a1cdadd946513bc443a12ee9629142740b9cf6d9
+patch_file=$project_root/tools/mirakc/patches/mirakc-android-web-resilience.patch
+patch_sha256=73418c8fe15a75a9d7b21d9d617ff453815a06b85f49d72cf6a32105a76b0f04
 
 mkdir -p "$(dirname -- "$source_dir")"
 if [ ! -e "$source_dir" ]; then
@@ -124,6 +126,42 @@ actual_lock_sha256=$(sha256sum "$source_dir/Cargo.lock" | awk '{print $1}')
     || fail "Cargo.lock checksum mismatch: $actual_lock_sha256"
 grep -F 'version = "3.4.85"' "$source_dir/mirakc/Cargo.toml" >/dev/null \
     || fail 'pinned source is not mirakc 3.4.85'
+[ -f "$patch_file" ] || fail "missing upstream patch: $patch_file"
+actual_patch_sha256=$(sha256sum "$patch_file" | awk '{print $1}')
+[ "$actual_patch_sha256" = "$patch_sha256" ] \
+    || fail "upstream patch checksum mismatch: $actual_patch_sha256"
+
+# Apply the source adaptation only for this invocation.  Reversing it on every
+# exit keeps the managed checkout clean so a second ABI invocation can repeat
+# the exact same verification and application steps.
+patch_applied=0
+cleanup_patch()
+{
+    exit_code=$?
+    cleanup_failed=0
+    if [ "$patch_applied" -eq 1 ]; then
+        if git -C "$source_dir" apply --reverse --check --unidiff-zero -p0 "$patch_file" >/dev/null 2>&1; then
+            if ! git -C "$source_dir" apply --reverse --unidiff-zero -p0 "$patch_file"; then
+                printf '%s\n' 'mirakc Android build: failed to reverse upstream patch' >&2
+                cleanup_failed=1
+            fi
+        else
+            printf '%s\n' 'mirakc Android build: source patch could not be reversed' >&2
+            cleanup_failed=1
+        fi
+    fi
+    if [ "$cleanup_failed" -ne 0 ]; then
+        exit_code=1
+    fi
+    trap - EXIT
+    exit "$exit_code"
+}
+trap cleanup_patch EXIT
+git -C "$source_dir" apply --check --unidiff-zero -p0 "$patch_file" \
+    || fail 'upstream Android patch does not apply cleanly'
+git -C "$source_dir" apply --unidiff-zero -p0 "$patch_file" \
+    || fail 'failed to apply upstream Android patch'
+patch_applied=1
 
 mkdir -p "$build_dir" "$output_dir"
 find "$build_dir" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +

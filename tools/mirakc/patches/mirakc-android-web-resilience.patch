@@ -1,0 +1,180 @@
+diff --git mirakc-core/src/web/access_control.rs mirakc-core/src/web/access_control.rs
+index 3cbc4ffc..214849bf 100644
+--- mirakc-core/src/web/access_control.rs
++++ mirakc-core/src/web/access_control.rs
+@@ -55,0 +56,4 @@ where
++            Some(ConnectInfo(PeerInfo::TcpUnavailable)) => {
++                tracing::warn!("No TCP peer info available, disconnect");
++                false
++            }
+@@ -59,0 +64,4 @@ where
++            Some(ConnectInfo(PeerInfo::UnixUnavailable)) => {
++                tracing::warn!("No Unix peer info available, disconnect");
++                false
++            }
+diff --git mirakc-core/src/web/peer_info.rs mirakc-core/src/web/peer_info.rs
+index 4cff3fb5..df0f492c 100644
+--- mirakc-core/src/web/peer_info.rs
++++ mirakc-core/src/web/peer_info.rs
+@@ -11,0 +12 @@ pub(crate) enum PeerInfo {
++    TcpUnavailable,
+@@ -16,0 +18 @@ pub(crate) enum PeerInfo {
++    UnixUnavailable,
+@@ -23,2 +25,6 @@ impl Connected<&TcpStream> for PeerInfo {
+-        Self::Tcp {
+-            addr: target.peer_addr().unwrap(),
++        match target.peer_addr() {
++            Ok(addr) => Self::Tcp { addr },
++            Err(error) => {
++                tracing::error!(?error, "Failed to obtain TCP peer address");
++                Self::TcpUnavailable
++            }
+@@ -30,0 +37,14 @@ impl Connected<&UnixStream> for PeerInfo {
++        let addr = match target.peer_addr() {
++            Ok(addr) => Arc::new(addr),
++            Err(error) => {
++                tracing::error!(?error, "Failed to obtain Unix peer address");
++                return Self::UnixUnavailable;
++            }
++        };
++        let cred = match target.peer_cred() {
++            Ok(cred) => cred,
++            Err(error) => {
++                tracing::error!(?error, "Failed to obtain Unix peer credentials");
++                return Self::UnixUnavailable;
++            }
++        };
+@@ -32,2 +52,2 @@ impl Connected<&UnixStream> for PeerInfo {
+-            addr: Arc::new(target.peer_addr().unwrap()),
+-            cred: target.peer_cred().unwrap(),
++            addr,
++            cred,
+diff --git mirakc-core/src/web/server.rs mirakc-core/src/web/server.rs
+index 1e3c940d..a91e68c2 100644
+--- mirakc-core/src/web/server.rs
++++ mirakc-core/src/web/server.rs
+@@ -2,0 +3 @@ use std::sync::Arc;
++use std::time::Duration;
+@@ -28 +29,19 @@ pub(super) async fn serve(config: Arc<Config>, app: Router) -> Result<(), Error>
+-    while set.join_next().await.is_some() {}
++    while let Some(result) = set.join_next().await {
++        match result {
++            Ok(Ok(())) => {
++                tracing::error!("Web server task ended unexpectedly");
++                set.abort_all();
++                return Err(anyhow::anyhow!("web server task ended unexpectedly").into());
++            }
++            Ok(Err(error)) => {
++                tracing::error!(?error, "Web server task failed");
++                set.abort_all();
++                return Err(error);
++            }
++            Err(error) => {
++                tracing::error!(?error, "Web server task panicked");
++                set.abort_all();
++                return Err(anyhow::anyhow!("web server task failed: {error}").into());
++            }
++        }
++    }
+@@ -36,0 +56 @@ macro_rules! serve {
++        {
+@@ -38,0 +59 @@ macro_rules! serve {
++            let mut accept_backoff_ms = 100u64;
+@@ -40,2 +61,22 @@ macro_rules! serve {
+-                let (socket, _remote_addr) = $listener.accept().await.unwrap();
+-                let tower_service = make_service.call(&socket).await.unwrap();
++                let (socket, _remote_addr) = match $listener.accept().await {
++                    Ok(connection) => {
++                        accept_backoff_ms = 100;
++                        connection
++                    }
++                    Err(error) => {
++                        tracing::error!(?error, "Failed to accept web connection");
++                        if is_fatal_accept_error(&error) {
++                            return Err(anyhow::anyhow!("web accept failed: {error}").into());
++                        }
++                        tokio::time::sleep(Duration::from_millis(accept_backoff_ms)).await;
++                        accept_backoff_ms = (accept_backoff_ms.saturating_mul(2)).min(1_000);
++                        continue;
++                    }
++                };
++                let tower_service = match make_service.call(&socket).await {
++                    Ok(service) => service,
++                    Err(error) => {
++                        tracing::error!(?error, "Failed to create web service");
++                        continue;
++                    }
++                };
+@@ -57 +98,15 @@ macro_rules! serve {
+-        let _ = handle.await;
++        match handle.await {
++            Ok(Ok(())) => {
++                tracing::error!("Web accept loop ended unexpectedly");
++                Err(anyhow::anyhow!("web accept loop ended unexpectedly").into())
++            }
++            Ok(Err(error)) => {
++                tracing::error!(?error, "Web accept loop stopped");
++                Err(error)
++            }
++            Err(error) => {
++                tracing::error!(?error, "Web accept loop failed");
++                Err(anyhow::anyhow!("web accept loop failed: {error}").into())
++            }
++        }
++        }
+@@ -60,0 +116,7 @@ macro_rules! serve {
++fn is_fatal_accept_error(error: &std::io::Error) -> bool {
++    // These descriptor/operation errors do not become healthy by retrying;
++    // transient resource errors continue through the bounded backoff above.
++    matches!(error.raw_os_error(), Some(9 | 22 | 88))
++        || error.kind() == std::io::ErrorKind::InvalidInput
++}
++
+@@ -63,2 +125 @@ async fn http(addr: std::net::SocketAddr, app: Router) -> Result<(), Error> {
+-    serve!(listener, app);
+-    Ok(())
++    serve!(listener, app)
+@@ -72,2 +133 @@ async fn uds(path: PathBuf, app: Router) -> Result<(), Error> {
+-    serve!(listener, app);
+-    Ok(())
++    serve!(listener, app)
+diff --git mirakc/src/main.rs mirakc/src/main.rs
+index 97af1017..ec4f930d 100644
+--- mirakc/src/main.rs
++++ mirakc/src/main.rs
+@@ -58 +58,6 @@ async fn main() {
+-        None => serve::main(config).await,
++        None => {
++            if let Err(error) = serve::main(config).await {
++                tracing::error!(%error, "mirakc server failed");
++                std::process::exit(1);
++            }
++        }
+diff --git mirakc/src/serve.rs mirakc/src/serve.rs
+index fce531f6..4a0ff0f2 100644
+--- mirakc/src/serve.rs
++++ mirakc/src/serve.rs
+@@ -8 +8 @@ use tokio::signal::unix::SignalKind;
+-pub async fn main(config: Arc<config::Config>) {
++pub async fn main(config: Arc<config::Config>) -> Result<(), mirakc_core::error::Error> {
+@@ -49 +49 @@ pub async fn main(config: Arc<config::Config>) {
+-    tokio::select! {
++    let web_result = tokio::select! {
+@@ -51,4 +51 @@ pub async fn main(config: Arc<config::Config>) {
+-            match result {
+-                Ok(_) => (),
+-                Err(err) => tracing::error!(%err),
+-            }
++            result
+@@ -57,0 +55 @@ pub async fn main(config: Arc<config::Config>) {
++            Ok(())
+@@ -60,0 +59 @@ pub async fn main(config: Arc<config::Config>) {
++            Ok(())
+@@ -62 +61 @@ pub async fn main(config: Arc<config::Config>) {
+-    }
++    };
+@@ -69,0 +69,4 @@ pub async fn main(config: Arc<config::Config>) {
++    if let Err(ref err) = web_result {
++        tracing::error!(%err, "Web server stopped with an error");
++    }
++    web_result

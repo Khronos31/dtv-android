@@ -59,6 +59,7 @@ val mirakcSourceDir = providers.gradleProperty("mirakcSourceDir")
     .orElse(layout.projectDirectory.dir("../.work/mirakc-3.4.85").asFile.absolutePath)
 val mirakcBuildScript = layout.projectDirectory.file("../tools/mirakc/build-android.sh")
 val mirakcVerifierScript = layout.projectDirectory.file("../tools/mirakc/verify-android-elf.sh")
+val mirakcAndroidPatch = layout.projectDirectory.file("../tools/mirakc/patches/mirakc-android-web-resilience.patch")
 
 val prepareMirakcAribBinaries = tasks.register("prepareMirakcAribBinaries") {
     inputs.property("mirakcAribSourceDir", mirakcAribSourceDir)
@@ -192,7 +193,7 @@ val prepareMirakcBinary = tasks.register("prepareMirakcBinary") {
     inputs.property("mirakcSourceDir", mirakcSourceDir)
     inputs.property("mirakcPinnedRef", mirakcPinnedRef)
     inputs.property("mirakcSourceState", mirakcSourceState)
-    inputs.files(mirakcBuildScript, mirakcVerifierScript)
+    inputs.files(mirakcBuildScript, mirakcVerifierScript, mirakcAndroidPatch)
     inputs.files(mirakcTrackedSourceFiles)
     outputs.files(mirakcBinaries)
 
