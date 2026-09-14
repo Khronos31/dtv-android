@@ -281,9 +281,10 @@ Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStartMirakc(
     }
     if (mirakc == 0) {
         setpgid(0, 0);
-        // If the Android service process dies, do not leave the server behind.
-        prctl(PR_SET_PDEATHSIG, SIGTERM);
-        if (getppid() == 1) _exit(127);
+        // Do not bind this child to the short-lived Kotlin startup worker:
+        // Linux applies PDEATHSIG when that parent thread exits. Normal
+        // shutdown uses NativeUsbProcess.stop() and process-group cleanup;
+        // Android app teardown is handled by the process cgroup.
         // Preserve only the write end while dropping Binder/socket FDs from
         // the app process. Kotlin consumes this pipe on a daemon reader.
         close_inherited_descriptors(logPipe[1]);
