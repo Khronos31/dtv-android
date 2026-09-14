@@ -71,7 +71,7 @@ internal class MirakcSupervisor(
         }
         // nativeStop terminates the complete process group.  Do this outside
         // the lock so a state callback cannot ever wait on process teardown.
-        current?.let { stopStarted(it) }
+        current?.let { stopStarted(it, "service-stop") }
         broker.close()
     }
 
@@ -98,6 +98,7 @@ internal class MirakcSupervisor(
             }
             if (process == null) return
             setStateLocked("restarting for USB change")
+            Log.i(TAG, "breadcrumb reconfigure scheduled")
             restart = Thread({ restartOnWorker() }, "mirakc-supervisor-restart").also {
                 it.isDaemon = true
                 it.start()
@@ -149,6 +150,7 @@ internal class MirakcSupervisor(
 
             val launched = NativeUsbProcess.startMirakc(executable.absolutePath, config.absolutePath)
             started = launched
+            Log.i(TAG, "breadcrumb upstream start pid=${launched.pid}")
             startDiagnostics(launched)
             val abortStartup = synchronized(lock) {
                 if (stopping) {
@@ -160,7 +162,7 @@ internal class MirakcSupervisor(
                 }
             }
             if (abortStartup) {
-                stopStarted(launched)
+                stopStarted(launched, "stop-during-startup")
                 return
             }
             probeVersion(launched.pid)
@@ -171,6 +173,7 @@ internal class MirakcSupervisor(
                 NativeUsbProcess.PollResult.ERROR ->
                     throw IOException("unable to poll mirakc after /api/version probe")
             }
+            Log.i(TAG, "breadcrumb probe success pid=${launched.pid}")
             val rerun = synchronized(lock) {
                 if (process?.pid != launched.pid || stopping) return
                 // Read and clear this while startup is still marked alive so
@@ -192,7 +195,8 @@ internal class MirakcSupervisor(
             // marker is alive; its finally block handles that coalesced event.
             if (rerun && synchronized(lock) { restart?.isAlive != true }) reconfigure()
         } catch (error: Exception) {
-            started?.let { stopStarted(it) }
+            Log.e(TAG, "breadcrumb startup failure")
+            started?.let { stopStarted(it, "startup-failure") }
             synchronized(lock) {
                 if (stopping) {
                     startup = null
@@ -221,7 +225,7 @@ internal class MirakcSupervisor(
             monitor?.interrupt()
             monitor = null
         }
-        current?.let { stopStarted(it) }
+        current?.let { stopStarted(it, "usb-reconfigure") }
         try {
             broker.rotateGeneration()
             synchronized(lock) {
@@ -287,6 +291,11 @@ internal class MirakcSupervisor(
                 NativeUsbProcess.PollResult.ERROR -> {
                     // pollMirakc reaps an exited child; do not call
                     // nativeStop on a reaped/reused PID.
+                    if (result is NativeUsbProcess.PollResult.EXITED) {
+                        Log.e(TAG, "breadcrumb monitor EXITED pid=${started.pid} ${describe(result)}")
+                    } else {
+                        Log.e(TAG, "breadcrumb monitor ERROR pid=${started.pid}")
+                    }
                     synchronized(lock) {
                         if (process?.pid != started.pid) return
                         process = null
@@ -442,7 +451,8 @@ internal class MirakcSupervisor(
         }
     }
 
-    private fun stopStarted(started: NativeUsbProcess.StartedMirakc) {
+    private fun stopStarted(started: NativeUsbProcess.StartedMirakc, reason: String) {
+        Log.i(TAG, "breadcrumb stopStarted reason=$reason pid=${started.pid}")
         try {
             NativeUsbProcess.stop(started.pid)
         } finally {

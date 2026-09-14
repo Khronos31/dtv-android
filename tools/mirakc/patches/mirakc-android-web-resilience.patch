@@ -139,19 +139,20 @@ index 1e3c940d..a91e68c2 100644
 -    Ok(())
 +    serve!(listener, app)
 diff --git mirakc/src/main.rs mirakc/src/main.rs
-index 97af1017..ec4f930d 100644
+index 97af1017..3670840c 100644
 --- mirakc/src/main.rs
 +++ mirakc/src/main.rs
-@@ -58 +58,6 @@ async fn main() {
+@@ -58 +58,7 @@ async fn main() {
 -        None => serve::main(config).await,
 +        None => {
 +            if let Err(error) = serve::main(config).await {
 +                tracing::error!(%error, "mirakc server failed");
++                eprintln!("mirakc: server failed; exiting");
 +                std::process::exit(1);
 +            }
 +        }
 diff --git mirakc/src/serve.rs mirakc/src/serve.rs
-index fce531f6..4a0ff0f2 100644
+index fce531f6..f2acf6ba 100644
 --- mirakc/src/serve.rs
 +++ mirakc/src/serve.rs
 @@ -8 +8 @@ use tokio::signal::unix::SignalKind;
@@ -160,20 +161,25 @@ index fce531f6..4a0ff0f2 100644
 @@ -49 +49 @@ pub async fn main(config: Arc<config::Config>) {
 -    tokio::select! {
 +    let web_result = tokio::select! {
-@@ -51,4 +51 @@ pub async fn main(config: Arc<config::Config>) {
+@@ -51,4 +51,2 @@ pub async fn main(config: Arc<config::Config>) {
 -            match result {
 -                Ok(_) => (),
 -                Err(err) => tracing::error!(%err),
 -            }
++            eprintln!("mirakc: web serve returned");
 +            result
-@@ -57,0 +55 @@ pub async fn main(config: Arc<config::Config>) {
+@@ -56,0 +55 @@ pub async fn main(config: Arc<config::Config>) {
++            eprintln!("mirakc: SIGINT received");
+@@ -57,0 +57 @@ pub async fn main(config: Arc<config::Config>) {
 +            Ok(())
-@@ -60,0 +59 @@ pub async fn main(config: Arc<config::Config>) {
+@@ -59,0 +60 @@ pub async fn main(config: Arc<config::Config>) {
++            eprintln!("mirakc: SIGTERM received");
+@@ -60,0 +62 @@ pub async fn main(config: Arc<config::Config>) {
 +            Ok(())
-@@ -62 +61 @@ pub async fn main(config: Arc<config::Config>) {
+@@ -62 +64 @@ pub async fn main(config: Arc<config::Config>) {
 -    }
 +    };
-@@ -69,0 +69,4 @@ pub async fn main(config: Arc<config::Config>) {
+@@ -69,0 +72,4 @@ pub async fn main(config: Arc<config::Config>) {
 +    if let Err(ref err) = web_result {
 +        tracing::error!(%err, "Web server stopped with an error");
 +    }
