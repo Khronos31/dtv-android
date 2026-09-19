@@ -186,7 +186,7 @@ native libarib25 filter に渡します。PX4 adapter のカード経路も同�
 [libarib25](https://github.com/stz2012/libarib25)（stz2012 版・Apache-2.0）を
 共有します。pcscd は使わず、Android の USB 権限を得たネイティブ処理系がカード
 リーダーを扱います。外付けリーダー1台につき Siano stream は同時に1本です。
-PX-S1UD の 12seg 復号は、実機での再検証が未完了です。
+PX-S1UD の 12seg 復号は、実機での再検証を完了しています。
 
 手元のリーダー（Identive/SCM SCR33xx v2.0）は `dwFeatures=0x000100ba` で交換
 レベルが TPDU だったため、ネイティブ CCID transport は T=1 のブロック層
