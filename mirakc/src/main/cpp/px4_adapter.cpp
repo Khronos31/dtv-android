@@ -1,10 +1,21 @@
 #include <cerrno>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
+#include <memory>
+#include <signal.h>
 #include <string>
+#include <sys/wait.h>
 #include <unistd.h>
 
+#include "arib_std_b25.h"
+#include "b_cas_card.h"
+
+#include <px4/pcsc_ifd_adapter.h>
+
+extern "C" int b25_stdio_filter_with_card(B_CAS_CARD* bcas);
 namespace {
 
 constexpr int frequency_khz(int channel) {
@@ -49,6 +60,102 @@ bool valid_receiver(int receiver) {
 int fail(const char* message) {
     std::fprintf(stderr, "px4 adapter: %s\n", message);
     return 64;
+}
+
+struct Px4CardContext {
+    std::unique_ptr<px4::userland::pcsc::IfdCardClient> client;
+    std::uint64_t handle = 0;
+    bool failed = false;
+};
+
+int card_power_on(void* opaque) {
+    auto* context = static_cast<Px4CardContext*>(opaque);
+    if (context == nullptr || context->client == nullptr) return -1;
+    if (context->handle != 0) {
+        if (!context->client->disconnect(context->handle)) context->failed = true;
+        context->handle = 0;
+    }
+    const auto result = context->client->connect_shared();
+    if (!result) {
+        context->failed = true;
+        return -1;
+    }
+    context->handle = result.value().handle;
+    return context->handle == 0 ? -1 : 0;
+}
+
+int card_transmit(void* opaque, const std::uint8_t* apdu, int apdu_len,
+                  std::uint8_t* response, int response_max) {
+    auto* context = static_cast<Px4CardContext*>(opaque);
+    if (context == nullptr || context->client == nullptr || context->handle == 0 ||
+        apdu == nullptr || apdu_len <= 0 || response == nullptr || response_max <= 0) {
+        return -1;
+    }
+    const auto result = context->client->transmit(
+        context->handle,
+        px4::userland::ByteView{apdu, static_cast<std::size_t>(apdu_len)},
+        px4::userland::MutableByteView{
+            response, static_cast<std::size_t>(response_max)});
+    if (!result || result.value() > static_cast<std::size_t>(response_max)) {
+        context->failed = true;
+        return -1;
+    }
+    return static_cast<int>(result.value());
+}
+
+void card_close(void* opaque) {
+    auto* context = static_cast<Px4CardContext*>(opaque);
+    if (context == nullptr) return;
+    if (context->client != nullptr) {
+        if (context->handle != 0 && !context->client->disconnect(context->handle)) {
+            context->failed = true;
+        }
+        context->handle = 0;
+        context->client->close();
+        context->client.reset();
+    }
+}
+
+int pass_through(int input_fd) {
+    std::uint8_t buffer[64 * 1024];
+    while (true) {
+        const ssize_t count = read(input_fd, buffer, sizeof(buffer));
+        if (count <= 0) break;
+        std::size_t offset = 0;
+        while (offset < static_cast<std::size_t>(count)) {
+            const ssize_t written = write(STDOUT_FILENO, buffer + offset,
+                                          static_cast<std::size_t>(count) - offset);
+            if (written <= 0) return 1;
+            offset += static_cast<std::size_t>(written);
+        }
+    }
+    return 0;
+}
+
+int reap_child(pid_t child, int* status) {
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        const pid_t result = waitpid(child, status, WNOHANG);
+        if (result == child) return 0;
+        if (result < 0 && errno != EINTR) return -1;
+        usleep(10 * 1000);
+    }
+    kill(child, SIGTERM);
+    for (int attempt = 0; attempt < 50; ++attempt) {
+        const pid_t result = waitpid(child, status, WNOHANG);
+        if (result == child) return 0;
+        if (result < 0 && errno != EINTR) return -1;
+        usleep(10 * 1000);
+    }
+    kill(child, SIGKILL);
+    while (waitpid(child, status, 0) < 0 && errno == EINTR) {
+    }
+    return 1;
+}
+
+int child_result(int status) {
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+    return 1;
 }
 
 }  // namespace
@@ -106,6 +213,15 @@ int main(int argc, char** argv) {
     }
 
     const std::string frequency = std::to_string(frequency_khz(channel));
+    int output_pipe[2] = {-1, -1};
+    if (pipe2(output_pipe, O_CLOEXEC) != 0) return fail("cannot create TS pipe");
+    const pid_t child = fork();
+    if (child < 0) {
+        close(output_pipe[0]);
+        close(output_pipe[1]);
+        return fail("cannot fork px4-ts");
+    }
+
     char* const child_argv[] = {
         const_cast<char*>(px4_ts.c_str()),
         const_cast<char*>("--device"),
@@ -122,7 +238,52 @@ int main(int argc, char** argv) {
         const_cast<char*>("-"),
         nullptr,
     };
-    execv(px4_ts.c_str(), child_argv);
-    std::fprintf(stderr, "px4 adapter: exec %s: %s\n", px4_ts.c_str(), std::strerror(errno));
-    return 127;
+    if (child == 0) {
+        close(output_pipe[0]);
+        if (dup2(output_pipe[1], STDOUT_FILENO) < 0) _exit(127);
+        close(output_pipe[1]);
+        execv(px4_ts.c_str(), child_argv);
+        std::fprintf(stderr, "px4 adapter: exec failed: %s\n", std::strerror(errno));
+        _exit(127);
+    }
+    close(output_pipe[1]);
+
+    px4::userland::pcsc::PosixIfdCardClientFactory factory;
+    px4::userland::pcsc::IfdEndpoint endpoint;
+    endpoint.runtime_directory = runtime_dir;
+    endpoint.device_instance = base_serial;
+    auto client = factory.connect(endpoint);
+    if (!client) {
+        const int result = pass_through(output_pipe[0]);
+        close(output_pipe[0]);
+        int child_status = 0;
+        const int reap_result = reap_child(child, &child_status);
+        if (reap_result < 0) return 1;
+        return result != 0 ? result : child_result(child_status);
+    }
+
+    Px4CardContext card;
+    card.client = std::move(client.value());
+    const B_CAS_TRANSPORT transport{
+        &card, card_power_on, card_transmit, card_close};
+    B_CAS_CARD* bcas = create_b_cas_card_with_transport(&transport);
+    if (dup2(output_pipe[0], STDIN_FILENO) < 0) {
+        if (bcas != nullptr) bcas->release(bcas);
+        else card_close(&card);
+        close(output_pipe[0]);
+        int child_status = 0;
+        reap_child(child, &child_status);
+        return 1;
+    }
+    close(output_pipe[0]);
+    const int result = b25_stdio_filter_with_card(bcas);
+    if (bcas == nullptr) card_close(&card);
+    // Closing the duplicated read end is required before waiting: otherwise
+    // a failed downstream write can leave px4-ts blocked on a full pipe.
+    close(STDIN_FILENO);
+    int child_status = 0;
+    const int reap_result = reap_child(child, &child_status);
+    if (reap_result < 0) return 1;
+    if (result != 0 || card.failed) return result != 0 ? result : 1;
+    return child_result(child_status);
 }

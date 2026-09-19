@@ -39,8 +39,32 @@ endif()
 
 option(MIRAKC_BUILD_PX4_ADAPTER "Build the standalone mirakc PX4 tuner adapter" OFF)
 if(MIRAKC_BUILD_PX4_ADAPTER)
-    add_executable(px4_adapter px4_adapter.cpp)
+    set(PX4_USERLAND_DIR "" CACHE PATH "Pinned px4-userland checkout")
+    if(NOT IS_DIRECTORY "${PX4_USERLAND_DIR}/userland/include")
+        message(FATAL_ERROR "PX4_USERLAND_DIR must point to a px4-userland checkout")
+    endif()
+    set(PX4_USERLAND_SRC "${PX4_USERLAND_DIR}/userland")
+    add_executable(px4_adapter
+        px4_adapter.cpp
+        b25_filter.cpp
+        ccid_reader.c
+        b_cas_card_ccid.c
+        arib25/arib_std_b25.c
+        arib25/ts_section_parser.c
+        arib25/multi2.cc
+        ${PX4_USERLAND_SRC}/src/control_client.cpp
+        ${PX4_USERLAND_SRC}/src/error.cpp
+        ${PX4_USERLAND_SRC}/src/ipc.cpp
+        ${PX4_USERLAND_SRC}/src/pcsc_ifd_adapter.cpp
+        ${PX4_USERLAND_SRC}/src/posix_ipc.cpp
+    )
+    target_include_directories(px4_adapter PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/arib25
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${PX4_USERLAND_SRC}/include
+    )
     target_compile_features(px4_adapter PRIVATE cxx_std_17)
+    target_compile_options(px4_adapter PRIVATE -fvisibility=hidden)
     target_link_options(px4_adapter PRIVATE
         -Wl,-z,max-page-size=16384
         -Wl,-z,common-page-size=16384
@@ -50,4 +74,5 @@ if(MIRAKC_BUILD_PX4_ADAPTER)
     set_target_properties(px4_adapter PROPERTIES
         OUTPUT_NAME "libmirakc-px4-adapter.so"
     )
+    target_link_libraries(px4_adapter log)
 endif()

@@ -49,6 +49,8 @@ val sianoAdapterVerifier = layout.projectDirectory.file("../tools/mirakc/verify-
 val px4AdapterSource = layout.projectDirectory.file("src/main/cpp/px4_adapter.cpp")
 val px4AdapterCmake = layout.projectDirectory.file("src/main/cpp/CMakeLists.txt")
 val px4AdapterVerifier = layout.projectDirectory.file("../tools/mirakc/verify-android-elf.sh")
+val px4UserlandDir = providers.gradleProperty("px4UserlandDir")
+    .orElse("/config/GitHub/px4-userland")
 val androidNdkRoot = providers.environmentVariable("ANDROID_NDK_HOME")
     .orElse(providers.environmentVariable("ANDROID_NDK_ROOT"))
     .orElse("/config/.tools/android-sdk/ndk/$configuredNdkVersion")
@@ -146,7 +148,29 @@ val prepareSianoAdapterBinaries = tasks.register("prepareSianoAdapterBinaries") 
 }
 
 val preparePx4AdapterBinaries = tasks.register("preparePx4AdapterBinaries") {
-    inputs.files(px4AdapterSource, px4AdapterCmake, px4AdapterVerifier)
+    inputs.property("px4UserlandDir", px4UserlandDir)
+    inputs.files(
+        px4AdapterSource,
+        px4AdapterCmake,
+        px4AdapterVerifier,
+        layout.projectDirectory.file("src/main/cpp/b25_filter.cpp"),
+        layout.projectDirectory.file("src/main/cpp/b_cas_card_ccid.c"),
+        layout.projectDirectory.file("src/main/cpp/arib25/b_cas_card.h"),
+        fileTree(layout.projectDirectory.dir("src/main/cpp/arib25"))
+    )
+    inputs.files(
+        px4UserlandDir.map { directoryName ->
+            val sourceRoot = file(directoryName).resolve("userland/src")
+            listOf(
+                sourceRoot.resolve("control_client.cpp"),
+                sourceRoot.resolve("error.cpp"),
+                sourceRoot.resolve("ipc.cpp"),
+                sourceRoot.resolve("pcsc_ifd_adapter.cpp"),
+                sourceRoot.resolve("posix_ipc.cpp")
+            )
+        }
+    )
+    inputs.dir(px4UserlandDir.map { file(it).resolve("userland/include/px4") })
     outputs.files(
         nativeOutputDir.file("arm64-v8a/libmirakc-px4-adapter.so"),
         nativeOutputDir.file("armeabi-v7a/libmirakc-px4-adapter.so")
@@ -167,7 +191,8 @@ val preparePx4AdapterBinaries = tasks.register("preparePx4AdapterBinaries") {
                     "-DCMAKE_TOOLCHAIN_FILE=${ndk.resolve("build/cmake/android.toolchain.cmake")}",
                     "-DANDROID_ABI=$abi", "-DANDROID_PLATFORM=android-24",
                     "-DANDROID_STL=c++_static",
-                    "-DMIRAKC_BUILD_PX4_ADAPTER=ON"
+                    "-DMIRAKC_BUILD_PX4_ADAPTER=ON",
+                    "-DPX4_USERLAND_DIR=${file(px4UserlandDir.get()).absolutePath}"
                 )
             }
             project.exec {
@@ -291,8 +316,6 @@ val px4Binaries = listOf(
     nativeOutputDir.file("armeabi-v7a/libpx4ctl.so")
 )
 val px4PinnedRef = "639e65feee7c9f503d44023edd9ab9bba12d5d74"
-val px4UserlandDir = providers.gradleProperty("px4UserlandDir")
-    .orElse("/config/GitHub/px4-userland")
 val px4BuildScript = px4UserlandDir.map { file(it).resolve("scripts/build-android.sh") }
 
 fun gitOutput(directory: java.io.File, vararg args: String): Pair<Int, String> {

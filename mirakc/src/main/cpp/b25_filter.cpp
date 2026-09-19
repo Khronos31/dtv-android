@@ -19,24 +19,16 @@ static int passthrough_loop() {
     return 1;
 }
 
-extern "C" int b25_stdio_filter(int reader_fd) {
-    if (ccid_open(reader_fd) != 0) {
-        LOGE("ccid_open failed, passing TS through");
-        return passthrough_loop();
-    }
-
-    B_CAS_CARD *bcas = create_b_cas_card();
+extern "C" int b25_stdio_filter_with_card(B_CAS_CARD *bcas) {
     if (bcas == nullptr || bcas->init(bcas) != 0) {
         LOGE("B-CAS init failed, passing TS through");
         if (bcas) bcas->release(bcas);
-        ccid_close();
         return passthrough_loop();
     }
 
     ARIB_STD_B25 *b25 = create_arib_std_b25();
     if (b25 == nullptr) {
         bcas->release(bcas);
-        ccid_close();
         return passthrough_loop();
     }
     b25->set_multi2_round(b25, 4);
@@ -46,7 +38,6 @@ extern "C" int b25_stdio_filter(int reader_fd) {
         LOGE("set_b_cas_card failed");
         b25->release(b25);
         bcas->release(bcas);
-        ccid_close();
         return passthrough_loop();
     }
     LOGI("B25 decoder ready");
@@ -78,4 +69,15 @@ extern "C" int b25_stdio_filter(int reader_fd) {
     b25->release(b25);
     bcas->release(bcas);
     return 0;
+}
+
+extern "C" int b25_stdio_filter(int reader_fd) {
+    if (ccid_open(reader_fd) != 0) {
+        LOGE("ccid_open failed, passing TS through");
+        return passthrough_loop();
+    }
+    B_CAS_CARD *bcas = create_b_cas_card();
+    const int result = b25_stdio_filter_with_card(bcas);
+    if (bcas == nullptr) ccid_close();
+    return result;
 }

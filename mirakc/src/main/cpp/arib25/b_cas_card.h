@@ -46,6 +46,18 @@ typedef struct {
 	uint32_t return_code;
 } B_CAS_ECM_RESULT;
 
+// The default card implementation uses the legacy USB CCID reader.  A
+// transport supplied here is deliberately a small APDU boundary so another
+// owner (such as px4d) can service the card without exposing USB ownership to
+// this process.
+typedef struct {
+	void *context;
+	int (*power_on)(void *context);
+	int (*transmit)(void *context, const uint8_t *apdu, int apdu_len,
+				uint8_t *response, int response_max);
+	void (*close)(void *context);
+} B_CAS_TRANSPORT;
+
 typedef struct {
 
 	void *private_data;
@@ -68,6 +80,8 @@ extern "C" {
 #endif
 
 extern ARIB25_API_EXPORT B_CAS_CARD *create_b_cas_card();
+extern ARIB25_API_EXPORT B_CAS_CARD *create_b_cas_card_with_transport(
+	const B_CAS_TRANSPORT *transport);
 
 #ifdef __cplusplus
 }

@@ -19,6 +19,7 @@ typedef struct {
     B_CAS_ID id;
     int32_t id_max;
     int initialized;
+    B_CAS_TRANSPORT transport;
 } B_CAS_CARD_PRIVATE_DATA;
 
 static const uint8_t INITIAL_SETTING_CONDITIONS_CMD[] = {0x90, 0x30, 0x00, 0x00, 0x00};
@@ -38,6 +39,34 @@ static B_CAS_CARD_PRIVATE_DATA *private_data(void *bcas) {
     B_CAS_CARD *p = (B_CAS_CARD *)bcas;
     if (p == NULL) return NULL;
     return (B_CAS_CARD_PRIVATE_DATA *)p->private_data;
+}
+
+static int ccid_transport_power_on(void *context) {
+    (void)context;
+    return ccid_power_on();
+}
+
+static int ccid_transport_transmit(void *context, const uint8_t *apdu, int apdu_len,
+                                   uint8_t *response, int response_max) {
+    (void)context;
+    return ccid_transmit(apdu, apdu_len, response, response_max);
+}
+
+static void ccid_transport_close(void *context) {
+    (void)context;
+    ccid_close();
+}
+
+static int transport_power_on(B_CAS_CARD_PRIVATE_DATA *prv) {
+    return prv->transport.power_on == NULL ? -1 :
+           prv->transport.power_on(prv->transport.context);
+}
+
+static int transport_transmit(B_CAS_CARD_PRIVATE_DATA *prv, const uint8_t *apdu,
+                              int apdu_len, uint8_t *response, int response_max) {
+    return prv->transport.transmit == NULL ? -1 :
+           prv->transport.transmit(prv->transport.context, apdu, apdu_len,
+                                   response, response_max);
 }
 
 static int32_t load_be_uint16(uint8_t *p) { return (p[0] << 8) | p[1]; }
@@ -72,9 +101,22 @@ static int setup_emm_receive_command(uint8_t *dst, uint8_t *src, int len) {
 }
 
 ARIB25_API_EXPORT B_CAS_CARD *create_b_cas_card() {
+    B_CAS_TRANSPORT transport;
+    transport.context = NULL;
+    transport.power_on = ccid_transport_power_on;
+    transport.transmit = ccid_transport_transmit;
+    transport.close = ccid_transport_close;
+    return create_b_cas_card_with_transport(&transport);
+}
+
+ARIB25_API_EXPORT B_CAS_CARD *create_b_cas_card_with_transport(
+    const B_CAS_TRANSPORT *transport) {
+    if (transport == NULL || transport->power_on == NULL ||
+        transport->transmit == NULL || transport->close == NULL) return NULL;
     size_t n = sizeof(B_CAS_CARD) + sizeof(B_CAS_CARD_PRIVATE_DATA);
     B_CAS_CARD_PRIVATE_DATA *prv = (B_CAS_CARD_PRIVATE_DATA *)calloc(1, n);
     if (prv == NULL) return NULL;
+    prv->transport = *transport;
     B_CAS_CARD *r = (B_CAS_CARD *)(prv + 1);
     r->private_data = prv;
     r->release = release_b_cas_card;
@@ -92,14 +134,16 @@ static void release_b_cas_card(void *bcas) {
     if (prv == NULL) return;
     free(prv->sbuf);
     free(prv->id.data);
-    ccid_close();
+    if (prv->transport.close != NULL) {
+        prv->transport.close(prv->transport.context);
+    }
     free(prv);
 }
 
 static int init_b_cas_card(void *bcas) {
     B_CAS_CARD_PRIVATE_DATA *prv = private_data(bcas);
     if (prv == NULL) return B_CAS_CARD_ERROR_INVALID_PARAMETER;
-    if (ccid_power_on() != 0) return B_CAS_CARD_ERROR_ALL_READERS_CONNECTION_FAILED;
+    if (transport_power_on(prv) != 0) return B_CAS_CARD_ERROR_ALL_READERS_CONNECTION_FAILED;
 
     prv->sbuf = (uint8_t *)malloc(2 * B_CAS_BUFFER_MAX);
     if (prv->sbuf == NULL) return B_CAS_CARD_ERROR_NO_ENOUGH_MEMORY;
@@ -108,8 +152,9 @@ static int init_b_cas_card(void *bcas) {
     prv->id.data = (int64_t *)calloc((size_t)prv->id_max, sizeof(int64_t));
     if (prv->id.data == NULL) return B_CAS_CARD_ERROR_NO_ENOUGH_MEMORY;
 
-    int n = ccid_transmit(INITIAL_SETTING_CONDITIONS_CMD, (int)sizeof(INITIAL_SETTING_CONDITIONS_CMD),
-                          prv->rbuf, B_CAS_BUFFER_MAX);
+    int n = transport_transmit(prv, INITIAL_SETTING_CONDITIONS_CMD,
+                               (int)sizeof(INITIAL_SETTING_CONDITIONS_CMD),
+                               prv->rbuf, B_CAS_BUFFER_MAX);
     if (n < 57) {
         LOGE("initial setting failed n=%d", n);
         return B_CAS_CARD_ERROR_TRANSMIT_FAILED;
@@ -124,8 +169,9 @@ static int init_b_cas_card(void *bcas) {
     prv->stat.card_status = load_be_uint16(prv->rbuf + 2);
     prv->stat.ca_system_id = load_be_uint16(prv->rbuf + 6);
     prv->initialized = 1;
-    LOGI("B-CAS ready id=%lld ca=0x%04x status=0x%04x",
-         (long long)prv->stat.bcas_card_id, prv->stat.ca_system_id, prv->stat.card_status);
+    // Do not log the card identifier; it is a stable credential-like value.
+    LOGI("B-CAS ready ca=0x%04x status=0x%04x",
+         prv->stat.ca_system_id, prv->stat.card_status);
     return 0;
 }
 
@@ -141,8 +187,9 @@ static int get_id_b_cas_card(void *bcas, B_CAS_ID *dst) {
     B_CAS_CARD_PRIVATE_DATA *prv = private_data(bcas);
     if (prv == NULL || dst == NULL) return B_CAS_CARD_ERROR_INVALID_PARAMETER;
     if (!prv->initialized) return B_CAS_CARD_ERROR_NOT_INITIALIZED;
-    int n = ccid_transmit(CARD_ID_INFORMATION_ACQUIRE_CMD, (int)sizeof(CARD_ID_INFORMATION_ACQUIRE_CMD),
-                          prv->rbuf, B_CAS_BUFFER_MAX);
+    int n = transport_transmit(prv, CARD_ID_INFORMATION_ACQUIRE_CMD,
+                               (int)sizeof(CARD_ID_INFORMATION_ACQUIRE_CMD),
+                               prv->rbuf, B_CAS_BUFFER_MAX);
     if (n < 19) return B_CAS_CARD_ERROR_TRANSMIT_FAILED;
     uint8_t *p = prv->rbuf + 6;
     uint8_t *tail = prv->rbuf + n;
@@ -176,9 +223,9 @@ static int proc_ecm_b_cas_card(void *bcas, B_CAS_ECM_RESULT *dst, uint8_t *src, 
     int slen = setup_ecm_receive_command(prv->sbuf, src, len);
     int n = -1;
     for (int retry = 0; retry < 4; retry++) {
-        n = ccid_transmit(prv->sbuf, slen, prv->rbuf, B_CAS_BUFFER_MAX);
+        n = transport_transmit(prv, prv->sbuf, slen, prv->rbuf, B_CAS_BUFFER_MAX);
         if (n >= 25) break;
-        ccid_power_on();
+        transport_power_on(prv);
     }
     if (n < 25) return B_CAS_CARD_ERROR_TRANSMIT_FAILED;
     memcpy(dst->scramble_key, prv->rbuf + 6, 16);
@@ -191,6 +238,6 @@ static int proc_emm_b_cas_card(void *bcas, uint8_t *src, int len) {
     if (prv == NULL || src == NULL || len < 1) return B_CAS_CARD_ERROR_INVALID_PARAMETER;
     if (!prv->initialized) return B_CAS_CARD_ERROR_NOT_INITIALIZED;
     int slen = setup_emm_receive_command(prv->sbuf, src, len);
-    int n = ccid_transmit(prv->sbuf, slen, prv->rbuf, B_CAS_BUFFER_MAX);
+    int n = transport_transmit(prv, prv->sbuf, slen, prv->rbuf, B_CAS_BUFFER_MAX);
     return n >= 6 ? 0 : B_CAS_CARD_ERROR_TRANSMIT_FAILED;
 }

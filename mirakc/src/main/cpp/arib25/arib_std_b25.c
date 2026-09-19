@@ -1765,22 +1765,6 @@ static int proc_ecm(DECRYPTOR_ELEM *dec, B_CAS_CARD *bcas, int32_t multi2_round)
 
 	dec->m2->set_scramble_key(dec->m2, res.scramble_key);
 
-#if defined(DEBUG)
-	int i;
-	fprintf(stderr, "----\n");
-	fprintf(stderr, "odd: ");
-	for(i=0;i<8;i++){
-		fprintf(stderr, " %02x", res.scramble_key[i]);
-	}
-	fprintf(stderr, "\n");
-	fprintf(stderr, "even:");
-	for(i=8;i<16;i++){
-		fprintf(stderr, " %02x", res.scramble_key[i]);
-	}
-	fprintf(stderr, "\n");
-	fflush(stderr);
-#endif
-	
 LAST:
 	if(sect.raw != NULL){
 		n = dec->ecm->ret(dec->ecm, &sect);
