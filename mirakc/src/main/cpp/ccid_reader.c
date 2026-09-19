@@ -197,21 +197,20 @@ int ccid_open(int usb_fd) {
     g_tpdu = 1;
     g_ifsc = 32;
     g_verbose = 60;
-    unsigned int iface = 0;
-    if (ioctl(g_fd, USBDEVFS_CLAIMINTERFACE, &iface) < 0 && errno != EBUSY) {
-        LOGE("CLAIMINTERFACE failed errno=%d", errno);
-        return -1;
-    }
-    LOGI("CCID claimed interface 0 fd=%d", usb_fd);
+    /*
+     * The Android service claims every CCID interface before duplicating this
+     * USBFS fd for the filter child.  Do not issue CLAIMINTERFACE again here:
+     * on Android USBFS this is the same open file description and a second
+     * claim can block while the Java-side owner is still active.  The Java
+     * SianoReaderHandle owns the claim and releases it after this child exits.
+     */
+    LOGI("CCID using Android-claimed interface 0 fd=%d", usb_fd);
     read_descriptors();
     return 0;
 }
 
 void ccid_close(void) {
-    if (g_fd >= 0) {
-        unsigned int iface = 0;
-        ioctl(g_fd, USBDEVFS_RELEASEINTERFACE, &iface);
-    }
+    /* The Android-side UsbDeviceConnection owns the interface claim. */
     g_fd = -1;
 }
 
