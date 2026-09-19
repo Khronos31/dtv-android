@@ -46,6 +46,7 @@ if(MIRAKC_BUILD_PX4_ADAPTER)
     set(PX4_USERLAND_SRC "${PX4_USERLAND_DIR}/userland")
     add_executable(px4_adapter
         px4_adapter.cpp
+        px4_tune_plan.cpp
         b25_filter.cpp
         ccid_reader.c
         b_cas_card_ccid.c
@@ -75,6 +76,16 @@ if(MIRAKC_BUILD_PX4_ADAPTER)
         OUTPUT_NAME "libmirakc-px4-adapter.so"
     )
     target_link_libraries(px4_adapter log)
+endif()
+
+option(MIRAKC_BUILD_PX4_TUNE_PLAN_TESTS "Build host PX4 tune-plan tests" OFF)
+if(MIRAKC_BUILD_PX4_TUNE_PLAN_TESTS)
+    add_executable(px4_tune_plan_test
+        px4_tune_plan.cpp
+        tests/px4_tune_plan_test.cpp
+    )
+    target_compile_features(px4_tune_plan_test PRIVATE cxx_std_17)
+    target_include_directories(px4_tune_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
 
 option(MIRAKC_BUILD_PX4_FWTOOL "Build the pinned PX4 firmware generator" OFF)

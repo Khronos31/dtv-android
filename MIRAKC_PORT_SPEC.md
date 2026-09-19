@@ -158,6 +158,34 @@ moving branch.
    reconnect USB, stop/restart the APK, and produce the final evidence receipt.
    Risk: individually green components fail under concurrent job/stream load.
 
+### PX-Q3U4 satellite seed increment (2026-09-19)
+
+The first BS/CS increment extends the existing PX4 adapter with a host-testable,
+fail-closed tune-plan parser.  PX-Q3U4 receiver IDs `2,3,6,7` remain the four
+`[GR]` tuners; `0,1,4,5` are published as four `[BS, CS]` tuners.  The adapter
+maps the three physical seed channels below and always passes `--lnb-voltage 0`:
+
+| channel | type | purpose |
+| --- | --- | --- |
+| `BS01_0` | BS | physical BS transponder 01, slot 0 |
+| `CS2` | CS | physical CS transponder 2 (CS1 network seed) |
+| `CS4` | CS | physical CS transponder 4 (CS2 network seed) |
+
+BS entries may provide mirakc `extra-args` as `--tsid=N` or `--tsid N`;
+the adapter prefers the resulting `--stream-id` selection and otherwise uses
+the parsed slot.  CS and GR reject TSID overrides.  Satellite requests follow
+px4-userland's receiver/CLI contract and use explicit 0V LNB state; the
+Japanese physical-channel-to-frequency mapping is separately implemented and
+covered by this adapter's host tests.  HAOS is only a cross-check for that
+mapping, not its source of truth.  No LNB power permission is enabled.  The
+seed list is not the production inventory.
+
+This increment does not claim full satellite acceptance.  The remaining gate is
+live-NIT discovery of the required BS/CS service inventory, at least one BS and
+one CS integrity stream with card descrambling, and concurrency evidence that
+GR, satellite and EPG jobs share the single px4d owner correctly.  The host
+parser test can be run with `./tools/mirakc/test-px4-tune-plan.sh`.
+
 The two least-known mandatory components were increments 1 and 2.  Both Phase 0
 feasibility gates are complete; remaining acceptance evidence is still required.
 

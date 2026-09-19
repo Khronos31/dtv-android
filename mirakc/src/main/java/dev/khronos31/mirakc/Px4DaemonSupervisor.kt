@@ -34,7 +34,8 @@ internal class Px4UsbHandle(
 internal data class Px4Generation(
     val baseSerial: String,
     val runtimeDir: File,
-    val receivers: List<Int>
+    val terrestrialReceivers: List<Int>,
+    val satelliteReceivers: List<Int>
 )
 
 /** Starts px4d only after pairing and validating the two Android USB owners. */
@@ -186,7 +187,12 @@ internal class Px4DaemonSupervisor(
             return null
         }
 
-        val result = Px4Generation(pair.base, runtimeDir, listOf(2, 3, 6, 7))
+        val result = Px4Generation(
+            pair.base,
+            runtimeDir,
+            terrestrialReceivers = listOf(2, 3, 6, 7),
+            satelliteReceivers = listOf(0, 1, 4, 5)
+        )
         return synchronized(lock) {
             if (closed) {
                 // Service teardown raced startup; do not publish a generation

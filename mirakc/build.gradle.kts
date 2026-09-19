@@ -1,5 +1,6 @@
 import java.net.URI
 import java.security.MessageDigest
+import org.gradle.api.tasks.Exec
 
 plugins {
     id("com.android.application")
@@ -47,6 +48,10 @@ val sianoAdapterSource = layout.projectDirectory.file("src/main/cpp/siano_adapte
 val sianoAdapterCmake = layout.projectDirectory.file("src/main/cpp/CMakeLists.txt")
 val sianoAdapterVerifier = layout.projectDirectory.file("../tools/mirakc/verify-android-elf.sh")
 val px4AdapterSource = layout.projectDirectory.file("src/main/cpp/px4_adapter.cpp")
+val px4TunePlanSource = layout.projectDirectory.file("src/main/cpp/px4_tune_plan.cpp")
+val px4TunePlanHeader = layout.projectDirectory.file("src/main/cpp/px4_tune_plan.h")
+val px4TunePlanTests = layout.projectDirectory.file("src/main/cpp/tests/px4_tune_plan_test.cpp")
+val px4TunePlanTestScript = layout.projectDirectory.file("../tools/mirakc/test-px4-tune-plan.sh")
 val px4AdapterCmake = layout.projectDirectory.file("src/main/cpp/CMakeLists.txt")
 val px4AdapterVerifier = layout.projectDirectory.file("../tools/mirakc/verify-android-elf.sh")
 val px4UserlandDir = providers.gradleProperty("px4UserlandDir")
@@ -62,6 +67,12 @@ val px4FwtoolGeneratedAssets = layout.buildDirectory.dir("generated/px4-fwtool-a
 val androidNdkRoot = providers.environmentVariable("ANDROID_NDK_HOME")
     .orElse(providers.environmentVariable("ANDROID_NDK_ROOT"))
     .orElse("/config/.tools/android-sdk/ndk/$configuredNdkVersion")
+
+val runPx4TunePlanHostTests = tasks.register<Exec>("runPx4TunePlanHostTests") {
+    workingDir(project.rootDir)
+    commandLine("/bin/sh", px4TunePlanTestScript.asFile.absolutePath)
+    inputs.files(px4TunePlanSource, px4TunePlanHeader, px4TunePlanTests, px4TunePlanTestScript)
+}
 
 val mirakcBinaries = listOf(
     nativeOutputDir.file("arm64-v8a/libmirakc.so"),
@@ -156,9 +167,14 @@ val prepareSianoAdapterBinaries = tasks.register("prepareSianoAdapterBinaries") 
 }
 
 val preparePx4AdapterBinaries = tasks.register("preparePx4AdapterBinaries") {
+    dependsOn(runPx4TunePlanHostTests)
     inputs.property("px4UserlandDir", px4UserlandDir)
     inputs.files(
         px4AdapterSource,
+        px4TunePlanSource,
+        px4TunePlanHeader,
+        px4TunePlanTests,
+        px4TunePlanTestScript,
         px4AdapterCmake,
         px4AdapterVerifier,
         layout.projectDirectory.file("src/main/cpp/b25_filter.cpp"),

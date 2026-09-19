@@ -5,25 +5,21 @@
 #include <cstring>
 #include <fcntl.h>
 #include <memory>
+#include <optional>
 #include <signal.h>
 #include <string>
+#include <vector>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #include "arib_std_b25.h"
 #include "b_cas_card.h"
+#include "px4_tune_plan.h"
 
 #include <px4/pcsc_ifd_adapter.h>
 
 extern "C" int b25_stdio_filter_with_card(B_CAS_CARD* bcas);
 namespace {
-
-constexpr int frequency_khz(int channel) {
-    return 395142 + channel * 6000;
-}
-
-static_assert(frequency_khz(13) == 473142, "GR channel 13 frequency changed");
-static_assert(frequency_khz(27) == 557142, "GR channel 27 frequency changed");
 
 bool consume_option(int argc, char** argv, int* index, const char* option, std::string* value) {
     const std::string argument(argv[*index]);
@@ -51,10 +47,6 @@ bool parse_int(const std::string& text, int* value) {
     }
     *value = static_cast<int>(parsed);
     return true;
-}
-
-bool valid_receiver(int receiver) {
-    return receiver == 2 || receiver == 3 || receiver == 6 || receiver == 7;
 }
 
 int fail(const char* message) {
@@ -166,11 +158,13 @@ int main(int argc, char** argv) {
     std::string receiver_text;
     std::string runtime_dir;
     std::string channel_text;
+    std::string tsid_text;
     bool have_px4_ts = false;
     bool have_base_serial = false;
     bool have_receiver = false;
     bool have_runtime_dir = false;
     bool have_channel = false;
+    bool have_tsid = false;
 
     for (int index = 1; index < argc; ++index) {
         std::string value;
@@ -194,6 +188,10 @@ int main(int argc, char** argv) {
             if (have_channel) return fail("duplicate --channel");
             channel_text = value;
             have_channel = true;
+        } else if (consume_option(argc, argv, &index, "--tsid", &value)) {
+            if (have_tsid) return fail("duplicate --tsid");
+            tsid_text = value;
+            have_tsid = true;
         } else {
             return fail("unknown or incomplete option");
         }
@@ -204,15 +202,56 @@ int main(int argc, char** argv) {
         return fail("--px4-ts, --device, --receiver, --runtime-dir and --channel are required");
     }
     int receiver = 0;
-    int channel = 0;
-    if (!parse_int(receiver_text, &receiver) || !valid_receiver(receiver)) {
-        return fail("--receiver must be one of 2, 3, 6 or 7");
-    }
-    if (!parse_int(channel_text, &channel) || channel < 13 || channel > 62) {
-        return fail("--channel must be in the GR range 13..62");
+    if (!parse_int(receiver_text, &receiver) || receiver_text != std::to_string(receiver)) {
+        return fail("--receiver must be a PX-Q3U4 receiver ID");
     }
 
-    const std::string frequency = std::to_string(frequency_khz(channel));
+    px4_adapter::TunePlan tune_plan;
+    std::string tune_error;
+    const std::optional<std::string_view> tsid = have_tsid
+        ? std::optional<std::string_view>(tsid_text)
+        : std::nullopt;
+    if (!px4_adapter::create_tune_plan(
+            receiver, channel_text, tsid, &tune_plan, &tune_error)) {
+        return fail(tune_error.c_str());
+    }
+    const std::string frequency = std::to_string(tune_plan.frequency_khz);
+    const std::string system = tune_plan.system == px4_adapter::BroadcastSystem::kIsdbT
+        ? "isdb-t"
+        : "isdb-s";
+    std::vector<std::string> child_storage;
+    child_storage.reserve(18);
+    child_storage.push_back(px4_ts);
+    child_storage.emplace_back("--device");
+    child_storage.push_back(base_serial);
+    child_storage.emplace_back("--receiver");
+    child_storage.push_back(receiver_text);
+    child_storage.emplace_back("--system");
+    child_storage.push_back(system);
+    child_storage.emplace_back("--frequency-khz");
+    child_storage.push_back(frequency);
+    if (tune_plan.satellite_selector == px4_adapter::SatelliteSelector::kStreamId) {
+        child_storage.emplace_back("--stream-id");
+        child_storage.push_back(std::to_string(tune_plan.satellite_value));
+    } else if (tune_plan.satellite_selector == px4_adapter::SatelliteSelector::kSlot) {
+        child_storage.emplace_back("--slot");
+        child_storage.push_back(std::to_string(tune_plan.satellite_value));
+    }
+    if (tune_plan.system == px4_adapter::BroadcastSystem::kIsdbS) {
+        child_storage.emplace_back("--lnb-voltage");
+        child_storage.emplace_back("0");
+    }
+    child_storage.emplace_back("--runtime-dir");
+    child_storage.push_back(runtime_dir);
+    child_storage.emplace_back("--output");
+    child_storage.emplace_back("-");
+    std::vector<char*> child_argv;
+    child_argv.reserve(child_storage.size() + 1);
+    for (std::string& argument : child_storage) {
+        child_argv.push_back(argument.data());
+    }
+    child_argv.push_back(nullptr);
+
     int output_pipe[2] = {-1, -1};
     if (pipe2(output_pipe, O_CLOEXEC) != 0) return fail("cannot create TS pipe");
     const pid_t child = fork();
@@ -222,27 +261,11 @@ int main(int argc, char** argv) {
         return fail("cannot fork px4-ts");
     }
 
-    char* const child_argv[] = {
-        const_cast<char*>(px4_ts.c_str()),
-        const_cast<char*>("--device"),
-        const_cast<char*>(base_serial.c_str()),
-        const_cast<char*>("--receiver"),
-        const_cast<char*>(receiver_text.c_str()),
-        const_cast<char*>("--system"),
-        const_cast<char*>("isdb-t"),
-        const_cast<char*>("--frequency-khz"),
-        const_cast<char*>(frequency.c_str()),
-        const_cast<char*>("--runtime-dir"),
-        const_cast<char*>(runtime_dir.c_str()),
-        const_cast<char*>("--output"),
-        const_cast<char*>("-"),
-        nullptr,
-    };
     if (child == 0) {
         close(output_pipe[0]);
         if (dup2(output_pipe[1], STDOUT_FILENO) < 0) _exit(127);
         close(output_pipe[1]);
-        execv(px4_ts.c_str(), child_argv);
+        execv(px4_ts.c_str(), child_argv.data());
         std::fprintf(stderr, "px4 adapter: exec failed: %s\n", std::strerror(errno));
         _exit(127);
     }

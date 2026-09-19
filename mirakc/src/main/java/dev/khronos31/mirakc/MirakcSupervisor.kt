@@ -532,8 +532,8 @@ internal class MirakcSupervisor(
             }
             px4Generation?.let { px4 ->
                 val px4Ts = yamlPath(File(context.applicationInfo.nativeLibraryDir, "libpx4-ts.so"))
-                repeat(px4.receivers.size) { index ->
-                    append("  - name: PX4-GR-$index\n")
+                repeat(px4.terrestrialReceivers.size) { index ->
+                    append("  - name: PX4-GR-${px4.terrestrialReceivers[index]}\n")
                     append("    types: [GR]\n")
                     append("    command: ")
                     append(yamlPath(px4Adapter))
@@ -542,10 +542,25 @@ internal class MirakcSupervisor(
                     append(" --device=")
                     append(px4.baseSerial)
                     append(" --receiver=")
-                    append(px4.receivers[index])
+                    append(px4.terrestrialReceivers[index])
                     append(" --runtime-dir=")
                     append(yamlPath(px4.runtimeDir))
                     append(" --channel={{{channel}}}\n")
+                }
+                repeat(px4.satelliteReceivers.size) { index ->
+                    append("  - name: PX4-S-${px4.satelliteReceivers[index]}\n")
+                    append("    types: [BS, CS]\n")
+                    append("    command: ")
+                    append(yamlPath(px4Adapter))
+                    append(" --px4-ts=")
+                    append(px4Ts)
+                    append(" --device=")
+                    append(px4.baseSerial)
+                    append(" --receiver=")
+                    append(px4.satelliteReceivers[index])
+                    append(" --runtime-dir=")
+                    append(yamlPath(px4.runtimeDir))
+                    append(" --channel={{{channel}}} {{{extra_args}}}\n")
                 }
             }
         }
@@ -589,6 +604,18 @@ internal class MirakcSupervisor(
             |  - name: テレ玉
             |    type: GR
             |    channel: '32'
+            |  - name: BS physical transponder 01 slot 0 (seed)
+            |    type: BS
+            |    channel: 'BS01_0'
+            |    extra-args: ''
+            |  - name: CS physical transponder 2 (CS1 network seed)
+            |    type: CS
+            |    channel: 'CS2'
+            |    extra-args: ''
+            |  - name: CS physical transponder 4 (CS2 network seed)
+            |    type: CS
+            |    channel: 'CS4'
+            |    extra-args: ''
             |$tunerConfig|filters:
             |  service-filter:
             |    command: $aribPath filter-service --sid={{{sid}}}
