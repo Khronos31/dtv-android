@@ -158,33 +158,35 @@ moving branch.
    reconnect USB, stop/restart the APK, and produce the final evidence receipt.
    Risk: individually green components fail under concurrent job/stream load.
 
-### PX-Q3U4 satellite seed increment (2026-09-19)
+### PX-Q3U4 satellite inventory increment (2026-09-20)
 
 The first BS/CS increment extends the existing PX4 adapter with a host-testable,
 fail-closed tune-plan parser.  PX-Q3U4 receiver IDs `2,3,6,7` remain the four
 `[GR]` tuners; `0,1,4,5` are published as four `[BS, CS]` tuners.  The adapter
-maps the three physical seed channels below and always passes `--lnb-voltage 0`:
+maps the 38 physical channels observed from a live NIT on 2026-09-20 and
+always passes `--lnb-voltage 0`.  Every BS entry carries the observed TSID as
+`extra-args: '--tsid=N'`; CS entries use the unpadded physical token and no
+TSID override.
 
-| channel | type | purpose |
+| type | physical channel tokens |
 | --- | --- | --- |
-| `BS01_0` | BS | physical BS transponder 01, slot 0 |
-| `CS2` | CS | physical CS transponder 2 (CS1 network seed) |
-| `CS4` | CS | physical CS transponder 4 (CS2 network seed) |
+| BS | `BS01_0`, `BS01_1`, `BS01_2`, `BS03_0`, `BS03_1`, `BS03_2`, `BS05_0`, `BS05_1`, `BS09_0`, `BS09_1`, `BS13_0`, `BS13_1`, `BS13_2`, `BS15_0`, `BS15_1`, `BS15_2`, `BS19_0`, `BS19_1`, `BS19_2`, `BS19_3`, `BS21_0`, `BS21_1`, `BS21_2`, `BS23_0`, `BS23_1`, `BS23_2` |
+| CS | `CS2`, `CS4`, `CS6`, `CS8`, `CS10`, `CS12`, `CS14`, `CS16`, `CS18`, `CS20`, `CS22`, `CS24` |
 
-BS entries may provide mirakc `extra-args` as `--tsid=N` or `--tsid N`;
-the adapter prefers the resulting `--stream-id` selection and otherwise uses
-the parsed slot.  CS and GR reject TSID overrides.  Satellite requests follow
+BS entries use the observed TSID for `--stream-id`; CS and GR reject TSID
+overrides.  Satellite requests follow
 px4-userland's receiver/CLI contract and use explicit 0V LNB state; the
 Japanese physical-channel-to-frequency mapping is separately implemented and
 covered by this adapter's host tests.  HAOS is only a cross-check for that
 mapping, not its source of truth.  No LNB power permission is enabled.  The
-seed list is not the production inventory.
+inventory is a static snapshot: future NIT changes require regenerating and
+updating the inventory; no runtime auto-NIT requirement is established here.
 
 This increment does not claim full satellite acceptance.  The remaining gate is
-live-NIT discovery of the required BS/CS service inventory, at least one BS and
-one CS integrity stream with card descrambling, and concurrency evidence that
-GR, satellite and EPG jobs share the single px4d owner correctly.  The host
-parser test can be run with `./tools/mirakc/test-px4-tune-plan.sh`.
+at least one BS and one CS integrity stream with card descrambling, and
+concurrency evidence that GR, satellite and EPG jobs share the single px4d
+owner correctly.  The host parser test can be run with
+`./tools/mirakc/test-px4-tune-plan.sh`.
 
 The two least-known mandatory components were increments 1 and 2.  Both Phase 0
 feasibility gates are complete; remaining acceptance evidence is still required.

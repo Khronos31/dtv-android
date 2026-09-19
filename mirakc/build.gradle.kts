@@ -865,4 +865,5 @@ android {
 dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.24")
     implementation(project(":updater"))
+    testImplementation("junit:junit:4.13.2")
 }

@@ -564,6 +564,11 @@ internal class MirakcSupervisor(
                 }
             }
         }
+        val satelliteChannelConfig = if (px4Generation == null) {
+            ""
+        } else {
+            renderPx4SatelliteChannelConfig()
+        }
         return """
             |epg:
             |  cache-dir: '${yamlPath(cacheDir)}'
@@ -604,19 +609,7 @@ internal class MirakcSupervisor(
             |  - name: テレ玉
             |    type: GR
             |    channel: '32'
-            |  - name: BS physical transponder 01 slot 0 (seed)
-            |    type: BS
-            |    channel: 'BS01_0'
-            |    extra-args: ''
-            |  - name: CS physical transponder 2 (CS1 network seed)
-            |    type: CS
-            |    channel: 'CS2'
-            |    extra-args: ''
-            |  - name: CS physical transponder 4 (CS2 network seed)
-            |    type: CS
-            |    channel: 'CS4'
-            |    extra-args: ''
-            |$tunerConfig|filters:
+            |$satelliteChannelConfig$tunerConfig|filters:
             |  service-filter:
             |    command: $aribPath filter-service --sid={{{sid}}}
             |  program-filter:
