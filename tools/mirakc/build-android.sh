@@ -97,7 +97,7 @@ rustup target list --installed | grep -Fx "$rust_target" >/dev/null \
 source_tree_sha256=8f558fa37f2e9c475ad7c029ed06655bee624ffabb4310a5191827c6ae0fd72a
 cargo_lock_sha256=42749dcfa137347602a770fd86bae1691ad60b8d363e36f05e99b840f314acf7
 patch_file=$project_root/tools/mirakc/patches/mirakc-android-web-resilience.patch
-patch_sha256=13d9b20fe3ebe06047a66e6c63b55e4e4875892f5711d584a310598713480f06
+patch_sha256=7e526b62a6cd92bb9a1f731e42bc971e93ff85c0180fd0148dc38b80d6d965ff
 
 mkdir -p "$(dirname -- "$source_dir")"
 if [ ! -e "$source_dir" ]; then

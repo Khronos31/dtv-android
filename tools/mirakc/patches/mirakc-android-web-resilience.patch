@@ -249,3 +249,128 @@ diff --git mirakc-core/src/epg/service_scanner.rs mirakc-core/src/epg/service_sc
 +        assert_eq!(scan_attempt_limit(ChannelType::CS), 3);
 +        assert_eq!(scan_attempt_limit(ChannelType::SKY), 1);
 +    }
+diff --git mirakc-core/src/epg/eit_feeder.rs mirakc-core/src/epg/eit_feeder.rs
+--- mirakc-core/src/epg/eit_feeder.rs
++++ mirakc-core/src/epg/eit_feeder.rs
+@@ -3,0 +4 @@
++use std::time::Duration;
+@@ -22,0 +24,32 @@
++const PX4_SATELLITE_EPG_RETRY_DELAY_MS: u64 = 200;
++
++fn eit_attempt_limit(channel_type: ChannelType) -> usize {
++    match channel_type {
++        ChannelType::BS | ChannelType::CS => 3,
++        ChannelType::GR | ChannelType::SKY => 1,
++    }
++}
++
++fn should_retry_empty_eit(attempt: usize, max_attempts: usize, num_sections: usize) -> bool {
++    num_sections == 0 && attempt + 1 < max_attempts
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn satellite_eit_retry_policy_is_bounded_and_empty_only() {
++        assert_eq!(eit_attempt_limit(ChannelType::GR), 1);
++        assert_eq!(eit_attempt_limit(ChannelType::BS), 3);
++        assert_eq!(eit_attempt_limit(ChannelType::CS), 3);
++        assert_eq!(eit_attempt_limit(ChannelType::SKY), 1);
++
++        assert!(should_retry_empty_eit(0, 3, 0));
++        assert!(should_retry_empty_eit(1, 3, 0));
++        assert!(!should_retry_empty_eit(2, 3, 0));
++        assert!(!should_retry_empty_eit(0, 3, 1));
++        assert!(!should_retry_empty_eit(0, 1, 0));
++    }
++}
++
+@@ -166,0 +200,30 @@
++        let max_attempts = eit_attempt_limit(channel.channel_type);
++        for attempt in 0..max_attempts {
++            let num_sections = Self::collect_eits_in_channel_once(
++                channel,
++                command,
++                tuner_manager,
++                epg,
++            )
++            .await?;
++            if !should_retry_empty_eit(attempt, max_attempts, num_sections) {
++                return Ok(());
++            }
++
++            tracing::warn!(
++                channel.name,
++                attempt = attempt + 1,
++                max_attempts,
++                "Retrying empty EIT collection"
++            );
++            tokio::time::sleep(Duration::from_millis(PX4_SATELLITE_EPG_RETRY_DELAY_MS)).await;
++        }
++        unreachable!("EIT collection attempt limit is always positive")
++    }
++
++    async fn collect_eits_in_channel_once(
++        channel: &EpgChannel,
++        command: &str,
++        tuner_manager: &T,
++        epg: &E,
++    ) -> Result<usize, Error> {
+@@ -264 +327 @@
+-        Ok(())
++        Ok(num_sections)
+diff --git mirakc-core/src/epg/clock_synchronizer.rs mirakc-core/src/epg/clock_synchronizer.rs
+--- mirakc-core/src/epg/clock_synchronizer.rs
++++ mirakc-core/src/epg/clock_synchronizer.rs
+@@ -2,0 +3 @@
++use std::time::Duration;
+@@ -72,0 +74,28 @@
++        let max_attempts = scan_attempt_limit(channel.channel_type);
++        for attempt in 0..max_attempts {
++            match Self::sync_clocks_in_channel_once(channel, command, tuner_manager).await {
++                Ok(clocks) => return Ok(clocks),
++                Err(error) if attempt + 1 < max_attempts => {
++                    tracing::warn!(
++                        channel.name,
++                        attempt = attempt + 1,
++                        max_attempts,
++                        %error,
++                        "Retrying clock synchronization"
++                    );
++                    tokio::time::sleep(Duration::from_millis(
++                        PX4_SATELLITE_EPG_RETRY_DELAY_MS,
++                    ))
++                    .await;
++                }
++                Err(error) => return Err(error),
++            }
++        }
++        unreachable!("clock synchronization attempt limit is always positive")
++    }
++
++    async fn sync_clocks_in_channel_once(
++        channel: &ChannelConfig,
++        command: &str,
++        tuner_manager: &T,
++    ) -> anyhow::Result<Vec<SyncClock>> {
+@@ -129,0 +159,9 @@
++const PX4_SATELLITE_EPG_RETRY_DELAY_MS: u64 = 200;
++
++fn scan_attempt_limit(channel_type: ChannelType) -> usize {
++    match channel_type {
++        ChannelType::BS | ChannelType::CS => 3,
++        ChannelType::GR | ChannelType::SKY => 1,
++    }
++}
++
+@@ -146,0 +185,8 @@
++
++    #[test]
++    fn satellite_clock_retry_is_limited_to_satellite_channels() {
++        assert_eq!(scan_attempt_limit(ChannelType::GR), 1);
++        assert_eq!(scan_attempt_limit(ChannelType::BS), 3);
++        assert_eq!(scan_attempt_limit(ChannelType::CS), 3);
++        assert_eq!(scan_attempt_limit(ChannelType::SKY), 1);
++    }
