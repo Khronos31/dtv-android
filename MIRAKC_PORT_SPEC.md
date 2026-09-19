@@ -1,6 +1,6 @@
 # mirakc Android port specification
 
-Status: Draft; implementation blocked on the Phase 0 feasibility gates below
+Status: Draft; Kotlin compatibility-server removal is implemented; Phase 0 feasibility and acceptance evidence remain open
 Date: 2026-09-13
 
 ## Objective
@@ -106,7 +106,7 @@ moving branch.
 
 | Candidate | Classification | Evidence |
 | --- | --- | --- |
-| Current Kotlin server in this repository | adapt/reference | Reuse its Android lifecycle, UsbManager and proven CCID/libarib25 code.  Reject it as the server because it implements only a mirakc-compatible API subset. |
+| Former Kotlin server in this repository | adapt/reference | Reuse its Android lifecycle, UsbManager and proven CCID/libarib25 code.  It is no longer the APK's HTTP, EPG or stream implementation. |
 | `mirakc/mirakc` 3.4.85 | adapt/port | Canonical server.  Its unmodified Rust workspace cross-builds for `armv7-linux-androideabi` API 24 with NDK r27; the stripped binary is 17,753,224 bytes and gzip-compresses to 6,763,891 bytes.  On the 32-bit Google TV Streamer it reports the correct version, serves `/api/version` and `/api/status`, and uses 8,616 KiB idle PSS with an empty temporary config.  Android packaging and descriptor inheritance are not upstream features. |
 | `mirakc/mirakc-arib` 0.24.37 | adapt/port | Canonical companion commands used by mirakc jobs and filters.  The checked-out source plus pinned submodules is about 111 MB; upstream has cross-compilation support but no Android toolchain. |
 | Linux/musl mirakc container binaries | reject | Wrong ABI/runtime for Bionic and cannot receive Android UsbManager descriptors. |

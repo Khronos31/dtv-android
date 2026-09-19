@@ -14,6 +14,10 @@ APK は2本あります。
 `mirakc-vX.Y.Z` と `epgstation-server-vX.Y.Z` に分かれているため、必要なAPKの
 リリースから対応するファイルを選んでください。
 
+mirakc APK は上流の mirakc `3.4.85` を Android 向けに移植して組み込み、番組表・
+ストリーム・HTTP API はその実装を使います。ジョブとフィルターのコマンドには、
+上流の mirakc-arib `0.24.37` を固定して同梱しています。
+
 番組表や録画予約の画面は、スマートフォンや PC のブラウザから開きます。
 テレビの画面で録画を見るときは
 [epcltvapp](https://github.com/daig0rian/epcltvapp) がよくできているので、
@@ -29,8 +33,9 @@ APK は2本あります。
 | カード | B-CAS カード |
 | その他 | USB ハブ（本体のポートが1つしかないため）、録画用の USB ストレージ（任意・exFAT） |
 
-カードリーダーとカードが無くても 1seg は見られますが、画質は 320x180 です。
-12seg のフル HD で見るにはカードが要ります。
+カードリーダーとカードが無くても 1seg 用の経路はありますが、画質は 320x180 です。
+12seg のフル HD にはカードが要ります。なお、PX-S1UD の 12seg 動作はこの移行で
+再検証済みとはしていません。
 
 ## 導入
 
@@ -60,16 +65,15 @@ PX-Q3U4を使う場合、初回起動時にアプリが公式PLEX HTTPS配布物
 
 ### 1. mirakc を起動して USB を許可する
 
-**mirakc** を開くと1枚の画面が出ます。上から USB 権限・待ち受けアドレス・
-現在のストリーム・EPG の件数・直近のエラーが並びます。
+**mirakc** を開くと1枚の画面が出ます。USB 権限、B-CAS リーダー、待ち受け、
+上流 mirakc/PX4 の状態、直近のエラーを確認できます。
 
 **Request USB permission** を押すと、Android の許可ダイアログが出ます。
 チューナーとカードリーダーの分が続けて出るので、両方許可してください。
 `B-CAS:` の行にリーダー名が出れば認識できています。
 
-許可すると、そのまま各チャンネルを1つずつ回って番組表を集め始めます
-（1局あたり16秒ほど、全局で3分ほど）。進み具合は `Scan:` の行に出ます。
-あとから集め直したいときは **Scan EPG** を押します。
+許可後のサービス起動と番組表更新は、上流 mirakc が設定したジョブで行います。
+手動の EPG スキャン操作はありません。
 
 ### 2. EPGStation Server を起動する
 
@@ -126,8 +130,10 @@ EPGStation Server をもう一度開いてください。一度開けば常駐�
   Android TV / Fire TV 向けの EPGStation クライアント。リモコンの十字キーだけで
   快適に録画を見られます。テレビ側の視聴体験はこのアプリにお任せするのが一番です。
 * **[mirakc](https://github.com/mirakc/mirakc)** —— Mirakurun 互換の PVR
-  バックエンド。この APK の HTTP API はこれに合わせてあります。PC や NAS で
-  組むなら本家の mirakc をどうぞ。
+  バックエンド。この APK は上流 `3.4.85` を Android 向けに移植して使っています。
+* **[mirakc-arib](https://github.com/mirakc/mirakc-arib)** —— mirakc の EPG ジョブと
+  ストリームフィルターが使う上流コマンド群。APK には `0.24.37` を固定して
+  同梱しています。
 * **[libarib25](https://github.com/stz2012/libarib25)**（stz2012 さん）——
   B-CAS による復号。この APK に組み込んで使わせていただいています。
 * **[siano-userland](https://github.com/Khronos31/siano-userland)** ——
@@ -148,62 +154,44 @@ USB 権限を要求する Siano の ID は次の3つです。
 * `187f:0600`
 * `187f:0302`
 
-ストリームが動いている間、サービスは複製した USB の `ParcelFileDescriptor` を
-保持し続けます。アプリ内の小さな JNI ランチャがそのディスクリプタを fd 3 として
-渡します。
+Siano の USB ディスクリプタは Android 側の broker が世代ごとに管理し、上流 mirakc
+の tuner command には専用の Siano adapter 経由で渡します。PX-Q3U4 は同様に
+`px4d` と PX4 adapter が管理します。
 
 ```text
 siano-ts --channel N --firmware <filesDir>/isdbt_rio.inp --fd 3
 ```
 
-待ち受けは `0.0.0.0:40772` で認証はありません。地上波のチャンネルは T16、
-T21〜T27、T30、T31、T32 を設定してあり、HAOS の mirakc アドオンと揃えてあります。
+待ち受けは上流 mirakc の `0.0.0.0:40772` で認証はありません。地上波の
+チャンネルは T16、T21〜T27、T30、T31、T32 を設定してあり、HAOS の mirakc
+アドオンと揃えてあります。
 ファームウェアは linux-firmware の `isdbt_rio.inp`
 （MD5 `9b762c1808fd8da81bbec3e24ddb04a3`）をビルド時に取得してチェックサムを
 検証したもので、`LICENCE.siano` を隣に置いて同梱しています。`.so` には
 焼き込んでいません。
 
-#### 実装済みの HTTP API
+#### 上流 mirakc の HTTP・EPG・ストリーム
 
-EPGStation から使うぶんに必要な範囲を mirakc 互換で実装しています
-（Mirakurun の `/api/config` まで揃えたクローンではありません）。
-
-* `GET /api/version` — Mirakurun 形式の `current` と `latest`
-* `GET /api/status` — `{}`
-* `GET /api/docs` — `mirakurun.Client` が読む OpenAPI
-* `GET /api/channels` — 設定した GR の一覧と、発見済みのサービス
-* `GET /api/services`、`GET /api/services/{id}`
-* `GET /api/programs`、`GET /api/programs/{id}`
-* `GET /api/services/{id}/programs`
-* `GET /events` — SSE の `epg.programs-updated` と `onair.program-changed`
-* `GET /api/tuners` — Siano チューナーの状態
-* `GET /api/channels/GR/{channel}/stream` — `siano-ts` の生 MPEG-TS
-* `GET /api/services/{id}/stream`、`GET /api/programs/{id}/stream`
-
-USB 権限が下りるとサービスは設定済みの GR チャンネルを1つずつ約16秒ずつ走査し、
-TS から SDT/EIT を解析します。ライブのストリームも同じパーサに通ります。
-名前の解釈は ARIB STD-B24 に従います。`/api/services/{id}/stream` と
-`/api/programs/{id}/stream` は1番組だけを残します。recisdb と ffmpeg は
-この APK には入れていません。
+HTTP API、チャンネル・サービス・番組情報、ライブストリーム、イベント通知は
+上流 mirakc `3.4.85` が提供します。EPG のサービススキャン、時刻同期、番組表更新、
+ストリームのサービス／番組フィルターは、固定した mirakc-arib `0.24.37` の
+コマンドを上流ジョブから呼び出します。APK 独自の旧 HTTP サーバー、TS の SI
+パーサー、手動スキャン処理は含みません。
 
 #### B-CAS による復号
 
 12seg の MPEG-2 は MULTI2 でスクランブルされています。CCID カードリーダーに
-B-CAS カードを挿して USB 権限を与えると、`siano-ts` の出力を
-[libarib25](https://github.com/stz2012/libarib25)（stz2012 版・Apache-2.0）に
-通してから配信します。pcscd は使わず、UsbManager から渡された fd を usbfs の
-ioctl で直接叩いています。
+B-CAS カードを挿して USB 権限を与えると、PX4 adapter が共有する
+[libarib25](https://github.com/stz2012/libarib25)（stz2012 版・Apache-2.0）による
+復号経路を使います。pcscd は使わず、Android の USB 権限を得たネイティブ処理系が
+カードリーダーを扱います。PX-S1UD の 12seg 復号は、この移行で再検証済みとは
+していません。
 
 手元のリーダー（Identive/SCM SCR33xx v2.0）は `dwFeatures=0x000100ba` で交換
-レベルが TPDU だったため、生の APDU は通りません。T=1 のブロック層
-（NAD/PCB/LEN/INF/LRC、シーケンス番号、双方向のチェイニング、S-block の
-WTX/IFS 応答、Time Extension 待ち）は自前で実装しています。IFSC は
-GetParameters から読み、IFSD は 254 を交渉します。
-
-カードが無い、あるいは復号に失敗した場合は、同じ物理チャンネルに乗っている
-スクランブルなしの 1seg H.264 に差し替えます。差し替えるかどうかは PMT の CA
-記述子の有無ではなく、実測したスクランブルビットで判断しています（復号が
-成功しても CA 記述子は PMT に残るためです）。
+レベルが TPDU だったため、ネイティブ CCID transport は T=1 のブロック層
+（NAD/PCB/LEN/INF/LRC、シーケンス番号、チェイニング、S-block の WTX/IFS 応答、
+Time Extension 待ち）を扱います。これはカード transport の説明であり、サービス
+の番組選択・ストリーム処理は上流 mirakc の責務です。
 
 ### EPGStation Server
 
@@ -260,6 +248,11 @@ JDK 17 と Android NDK r26 以降が要ります。Gradle タスクは SDK の `
 `/config/GitHub/siano-userland`）。ビルドは両 ABI について
 `scripts/build-android.sh` を呼び、検証済みの実行ファイルを mirakc の APK に
 入れます。
+
+上流 mirakc `3.4.85` と mirakc-arib `0.24.37` も、それぞれ固定した commit の
+ソースから Android ABI ごとにビルドします。mirakc のビルドには
+`tools/mirakc/build-android.sh`、mirakc-arib には `tools/mirakc-arib/build-android.sh`
+を使います。
 
 PX-Q3U4 の `px4d` は pinned な
 [px4-userland](https://github.com/Khronos31/px4-userland) v0.1.3

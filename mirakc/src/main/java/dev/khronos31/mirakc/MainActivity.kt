@@ -94,16 +94,12 @@ class MainActivity : Activity() {
         val checkUpdate = tvButton("CHECK UPDATE") {
             checkForUpdate(it as Button)
         }
-        val scan = tvButton("Scan EPG") {
-            sendServiceAction(MirakcService.ACTION_SCAN_EPG)
-        }
         val buttonParams = {
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) }
         }
         root.addView(title, LinearLayout.LayoutParams(-1, -2))
         root.addView(status, LinearLayout.LayoutParams(-1, 0, 1f))
         root.addView(request, buttonParams())
-        root.addView(scan, buttonParams())
         root.addView(stop, buttonParams())
         root.addView(start, buttonParams())
         root.addView(checkUpdate, buttonParams())
