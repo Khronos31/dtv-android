@@ -181,11 +181,12 @@ HTTP API、チャンネル・サービス・番組情報、ライブストリー
 #### B-CAS による復号
 
 12seg の MPEG-2 は MULTI2 でスクランブルされています。CCID カードリーダーに
-B-CAS カードを挿して USB 権限を与えると、PX4 adapter が共有する
-[libarib25](https://github.com/stz2012/libarib25)（stz2012 版・Apache-2.0）による
-復号経路を使います。pcscd は使わず、Android の USB 権限を得たネイティブ処理系が
-カードリーダーを扱います。PX-S1UD の 12seg 復号は、この移行で再検証済みとは
-していません。
+B-CAS カードを挿して USB 権限を与えると、Siano broker は外付けリーダーの fd を
+native libarib25 filter に渡します。PX4 adapter のカード経路も同じ
+[libarib25](https://github.com/stz2012/libarib25)（stz2012 版・Apache-2.0）を
+共有します。pcscd は使わず、Android の USB 権限を得たネイティブ処理系がカード
+リーダーを扱います。外付けリーダー1台につき Siano stream は同時に1本です。
+PX-S1UD の 12seg 復号は、実機での再検証が未完了です。
 
 手元のリーダー（Identive/SCM SCR33xx v2.0）は `dwFeatures=0x000100ba` で交換
 レベルが TPDU だったため、ネイティブ CCID transport は T=1 のブロック層

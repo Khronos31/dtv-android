@@ -77,6 +77,7 @@ class MirakcService : Service() {
                     .take(2).map { it.deviceName }
             },
             openTuner = ::openUsbForTuner,
+            openReader = ::openReaderForTuner,
             firmware = ::firmwareFile,
             px4Devices = ::permittedPx4Identities,
             openPx4 = ::openPx4ForDaemon,
@@ -247,6 +248,53 @@ class MirakcService : Service() {
         return SianoUsbHandle(parcel.fd) {
             parcel.close()
             connection.close()
+        }
+    }
+
+    private fun openReaderForTuner(): SianoReaderHandle? {
+        val device = readerDevices().firstOrNull { usbManager.hasPermission(it) } ?: return null
+        val connection = usbManager.openDevice(device)
+            ?: throw IOException("UsbManager.openDevice failed for ${device.deviceName}")
+        val claimedInterfaces = mutableListOf<android.hardware.usb.UsbInterface>()
+        try {
+            for (index in 0 until device.interfaceCount) {
+                val usbInterface = device.getInterface(index)
+                if (usbInterface.interfaceClass != 0x0B) continue
+                if (!connection.claimInterface(usbInterface, true)) {
+                    throw IOException("Unable to claim CCID interface ${usbInterface.id}")
+                }
+                claimedInterfaces += usbInterface
+            }
+            if (claimedInterfaces.isEmpty()) {
+                throw IOException("No CCID interface on ${device.deviceName}")
+            }
+            val parcel = try {
+                ParcelFileDescriptor.fromFd(connection.fileDescriptor)
+            } catch (error: Exception) {
+                throw IOException("Unable to duplicate reader fd", error)
+            }
+            return SianoReaderHandle(parcel.fd) {
+                try {
+                    // UsbDeviceConnection.close() normally releases claimed
+                    // interfaces, but do it explicitly so every ownership
+                    // path has a deterministic CCID release before teardown.
+                    claimedInterfaces.asReversed().forEach { claimed ->
+                        try { connection.releaseInterface(claimed) } catch (_: Exception) { }
+                    }
+                } finally {
+                    try {
+                        parcel.close()
+                    } finally {
+                        connection.close()
+                    }
+                }
+            }
+        } catch (error: Exception) {
+            claimedInterfaces.asReversed().forEach { claimed ->
+                try { connection.releaseInterface(claimed) } catch (_: Exception) { }
+            }
+            connection.close()
+            throw error
         }
     }
 

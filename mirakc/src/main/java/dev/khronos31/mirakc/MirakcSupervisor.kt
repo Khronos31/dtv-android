@@ -13,6 +13,7 @@ internal class MirakcSupervisor(
     private val context: Context,
     private val tunerDevices: () -> List<String>,
     private val openTuner: (Int, String) -> SianoUsbHandle,
+    private val openReader: () -> SianoReaderHandle?,
     private val firmware: () -> File,
     private val px4Devices: () -> List<Px4DeviceIdentity>,
     private val openPx4: (Px4DeviceIdentity) -> Px4UsbHandle,
@@ -36,7 +37,8 @@ internal class MirakcSupervisor(
         sianoExecutable = { File(context.applicationInfo.nativeLibraryDir, "libsiano-ts.so") },
         firmware = firmware,
         tunerDevices = tunerDevices,
-        openTuner = openTuner
+        openTuner = openTuner,
+        openReader = openReader
     )
     private val px4 = Px4DaemonSupervisor(
         executable = { File(context.applicationInfo.nativeLibraryDir, "libpx4d.so") },

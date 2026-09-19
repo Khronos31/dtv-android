@@ -15,6 +15,18 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 internal data class SianoUsbHandle(val fd: Int, val close: () -> Unit)
 
+/** Android-owned CCID descriptor leased to one Siano session at a time. */
+internal class SianoReaderHandle(
+    val fd: Int,
+    private val releaser: () -> Unit
+) : Closeable {
+    private val closed = AtomicBoolean(false)
+
+    override fun close() {
+        if (closed.compareAndSet(false, true)) releaser()
+    }
+}
+
 internal data class SianoGeneration(
     val token: String,
     val socketName: String,
@@ -27,9 +39,11 @@ internal class SianoTunerBroker(
     private val sianoExecutable: () -> File,
     private val firmware: () -> File,
     private val tunerDevices: () -> List<String>,
-    private val openTuner: (Int, String) -> SianoUsbHandle
+    private val openTuner: (Int, String) -> SianoUsbHandle,
+    private val openReader: () -> SianoReaderHandle?
 ) : Closeable {
     private val lock = Any()
+    private val readerLeaseLock = Any()
     private val random = SecureRandom()
     private val sessions = ConcurrentHashMap<Int, Session>()
     private val pendingClients = ConcurrentHashMap.newKeySet<LocalSocket>()
@@ -39,6 +53,7 @@ internal class SianoTunerBroker(
     private var acceptThread: Thread? = null
     @Volatile private var running = false
     @Volatile private var closed = false
+    private var readerLeased = false
     @Volatile private var generation = SianoGeneration("", "", 0, emptyList())
 
     fun start(): SianoGeneration {
@@ -192,22 +207,32 @@ internal class SianoTunerBroker(
         private val lifecycleLock = Any()
         private var started: NativeUsbProcess.StartedProcess? = null
         private var usb: SianoUsbHandle? = null
+        private var reader: SianoReaderHandle? = null
 
         fun run() {
             val handle = openTuner(index, deviceName)
+            val readerHandle = try {
+                acquireReader()
+            } catch (error: Exception) {
+                closeHandle(handle)
+                throw error
+            }
             val process: NativeUsbProcess.StartedProcess
             synchronized(lifecycleLock) {
                 if (stopped.get()) {
+                    closeReaderHandle(readerHandle)
                     closeHandle(handle)
                     return
                 }
                 usb = handle
+                reader = readerHandle
                 Log.i(TAG, "starting siano-ts index=$index channel=$channel")
                 process = NativeUsbProcess.start(
                     executable = sianoExecutable().absolutePath,
                     firmware = firmware().absolutePath,
                     channel = channel,
-                    usbFd = handle.fd
+                    usbFd = handle.fd,
+                    readerFd = readerHandle?.fd ?: -1
                 )
                 // stop() is serialized with publication of the child, so a
                 // generation rotation cannot miss a just-created process.
@@ -243,12 +268,15 @@ internal class SianoTunerBroker(
         fun stop(reason: String = "stop") {
             val process: NativeUsbProcess.StartedProcess?
             val handle: SianoUsbHandle?
+            val readerHandle: SianoReaderHandle?
             synchronized(lifecycleLock) {
                 if (!stopped.compareAndSet(false, true)) return
                 process = started
                 started = null
                 handle = usb
                 usb = null
+                readerHandle = reader
+                reader = null
             }
             process?.let {
                 logPoll(it, reason)
@@ -259,6 +287,7 @@ internal class SianoTunerBroker(
                     NativeUsbProcess.finishDiagnostics(it)
                 }
             }
+            closeReaderHandle(readerHandle)
             try {
                 handle?.close?.invoke()
             } catch (_: Exception) {
@@ -287,6 +316,10 @@ internal class SianoTunerBroker(
             try { handle.close() } catch (_: Exception) { }
         }
 
+        private fun closeReaderHandle(handle: SianoReaderHandle?) {
+            try { handle?.close() } catch (_: Exception) { }
+        }
+
         private fun watchClient() {
             try {
                 while (!stopped.get() && client.inputStream.read() >= 0) {
@@ -296,6 +329,22 @@ internal class SianoTunerBroker(
             } catch (_: IOException) {
             } finally {
                 stop("client-eof")
+            }
+        }
+    }
+
+    /** Reserve the single Android CCID reader independently of tuner locking. */
+    private fun acquireReader(): SianoReaderHandle? {
+        synchronized(readerLeaseLock) {
+            if (readerLeased) throw IOException("CCID reader is busy")
+            val opened = openReader() ?: return null
+            readerLeased = true
+            return SianoReaderHandle(opened.fd) {
+                try {
+                    opened.close()
+                } finally {
+                    synchronized(readerLeaseLock) { readerLeased = false }
+                }
             }
         }
     }
