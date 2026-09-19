@@ -8,6 +8,24 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.charset.StandardCharsets
 
+internal const val MIRAKC_JOB_FILTER_ARGS =
+    "{{#sids}} --sids={{{.}}}{{/sids}}{{#xsids}} --xsids={{{.}}}{{/xsids}}"
+
+internal fun renderMirakcJobCommands(aribPath: String): String = buildString {
+    append("  scan-services:\n")
+    append("    command: /system/bin/timeout 30 $aribPath scan-services")
+    append(MIRAKC_JOB_FILTER_ARGS)
+    append("\n    disabled: false\n")
+    append("  sync-clocks:\n")
+    append("    command: /system/bin/timeout 30 $aribPath sync-clocks")
+    append(MIRAKC_JOB_FILTER_ARGS)
+    append("\n    disabled: false\n")
+    append("  update-schedules:\n")
+    append("    command: /system/bin/timeout 600 $aribPath collect-eits")
+    append(MIRAKC_JOB_FILTER_ARGS)
+    append("\n    disabled: false")
+}
+
 /** Owns the upstream mirakc process, but not tuner or smart-card descriptors. */
 internal class MirakcSupervisor(
     private val context: Context,
@@ -569,6 +587,7 @@ internal class MirakcSupervisor(
         } else {
             renderPx4SatelliteChannelConfig()
         }
+        val jobsConfig = renderMirakcJobCommands(aribPath)
         return """
             |epg:
             |  cache-dir: '${yamlPath(cacheDir)}'
@@ -615,15 +634,7 @@ internal class MirakcSupervisor(
             |  program-filter:
             |    command: $aribPath filter-program --sid={{{sid}}} --eid={{{eid}}} --clock-pid={{{clock_pid}}} --clock-pcr={{{clock_pcr}}} --clock-time={{{clock_time}}} --end-margin=2000
             |jobs:
-            |  scan-services:
-            |    command: /system/bin/timeout 30 $aribPath scan-services
-            |    disabled: false
-            |  sync-clocks:
-            |    command: /system/bin/timeout 30 $aribPath sync-clocks
-            |    disabled: false
-            |  update-schedules:
-            |    command: /system/bin/timeout 600 $aribPath collect-eits
-            |    disabled: false
+            |$jobsConfig
             |timeshift:
             |  command: $aribPath record-service --sid={{{sid}}} --file={{{file}}} --chunk-size={{{chunk_size}}} --num-chunks={{{num_chunks}}} --start-pos={{{start_pos}}}
             |resource:
