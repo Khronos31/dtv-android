@@ -54,8 +54,8 @@ moving branch.
 7. With a PX-Q3U4, Android grants both bridge permissions, one `px4d` owns both
    descriptors, mirakc exposes eight tuners (four GR and four BS/CS), and at
    least one GR and one BS service stream pass MPEG-TS integrity checks.  The
-   built-in card path descrambles 12-seg content.  This criterion is
-   `unverified` until the Q3U4 is connected to the Android device.
+   built-in card path descrambles 12-seg content.  Verified on the connected
+   PX-Q3U4 hardware.
 8. EPGStation Server using `http://127.0.0.1:40772/` can scan channels, receive
    schedule updates and start/stop live streams without API-shape workarounds
    in EPGStation.
