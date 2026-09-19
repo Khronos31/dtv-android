@@ -184,3 +184,68 @@ index fce531f6..f2acf6ba 100644
 +        tracing::error!(%err, "Web server stopped with an error");
 +    }
 +    web_result
+diff --git mirakc-core/src/epg/service_scanner.rs mirakc-core/src/epg/service_scanner.rs
+--- mirakc-core/src/epg/service_scanner.rs
++++ mirakc-core/src/epg/service_scanner.rs
+@@ -1,1 +1,2 @@
+ use std::sync::Arc;
++use std::time::Duration;
+@@ -67,6 +67,34 @@
+     async fn scan_services_in_channel(
+         channel: &ChannelConfig,
+         command: &str,
+         tuner_manager: &T,
+     ) -> anyhow::Result<Vec<EpgService>> {
++        let max_attempts = scan_attempt_limit(channel.channel_type);
++        for attempt in 0..max_attempts {
++            match Self::scan_services_in_channel_once(channel, command, tuner_manager).await {
++                Ok(services) => return Ok(services),
++                Err(error) if attempt + 1 < max_attempts => {
++                    tracing::warn!(
++                        channel.name,
++                        attempt = attempt + 1,
++                        max_attempts,
++                        %error,
++                        "Retrying service scan"
++                    );
++                    tokio::time::sleep(Duration::from_millis(
++                        PX4_SATELLITE_SCAN_RETRY_DELAY_MS,
++                    ))
++                    .await;
++                }
++                Err(error) => return Err(error),
++            }
++        }
++        unreachable!("service scan attempt limit is always positive")
++    }
++
++    async fn scan_services_in_channel_once(
++        channel: &ChannelConfig,
++        command: &str,
++        tuner_manager: &T,
++    ) -> anyhow::Result<Vec<EpgService>> {
+         tracing::debug!(channel.name, "Scanning services...");
+@@ -130,0 +161,9 @@
++
++const PX4_SATELLITE_SCAN_RETRY_DELAY_MS: u64 = 200;
++
++fn scan_attempt_limit(channel_type: ChannelType) -> usize {
++    match channel_type {
++        ChannelType::BS | ChannelType::CS => 3,
++        ChannelType::GR | ChannelType::SKY => 1,
++    }
++}
+@@ -162,5 +172,13 @@
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+     use crate::tuner::stub::TunerManagerStub;
+     use test_log::test;
++
++    #[test]
++    fn satellite_scan_retry_is_limited_to_satellite_channels() {
++        assert_eq!(scan_attempt_limit(ChannelType::GR), 1);
++        assert_eq!(scan_attempt_limit(ChannelType::BS), 3);
++        assert_eq!(scan_attempt_limit(ChannelType::CS), 3);
++        assert_eq!(scan_attempt_limit(ChannelType::SKY), 1);
++    }
