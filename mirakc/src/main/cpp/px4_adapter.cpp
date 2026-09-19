@@ -14,8 +14,10 @@
 
 #include "arib_std_b25.h"
 #include "b_cas_card.h"
+#include "px4_card_retry.h"
 #include "px4_tune_plan.h"
 
+#include <px4/error.h>
 #include <px4/pcsc_ifd_adapter.h>
 
 extern "C" int b25_stdio_filter_with_card(B_CAS_CARD* bcas);
@@ -54,6 +56,20 @@ int fail(const char* message) {
     return 64;
 }
 
+bool retryable_card_connect_error(px4::userland::Error error) {
+    switch (error) {
+    case px4::userland::Error::BUSY:
+    case px4::userland::Error::NOT_READY:
+    case px4::userland::Error::TIMEOUT:
+    case px4::userland::Error::USB_IO:
+    case px4::userland::Error::DISCONNECTED:
+    case px4::userland::Error::INTERNAL:
+        return true;
+    default:
+        return false;
+    }
+}
+
 struct Px4CardContext {
     std::unique_ptr<px4::userland::pcsc::IfdCardClient> client;
     std::uint64_t handle = 0;
@@ -67,13 +83,18 @@ int card_power_on(void* opaque) {
         if (!context->client->disconnect(context->handle)) context->failed = true;
         context->handle = 0;
     }
-    const auto result = context->client->connect_shared();
-    if (!result) {
+    std::uint64_t handle = 0;
+    const bool connected = px4_adapter::connect_shared_with_retry(
+        [&]() { return context->client->connect_shared(); },
+        [](px4::userland::Error error) { return retryable_card_connect_error(error); },
+        [](unsigned int delay_us) { usleep(delay_us); },
+        &handle);
+    if (!connected) {
         context->failed = true;
         return -1;
     }
-    context->handle = result.value().handle;
-    return context->handle == 0 ? -1 : 0;
+    context->handle = handle;
+    return 0;
 }
 
 int card_transmit(void* opaque, const std::uint8_t* apdu, int apdu_len,

@@ -11,3 +11,9 @@ c++ -std=c++17 -Wall -Wextra -Werror \
     "$repo_dir/mirakc/src/main/cpp/tests/px4_tune_plan_test.cpp" \
     -o "$build_dir/px4_tune_plan_test"
 "$build_dir/px4_tune_plan_test"
+
+c++ -std=c++17 -Wall -Wextra -Werror \
+    -I"$repo_dir/mirakc/src/main/cpp" \
+    "$repo_dir/mirakc/src/main/cpp/tests/px4_card_retry_test.cpp" \
+    -o "$build_dir/px4_card_retry_test"
+"$build_dir/px4_card_retry_test"

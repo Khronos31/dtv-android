@@ -51,6 +51,8 @@ val px4AdapterSource = layout.projectDirectory.file("src/main/cpp/px4_adapter.cp
 val px4TunePlanSource = layout.projectDirectory.file("src/main/cpp/px4_tune_plan.cpp")
 val px4TunePlanHeader = layout.projectDirectory.file("src/main/cpp/px4_tune_plan.h")
 val px4TunePlanTests = layout.projectDirectory.file("src/main/cpp/tests/px4_tune_plan_test.cpp")
+val px4CardRetryHeader = layout.projectDirectory.file("src/main/cpp/px4_card_retry.h")
+val px4CardRetryTests = layout.projectDirectory.file("src/main/cpp/tests/px4_card_retry_test.cpp")
 val px4TunePlanTestScript = layout.projectDirectory.file("../tools/mirakc/test-px4-tune-plan.sh")
 val px4AdapterCmake = layout.projectDirectory.file("src/main/cpp/CMakeLists.txt")
 val px4AdapterVerifier = layout.projectDirectory.file("../tools/mirakc/verify-android-elf.sh")
@@ -71,7 +73,14 @@ val androidNdkRoot = providers.environmentVariable("ANDROID_NDK_HOME")
 val runPx4TunePlanHostTests = tasks.register<Exec>("runPx4TunePlanHostTests") {
     workingDir(project.rootDir)
     commandLine("/bin/sh", px4TunePlanTestScript.asFile.absolutePath)
-    inputs.files(px4TunePlanSource, px4TunePlanHeader, px4TunePlanTests, px4TunePlanTestScript)
+    inputs.files(
+        px4TunePlanSource,
+        px4TunePlanHeader,
+        px4TunePlanTests,
+        px4CardRetryHeader,
+        px4CardRetryTests,
+        px4TunePlanTestScript
+    )
 }
 
 val mirakcBinaries = listOf(
@@ -174,6 +183,8 @@ val preparePx4AdapterBinaries = tasks.register("preparePx4AdapterBinaries") {
         px4TunePlanSource,
         px4TunePlanHeader,
         px4TunePlanTests,
+        px4CardRetryHeader,
+        px4CardRetryTests,
         px4TunePlanTestScript,
         px4AdapterCmake,
         px4AdapterVerifier,
