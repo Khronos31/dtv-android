@@ -23,12 +23,17 @@ std::string stringFromJni(JNIEnv* env, jstring value) {
     return result;
 }
 
-void close_inherited_descriptors(int preserved_fd = -1) {
+void close_inherited_descriptors(int preserved_fd = -1, int second_preserved_fd = -1) {
     long limit = sysconf(_SC_OPEN_MAX);
     if (limit < 0 || limit > 65536) limit = 65536;
     for (int fd = STDERR_FILENO + 1; fd < limit; ++fd) {
-        if (fd != preserved_fd) close(fd);
+        if (fd != preserved_fd && fd != second_preserved_fd) close(fd);
     }
+}
+
+int duplicate_for_exec(int source_fd) {
+    if (source_fd < 0) return -1;
+    return fcntl(source_fd, F_DUPFD_CLOEXEC, 10);
 }
 
 void reap_process_group(pid_t pgid) {
@@ -335,4 +340,132 @@ Java_dev_khronos31_mirakc_NativeUsbProcess_nativePollMirakc(JNIEnv*, jclass, jin
 extern "C" JNIEXPORT jint JNICALL
 Java_dev_khronos31_mirakc_NativeUsbProcess_nativePollSiano(JNIEnv*, jclass, jint pid) {
     return poll_process(static_cast<pid_t>(pid));
+}
+
+extern "C" JNIEXPORT jintArray JNICALL
+Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStartPx4d(
+    JNIEnv* env, jclass, jstring executable, jstring firmware, jstring baseSerial,
+    jstring runtimeDir, jint firstUsbFd, jint secondUsbFd) {
+    const std::string executablePath = stringFromJni(env, executable);
+    const std::string firmwarePath = stringFromJni(env, firmware);
+    const std::string baseSerialValue = stringFromJni(env, baseSerial);
+    const std::string runtimeDirPath = stringFromJni(env, runtimeDir);
+    if (executablePath.empty() || firmwarePath.empty() || baseSerialValue.empty() ||
+        runtimeDirPath.empty() || firstUsbFd < 0 || secondUsbFd < 0 ||
+        firstUsbFd == secondUsbFd) {
+        return nullptr;
+    }
+
+    int logPipe[2];
+    if (pipe2(logPipe, O_CLOEXEC) != 0) return nullptr;
+    const pid_t px4d = fork();
+    if (px4d < 0) {
+        close(logPipe[0]);
+        close(logPipe[1]);
+        return nullptr;
+    }
+    if (px4d == 0) {
+        // Kotlin startup workers are intentionally short-lived. Android's
+        // process cgroup and explicit nativeStop own teardown instead of a
+        // thread-scoped PR_SET_PDEATHSIG.
+        setpgid(0, 0);
+
+        // The Android USB descriptors may already be numbered 3 or 4, and
+        // the log pipe can occupy those numbers too. Duplicate every source
+        // first so no dup2() target can overwrite a source still needed.
+        const int first = duplicate_for_exec(firstUsbFd);
+        const int second = duplicate_for_exec(secondUsbFd);
+        const int log = duplicate_for_exec(logPipe[1]);
+        if (first < 0 || second < 0 || log < 0 || dup2(first, 3) < 0 ||
+            dup2(second, 4) < 0 || dup2(log, STDOUT_FILENO) < 0 ||
+            dup2(log, STDERR_FILENO) < 0) {
+            dprintf(log >= 0 ? log : logPipe[1],
+                    "px4d: unable to prepare USB descriptors: %s\n", strerror(errno));
+            _exit(127);
+        }
+        close(logPipe[0]);
+        if (logPipe[1] > STDERR_FILENO) close(logPipe[1]);
+        if (log > STDERR_FILENO) close(log);
+        if (first > STDERR_FILENO) close(first);
+        if (second > STDERR_FILENO && second != first) close(second);
+        const int nullFd = open("/dev/null", O_RDONLY);
+        if (nullFd >= 0) {
+            dup2(nullFd, STDIN_FILENO);
+            if (nullFd > STDERR_FILENO) close(nullFd);
+        }
+        // Keep only stdio and px4d's two documented USB descriptors. This
+        // also closes the original Android-owned descriptors in the child.
+        close_inherited_descriptors(3, 4);
+
+        char* const argv[] = {
+            const_cast<char*>(executablePath.c_str()),
+            const_cast<char*>("--fd"),
+            const_cast<char*>("3"),
+            const_cast<char*>("--fd"),
+            const_cast<char*>("4"),
+            const_cast<char*>("--device"),
+            const_cast<char*>(baseSerialValue.c_str()),
+            const_cast<char*>("--firmware"),
+            const_cast<char*>(firmwarePath.c_str()),
+            const_cast<char*>("--runtime-dir"),
+            const_cast<char*>(runtimeDirPath.c_str()),
+            nullptr,
+        };
+        dprintf(STDERR_FILENO, "px4d: exec starting\n");
+        execv(executablePath.c_str(), argv);
+        const int error = errno;
+        dprintf(STDERR_FILENO, "px4d: exec %s: %s\n", executablePath.c_str(), strerror(error));
+        _exit(127);
+    }
+    setpgid(px4d, px4d);
+    close(logPipe[1]);
+    jint values[] = {logPipe[0], px4d};
+    jintArray result = env->NewIntArray(2);
+    if (result == nullptr) {
+        close(logPipe[0]);
+        kill(-px4d, SIGTERM);
+        waitpid(px4d, nullptr, 0);
+        return nullptr;
+    }
+    env->SetIntArrayRegion(result, 0, 2, values);
+    return result;
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_dev_khronos31_mirakc_NativeUsbProcess_nativePollPx4d(JNIEnv*, jclass, jint pid) {
+    return poll_process(static_cast<pid_t>(pid));
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStopPx4d(JNIEnv*, jclass, jint pid) {
+    if (pid <= 0) return -1;
+    int status = 0;
+    pid_t observed;
+    do {
+        // A waitable child is still owned by this service, so its PID cannot
+        // be reused between this check and the signals below.  If it has
+        // already been reaped, do not signal the numeric PID.
+        observed = waitpid(static_cast<pid_t>(pid), &status, WNOHANG);
+    } while (observed < 0 && errno == EINTR);
+    if (observed == static_cast<pid_t>(pid)) return 0;
+    if (observed < 0) return -1;
+
+    kill(static_cast<pid_t>(pid), SIGTERM);
+    for (int attempt = 0; attempt < 200; ++attempt) {
+        do {
+            observed = waitpid(static_cast<pid_t>(pid), &status, WNOHANG);
+        } while (observed < 0 && errno == EINTR);
+        if (observed == static_cast<pid_t>(pid) ||
+            (observed < 0 && (errno == ECHILD || errno == ESRCH))) return 0;
+        if (observed < 0) return -1;
+        usleep(10 * 1000);
+    }
+
+    // The ownership check above remains valid until this child is reaped;
+    // force-kill it only after the bounded graceful window has elapsed.
+    kill(static_cast<pid_t>(pid), SIGKILL);
+    do {
+        observed = waitpid(static_cast<pid_t>(pid), &status, 0);
+    } while (observed < 0 && errno == EINTR);
+    return observed == static_cast<pid_t>(pid) ? 1 : -1;
 }

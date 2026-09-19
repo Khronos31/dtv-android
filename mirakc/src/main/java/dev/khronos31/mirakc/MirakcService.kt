@@ -99,6 +99,9 @@ class MirakcService : Service() {
             },
             openTuner = ::openUsbForTuner,
             firmware = ::firmwareFile,
+            px4Devices = ::permittedPx4Identities,
+            openPx4 = ::openPx4ForDaemon,
+            px4Firmware = ::px4FirmwareFile,
             onStateChanged = ::publishStatus
         )
         try {
@@ -213,7 +216,8 @@ class MirakcService : Service() {
     }
 
     private fun requestUsbPermissionIfNeeded() {
-        val pending = (supportedDevices() + readerDevices()).firstOrNull { !usbManager.hasPermission(it) }
+        val pending = (supportedDevices() + px4Devices() + readerDevices())
+            .firstOrNull { !usbManager.hasPermission(it) }
         if (pending != null) {
             val flags = PendingIntent.FLAG_UPDATE_CURRENT or
                 if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0
@@ -225,8 +229,8 @@ class MirakcService : Service() {
             publishStatus()
             return
         }
-        if (supportedDevices().isEmpty()) {
-            lastError = "No supported Siano USB device found (3275:0080, 187f:0600, 187f:0302)"
+        if (supportedDevices().isEmpty() && px4Devices().isEmpty()) {
+            lastError = "No supported tuner found (Siano or PX-Q3U4)"
             publishStatus()
             return
         }
@@ -239,8 +243,23 @@ class MirakcService : Service() {
             (it.vendorId == 0x187f && (it.productId == 0x0600 || it.productId == 0x0302))
     }.sortedBy { it.deviceName }
 
+    private fun px4Devices(): List<UsbDevice> = usbManager.deviceList.values.filter {
+        it.vendorId == 0x0511 && it.productId == 0x084a
+    }.sortedBy { it.deviceName }
+
+    private fun permittedPx4Identities(): List<Px4DeviceIdentity> =
+        px4Devices().filter { usbManager.hasPermission(it) }.mapNotNull { device ->
+            val serial = try {
+                device.serialNumber
+            } catch (_: SecurityException) {
+                null
+            }
+            serial?.let { Px4DeviceIdentity(device.deviceName, it) }
+        }
+
     private fun isSmartCardReader(device: UsbDevice): Boolean {
-        if (device.vendorId == 0x3275 || device.vendorId == 0x187f) return false
+        if (device.vendorId == 0x3275 || device.vendorId == 0x187f ||
+            (device.vendorId == 0x0511 && device.productId == 0x084a)) return false
         if (device.vendorId == 0x04E6) return true
         if (device.deviceClass == 0x0B) return true
         for (index in 0 until device.interfaceCount) {
@@ -292,6 +311,26 @@ class MirakcService : Service() {
         }
     }
 
+    private fun openPx4ForDaemon(identity: Px4DeviceIdentity): Px4UsbHandle {
+        val device = px4Devices().firstOrNull {
+            if (it.deviceName != identity.deviceName || !usbManager.hasPermission(it)) return@firstOrNull false
+            try {
+                it.serialNumber == identity.serial
+            } catch (_: SecurityException) {
+                false
+            }
+        } ?: throw IOException("No permitted PX4 device at ${identity.deviceName}")
+        val connection = usbManager.openDevice(device)
+            ?: throw IOException("UsbManager.openDevice failed for ${device.deviceName}")
+        val parcel = try {
+            ParcelFileDescriptor.fromFd(connection.fileDescriptor)
+        } catch (error: Exception) {
+            connection.close()
+            throw IOException("Unable to duplicate PX4 USB fd", error)
+        }
+        return Px4UsbHandle(parcel.fd, parcel) { connection.close() }
+    }
+
     private fun closeUsb() {
         usbParcel?.close()
         usbParcel = null
@@ -335,6 +374,12 @@ class MirakcService : Service() {
             assets.open("isdbt_rio.inp").use { input -> file.outputStream().use { input.copyTo(it) } }
         }
         return file
+    }
+
+    private fun px4FirmwareFile(): File {
+        val directory = getExternalFilesDir(null)
+            ?: throw IOException("external files directory unavailable")
+        return File(directory, "it930x-firmware.bin")
     }
 
     private fun sianoExecutable(): File {
@@ -598,6 +643,7 @@ class MirakcService : Service() {
             }
             append("\nListener: 0.0.0.0:40772")
             append("\nUpstream: ").append(mirakcSupervisor?.status() ?: "stopped")
+            append("\nPX4: ").append(mirakcSupervisor?.px4Status() ?: "stopped")
             append("\nLast error: ").append(lastError)
         }
     }

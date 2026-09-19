@@ -14,6 +14,9 @@ internal class MirakcSupervisor(
     private val tunerDevices: () -> List<String>,
     private val openTuner: (Int, String) -> SianoUsbHandle,
     private val firmware: () -> File,
+    private val px4Devices: () -> List<Px4DeviceIdentity>,
+    private val openPx4: (Px4DeviceIdentity) -> Px4UsbHandle,
+    private val px4Firmware: () -> File,
     private val onStateChanged: () -> Unit
 ) {
     private val lock = Any()
@@ -34,6 +37,18 @@ internal class MirakcSupervisor(
         firmware = firmware,
         tunerDevices = tunerDevices,
         openTuner = openTuner
+    )
+    private val px4 = Px4DaemonSupervisor(
+        executable = { File(context.applicationInfo.nativeLibraryDir, "libpx4d.so") },
+        firmware = px4Firmware,
+        identities = px4Devices,
+        openDevice = openPx4,
+        runtimeDir = File(context.filesDir, "p4"),
+        onStateChanged = onStateChanged,
+        onDaemonFailure = {
+            Log.e(TAG, "PX4 daemon failed; scheduling mirakc reconfigure")
+            reconfigure()
+        }
     )
 
     fun start() {
@@ -73,6 +88,7 @@ internal class MirakcSupervisor(
         // the lock so a state callback cannot ever wait on process teardown.
         current?.let { stopStarted(it, "service-stop") }
         broker.close()
+        px4.stop()
     }
 
     fun reconfigure() {
@@ -108,6 +124,8 @@ internal class MirakcSupervisor(
 
     fun status(): String = state
 
+    fun px4Status(): String = px4.status()
+
     private fun startOnWorker() {
         var started: NativeUsbProcess.StartedMirakc? = null
         try {
@@ -130,6 +148,7 @@ internal class MirakcSupervisor(
                 if (stopping) return
             }
             val generation = broker.start()
+            val px4Generation = px4.startOrGet()
             val abortAfterBrokerStart = synchronized(lock) { stopping }
             if (abortAfterBrokerStart) {
                 // stop() may have raced with broker.start(); do not leave a
@@ -143,7 +162,10 @@ internal class MirakcSupervisor(
             }
             val config = runtimeDir.resolve("config.yml")
             val temporaryConfig = config.resolveSibling("config.yml.tmp")
-            temporaryConfig.writeText(buildConfig(cacheDir, recordingDir, strings, generation), StandardCharsets.UTF_8)
+            temporaryConfig.writeText(
+                buildConfig(cacheDir, recordingDir, strings, generation, px4Generation),
+                StandardCharsets.UTF_8
+            )
             if (!temporaryConfig.renameTo(config)) {
                 throw IOException("cannot atomically install mirakc config: $config")
             }
@@ -228,6 +250,7 @@ internal class MirakcSupervisor(
         current?.let { stopStarted(it, "usb-reconfigure") }
         try {
             broker.rotateGeneration()
+            px4.reconfigure()
             synchronized(lock) {
                 if (stopping) return
             }
@@ -476,17 +499,21 @@ internal class MirakcSupervisor(
         cacheDir: File,
         recordingDir: File,
         strings: File,
-        generation: SianoGeneration
+        generation: SianoGeneration,
+        px4Generation: Px4Generation?
     ): String {
         val arib = File(context.applicationInfo.nativeLibraryDir, "libmirakc-arib.so")
         val adapter = File(context.applicationInfo.nativeLibraryDir, "libmirakc-siano-adapter.so")
+        val px4Adapter = File(context.applicationInfo.nativeLibraryDir, "libmirakc-px4-adapter.so")
         fun yamlPath(file: File): String = file.absolutePath.replace("'", "''")
         val aribPath = yamlPath(arib)
         val tunerConfig = buildString {
-            if (generation.tunerCount == 0) {
+            if (generation.tunerCount == 0 && px4Generation == null) {
                 append("tuners: []\n")
             } else {
                 append("tuners:\n")
+            }
+            if (generation.tunerCount > 0) {
                 repeat(generation.tunerCount) { index ->
                     append("  - name: Siano-$index\n")
                     append("    types: [GR]\n")
@@ -498,6 +525,24 @@ internal class MirakcSupervisor(
                     append(generation.token)
                     append(" --tuner-index=")
                     append(index)
+                    append(" --channel={{{channel}}}\n")
+                }
+            }
+            px4Generation?.let { px4 ->
+                val px4Ts = yamlPath(File(context.applicationInfo.nativeLibraryDir, "libpx4-ts.so"))
+                repeat(px4.receivers.size) { index ->
+                    append("  - name: PX4-GR-$index\n")
+                    append("    types: [GR]\n")
+                    append("    command: ")
+                    append(yamlPath(px4Adapter))
+                    append(" --px4-ts=")
+                    append(px4Ts)
+                    append(" --device=")
+                    append(px4.baseSerial)
+                    append(" --receiver=")
+                    append(px4.receivers[index])
+                    append(" --runtime-dir=")
+                    append(yamlPath(px4.runtimeDir))
                     append(" --channel={{{channel}}}\n")
                 }
             }

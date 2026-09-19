@@ -46,6 +46,9 @@ val mirakcAribAndroidPatch = layout.projectDirectory.file("../tools/mirakc-arib/
 val sianoAdapterSource = layout.projectDirectory.file("src/main/cpp/siano_adapter.cpp")
 val sianoAdapterCmake = layout.projectDirectory.file("src/main/cpp/CMakeLists.txt")
 val sianoAdapterVerifier = layout.projectDirectory.file("../tools/mirakc/verify-android-elf.sh")
+val px4AdapterSource = layout.projectDirectory.file("src/main/cpp/px4_adapter.cpp")
+val px4AdapterCmake = layout.projectDirectory.file("src/main/cpp/CMakeLists.txt")
+val px4AdapterVerifier = layout.projectDirectory.file("../tools/mirakc/verify-android-elf.sh")
 val androidNdkRoot = providers.environmentVariable("ANDROID_NDK_HOME")
     .orElse(providers.environmentVariable("ANDROID_NDK_ROOT"))
     .orElse("/config/.tools/android-sdk/ndk/$configuredNdkVersion")
@@ -135,6 +138,53 @@ val prepareSianoAdapterBinaries = tasks.register("prepareSianoAdapterBinaries") 
             }
             project.exec {
                 commandLine("/bin/sh", sianoAdapterVerifier.asFile.absolutePath, destination.absolutePath, abi)
+            }
+        }
+        buildAbi("arm64-v8a")
+        buildAbi("armeabi-v7a")
+    }
+}
+
+val preparePx4AdapterBinaries = tasks.register("preparePx4AdapterBinaries") {
+    inputs.files(px4AdapterSource, px4AdapterCmake, px4AdapterVerifier)
+    outputs.files(
+        nativeOutputDir.file("arm64-v8a/libmirakc-px4-adapter.so"),
+        nativeOutputDir.file("armeabi-v7a/libmirakc-px4-adapter.so")
+    )
+
+    doLast {
+        val ndk = file(androidNdkRoot.get())
+        if (!ndk.isDirectory) throw GradleException("Android NDK not found at $ndk")
+        fun buildAbi(abi: String) {
+            val buildDir = project.rootDir.resolve(".work/build-px4-adapter-$abi")
+            val destination = nativeOutputDir.dir(abi).file("libmirakc-px4-adapter.so").asFile
+            project.exec {
+                workingDir(project.rootDir)
+                commandLine(
+                    "cmake", "-S", px4AdapterSource.asFile.parent,
+                    "-B", buildDir.absolutePath, "-G", "Ninja",
+                    "-DCMAKE_BUILD_TYPE=Release",
+                    "-DCMAKE_TOOLCHAIN_FILE=${ndk.resolve("build/cmake/android.toolchain.cmake")}",
+                    "-DANDROID_ABI=$abi", "-DANDROID_PLATFORM=android-24",
+                    "-DANDROID_STL=c++_static",
+                    "-DMIRAKC_BUILD_PX4_ADAPTER=ON"
+                )
+            }
+            project.exec {
+                workingDir(project.rootDir)
+                commandLine("ninja", "-C", buildDir.absolutePath, "px4_adapter")
+            }
+            val built = buildDir.resolve("libmirakc-px4-adapter.so")
+            if (!built.isFile) throw GradleException("PX4 adapter build produced no $built")
+            destination.parentFile.mkdirs()
+            built.copyTo(destination, overwrite = true)
+            destination.setExecutable(true, false)
+            project.exec {
+                commandLine(ndk.resolve("toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip").absolutePath,
+                    "--strip-unneeded", destination.absolutePath)
+            }
+            project.exec {
+                commandLine("/bin/sh", px4AdapterVerifier.asFile.absolutePath, destination.absolutePath, abi)
             }
         }
         buildAbi("arm64-v8a")
@@ -585,6 +635,7 @@ plugins.withId("com.android.application") {
         .configureEach {
             dependsOn(prepareSianoBinaries)
             dependsOn(prepareSianoAdapterBinaries)
+            dependsOn(preparePx4AdapterBinaries)
             dependsOn(prepareMirakcAribBinaries)
             dependsOn(preparePx4Binaries)
             dependsOn(prepareMirakcBinary)

@@ -129,6 +129,39 @@ internal object NativeUsbProcess {
         else -> PollResult.ERROR
     }
 
+    fun startPx4d(
+        executable: String,
+        firmware: String,
+        baseSerial: String,
+        runtimeDir: String,
+        firstUsbFd: Int,
+        secondUsbFd: Int
+    ): StartedPx4d {
+        val handles = nativeStartPx4d(
+            executable, firmware, baseSerial, runtimeDir, firstUsbFd, secondUsbFd
+        )
+        check(handles != null && handles.size == 2) { "Unable to start px4d" }
+        val outputFd = handles[0]
+        val pid = handles[1]
+        check(outputFd >= 0 && pid > 0) { "Invalid px4d process handle" }
+        return StartedPx4d(pid, ParcelFileDescriptor.adoptFd(outputFd))
+    }
+
+    fun pollPx4d(pid: Int): PollResult = when (val result = nativePollPx4d(pid)) {
+        0 -> PollResult.ALIVE
+        1 -> PollResult.EXITED(code = null, signal = null)
+        in 2..257 -> PollResult.EXITED(code = result - 2, signal = null)
+        in -129..-2 -> PollResult.EXITED(code = null, signal = -result - 2)
+        else -> PollResult.ERROR
+    }
+
+    /** Stop the direct px4d owner. Returns true when SIGKILL was required. */
+    fun stopPx4d(pid: Int): Boolean = when (nativeStopPx4d(pid)) {
+        0 -> false
+        1 -> true
+        else -> false
+    }
+
     data class StartedProcess(
         val pid: Int,
         val output: ParcelFileDescriptor,
@@ -139,6 +172,7 @@ internal object NativeUsbProcess {
         internal val diagnosticsFinished = AtomicBoolean(false)
     }
     data class StartedMirakc(val pid: Int, val output: ParcelFileDescriptor)
+    data class StartedPx4d(val pid: Int, val output: ParcelFileDescriptor)
 
     private const val MAX_DIAGNOSTICS_BYTES = 64 * 1024
     private const val MAX_DIAGNOSTIC_LINE = 512
@@ -150,4 +184,14 @@ internal object NativeUsbProcess {
     private external fun nativeStartMirakc(executable: String, config: String): IntArray?
     private external fun nativePollMirakc(pid: Int): Int
     private external fun nativePollSiano(pid: Int): Int
+    private external fun nativeStartPx4d(
+        executable: String,
+        firmware: String,
+        baseSerial: String,
+        runtimeDir: String,
+        firstUsbFd: Int,
+        secondUsbFd: Int
+    ): IntArray?
+    private external fun nativePollPx4d(pid: Int): Int
+    private external fun nativeStopPx4d(pid: Int): Int
 }

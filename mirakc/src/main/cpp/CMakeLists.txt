@@ -36,3 +36,18 @@ if(MIRAKC_BUILD_SIANO_ADAPTER)
     )
     target_link_libraries(siano_adapter log)
 endif()
+
+option(MIRAKC_BUILD_PX4_ADAPTER "Build the standalone mirakc PX4 tuner adapter" OFF)
+if(MIRAKC_BUILD_PX4_ADAPTER)
+    add_executable(px4_adapter px4_adapter.cpp)
+    target_compile_features(px4_adapter PRIVATE cxx_std_17)
+    target_link_options(px4_adapter PRIVATE
+        -Wl,-z,max-page-size=16384
+        -Wl,-z,common-page-size=16384
+        -Wl,-z,relro
+        -Wl,-z,now
+    )
+    set_target_properties(px4_adapter PROPERTIES
+        OUTPUT_NAME "libmirakc-px4-adapter.so"
+    )
+endif()
