@@ -10,8 +10,17 @@ internal object NativeUsbProcess {
         System.loadLibrary("usb_process")
     }
 
-    fun start(executable: String, firmware: String, channel: Int, usbFd: Int, readerFd: Int = -1): StartedProcess {
-        val handles = nativeStart(executable, firmware, channel, usbFd, readerFd)
+    fun start(
+        executable: String,
+        firmware: String,
+        channel: Int,
+        usbFd: Int,
+        readerFd: Int = -1,
+        readerExecutable: String? = null
+    ): StartedProcess {
+        val handles = nativeStart(
+            executable, firmware, channel, usbFd, readerFd, readerExecutable.orEmpty()
+        )
         check(handles != null && handles.size == 3) { "Unable to start siano-ts" }
         val readFd = handles[0]
         val pid = handles[1]
@@ -179,7 +188,14 @@ internal object NativeUsbProcess {
     private const val DIAGNOSTICS_DRAIN_TIMEOUT_MS = 500L
     private const val TAG = "SianoTunerBroker"
 
-    private external fun nativeStart(executable: String, firmware: String, channel: Int, usbFd: Int, readerFd: Int): IntArray?
+    private external fun nativeStart(
+        executable: String,
+        firmware: String,
+        channel: Int,
+        usbFd: Int,
+        readerFd: Int,
+        readerExecutable: String
+    ): IntArray?
     private external fun nativeStop(pid: Int)
     private external fun nativeStartMirakc(executable: String, config: String): IntArray?
     private external fun nativePollMirakc(pid: Int): Int

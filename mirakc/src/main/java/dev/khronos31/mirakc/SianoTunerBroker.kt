@@ -232,7 +232,10 @@ internal class SianoTunerBroker(
                     firmware = firmware().absolutePath,
                     channel = channel,
                     usbFd = handle.fd,
-                    readerFd = readerHandle?.fd ?: -1
+                    readerFd = readerHandle?.fd ?: -1,
+                    readerExecutable = readerHandle?.let {
+                        File(sianoExecutable().parentFile, "libmirakc-b25-filter.so").absolutePath
+                    }
                 )
                 // stop() is serialized with publication of the child, so a
                 // generation rotation cannot miss a just-created process.

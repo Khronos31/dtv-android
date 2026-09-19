@@ -10,8 +10,6 @@
 #include <cstring>
 #include <string>
 
-extern "C" int b25_stdio_filter(int reader_fd);
-
 namespace {
 
 std::string stringFromJni(JNIEnv* env, jstring value) {
@@ -23,12 +21,22 @@ std::string stringFromJni(JNIEnv* env, jstring value) {
     return result;
 }
 
-void close_inherited_descriptors(int preserved_fd = -1, int second_preserved_fd = -1) {
+long descriptor_limit() {
     long limit = sysconf(_SC_OPEN_MAX);
+    if (limit < 0 || limit > 65536) limit = 65536;
+    return limit;
+}
+
+void close_inherited_descriptors_bounded(
+    long limit, int preserved_fd = -1, int second_preserved_fd = -1) {
     if (limit < 0 || limit > 65536) limit = 65536;
     for (int fd = STDERR_FILENO + 1; fd < limit; ++fd) {
         if (fd != preserved_fd && fd != second_preserved_fd) close(fd);
     }
+}
+
+void close_inherited_descriptors(int preserved_fd = -1, int second_preserved_fd = -1) {
+    close_inherited_descriptors_bounded(descriptor_limit(), preserved_fd, second_preserved_fd);
 }
 
 int duplicate_for_exec(int source_fd) {
@@ -71,12 +79,17 @@ int poll_process(pid_t pid) {
 
 extern "C" JNIEXPORT jintArray JNICALL
 Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStart(
-    JNIEnv* env, jclass, jstring executable, jstring firmware, jint channel, jint usbFd, jint readerFd) {
+    JNIEnv* env, jclass, jstring executable, jstring firmware, jint channel, jint usbFd, jint readerFd,
+    jstring readerExecutable) {
     const std::string executablePath = stringFromJni(env, executable);
     const std::string firmwarePath = stringFromJni(env, firmware);
-    if (executablePath.empty() || firmwarePath.empty() || usbFd < 0 || channel < 13 || channel > 62) {
+    const std::string readerExecutablePath = stringFromJni(env, readerExecutable);
+    if (executablePath.empty() || firmwarePath.empty() || usbFd < 0 || channel < 13 || channel > 62 ||
+        (readerFd >= 0 && readerExecutablePath.empty())) {
         return nullptr;
     }
+
+    const long descriptorLimit = descriptor_limit();
 
     int tsPipe[2];
     int outPipe[2];
@@ -181,10 +194,12 @@ Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStart(
             if (getppid() == 1) _exit(127);
             setpgid(0, siano);
             if (dup2(tsPipe[0], STDIN_FILENO) < 0 || dup2(outPipe[1], STDOUT_FILENO) < 0) _exit(127);
-            int cardFd = readerFd;
             if (readerFd != 4) {
                 if (dup2(readerFd, 4) < 0) _exit(127);
-                cardFd = 4;
+            }
+            const int readerFlags = fcntl(4, F_GETFD);
+            if (readerFlags < 0 || fcntl(4, F_SETFD, readerFlags & ~FD_CLOEXEC) < 0) {
+                _exit(127);
             }
             close(tsPipe[0]);
             close(tsPipe[1]);
@@ -194,9 +209,14 @@ Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStart(
             if (readerFd != 4) close(readerFd);
             // The filter only needs card fd 4 plus stdio. In particular, do
             // not pass the Android service's descriptors through exec.
-            close_inherited_descriptors(4);
-            b25_stdio_filter(cardFd);
-            _exit(0);
+            close_inherited_descriptors_bounded(descriptorLimit, 4);
+            char* const argv[] = {
+                const_cast<char*>(readerExecutablePath.c_str()),
+                const_cast<char*>("--reader-fd=4"),
+                nullptr,
+            };
+            execv(readerExecutablePath.c_str(), argv);
+            _exit(127);
         }
         setpgid(b25, siano);
         close(tsPipe[0]);

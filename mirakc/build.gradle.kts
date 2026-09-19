@@ -47,6 +47,9 @@ val mirakcAribAndroidPatch = layout.projectDirectory.file("../tools/mirakc-arib/
 val sianoAdapterSource = layout.projectDirectory.file("src/main/cpp/siano_adapter.cpp")
 val sianoAdapterCmake = layout.projectDirectory.file("src/main/cpp/CMakeLists.txt")
 val sianoAdapterVerifier = layout.projectDirectory.file("../tools/mirakc/verify-android-elf.sh")
+val b25FilterSource = layout.projectDirectory.file("src/main/cpp/b25_filter_main.cpp")
+val b25FilterCmake = layout.projectDirectory.file("src/main/cpp/CMakeLists.txt")
+val b25FilterVerifier = layout.projectDirectory.file("../tools/mirakc/verify-android-elf.sh")
 val px4AdapterSource = layout.projectDirectory.file("src/main/cpp/px4_adapter.cpp")
 val px4TunePlanSource = layout.projectDirectory.file("src/main/cpp/px4_tune_plan.cpp")
 val px4TunePlanHeader = layout.projectDirectory.file("src/main/cpp/px4_tune_plan.h")
@@ -168,6 +171,65 @@ val prepareSianoAdapterBinaries = tasks.register("prepareSianoAdapterBinaries") 
             }
             project.exec {
                 commandLine("/bin/sh", sianoAdapterVerifier.asFile.absolutePath, destination.absolutePath, abi)
+            }
+        }
+        buildAbi("arm64-v8a")
+        buildAbi("armeabi-v7a")
+    }
+}
+
+val prepareB25FilterBinaries = tasks.register("prepareB25FilterBinaries") {
+    inputs.files(
+        b25FilterSource,
+        b25FilterCmake,
+        b25FilterVerifier,
+        layout.projectDirectory.file("src/main/cpp/b25_filter.cpp"),
+        layout.projectDirectory.file("src/main/cpp/ccid_reader.c"),
+        layout.projectDirectory.file("src/main/cpp/ccid_reader.h"),
+        layout.projectDirectory.file("src/main/cpp/b_cas_card_ccid.c"),
+        layout.projectDirectory.file("src/main/cpp/arib25/b_cas_card.h"),
+        fileTree(layout.projectDirectory.dir("src/main/cpp/arib25"))
+    )
+    outputs.files(
+        nativeOutputDir.file("arm64-v8a/libmirakc-b25-filter.so"),
+        nativeOutputDir.file("armeabi-v7a/libmirakc-b25-filter.so")
+    )
+
+    doLast {
+        val ndk = file(androidNdkRoot.get())
+        if (!ndk.isDirectory) throw GradleException("Android NDK not found at $ndk")
+        fun buildAbi(abi: String) {
+            val buildDir = project.rootDir.resolve(".work/build-b25-filter-$abi")
+            val destination = nativeOutputDir.dir(abi).file("libmirakc-b25-filter.so").asFile
+            project.exec {
+                workingDir(project.rootDir)
+                commandLine(
+                    "cmake", "-S", b25FilterSource.asFile.parent,
+                    "-B", buildDir.absolutePath, "-G", "Ninja",
+                    "-DCMAKE_BUILD_TYPE=Release",
+                    "-DCMAKE_TOOLCHAIN_FILE=${ndk.resolve("build/cmake/android.toolchain.cmake")}",
+                    "-DANDROID_ABI=$abi", "-DANDROID_PLATFORM=android-24",
+                    "-DANDROID_STL=c++_static",
+                    "-DMIRAKC_BUILD_B25_FILTER=ON"
+                )
+            }
+            project.exec {
+                workingDir(project.rootDir)
+                commandLine("ninja", "-C", buildDir.absolutePath, "b25_filter")
+            }
+            val built = buildDir.resolve("libmirakc-b25-filter.so")
+            if (!built.isFile) throw GradleException("B25 filter build produced no $built")
+            destination.parentFile.mkdirs()
+            built.copyTo(destination, overwrite = true)
+            destination.setExecutable(true, false)
+            project.exec {
+                commandLine(
+                    ndk.resolve("toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip").absolutePath,
+                    "--strip-unneeded", destination.absolutePath
+                )
+            }
+            project.exec {
+                commandLine("/bin/sh", b25FilterVerifier.asFile.absolutePath, destination.absolutePath, abi)
             }
         }
         buildAbi("arm64-v8a")
@@ -798,6 +860,7 @@ plugins.withId("com.android.application") {
         .configureEach {
             dependsOn(prepareSianoBinaries)
             dependsOn(prepareSianoAdapterBinaries)
+            dependsOn(prepareB25FilterBinaries)
             dependsOn(preparePx4AdapterBinaries)
             dependsOn(preparePx4FwtoolBinaries)
             dependsOn(prepareMirakcAribBinaries)

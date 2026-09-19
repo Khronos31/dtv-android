@@ -3,12 +3,6 @@ project(mirakc_usb_process)
 
 add_library(usb_process SHARED
     usb_process.cpp
-    b25_filter.cpp
-    ccid_reader.c
-    b_cas_card_ccid.c
-    arib25/arib_std_b25.c
-    arib25/ts_section_parser.c
-    arib25/multi2.cc
 )
 target_include_directories(usb_process PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/arib25 ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_features(usb_process PRIVATE cxx_std_17)
@@ -20,6 +14,35 @@ target_link_options(usb_process PRIVATE
     -Wl,-z,now
 )
 target_link_libraries(usb_process log)
+
+option(MIRAKC_BUILD_B25_FILTER "Build the standalone mirakc B25 filter" OFF)
+if(MIRAKC_BUILD_B25_FILTER)
+    add_executable(b25_filter
+        b25_filter_main.cpp
+        b25_filter.cpp
+        ccid_reader.c
+        b_cas_card_ccid.c
+        arib25/arib_std_b25.c
+        arib25/ts_section_parser.c
+        arib25/multi2.cc
+    )
+    target_include_directories(b25_filter PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/arib25
+        ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    target_compile_features(b25_filter PRIVATE cxx_std_17)
+    target_compile_options(b25_filter PRIVATE -fvisibility=hidden)
+    target_link_options(b25_filter PRIVATE
+        -Wl,-z,max-page-size=16384
+        -Wl,-z,common-page-size=16384
+        -Wl,-z,relro
+        -Wl,-z,now
+    )
+    set_target_properties(b25_filter PROPERTIES
+        OUTPUT_NAME "libmirakc-b25-filter.so"
+    )
+    target_link_libraries(b25_filter log)
+endif()
 
 option(MIRAKC_BUILD_SIANO_ADAPTER "Build the standalone mirakc tuner adapter" OFF)
 if(MIRAKC_BUILD_SIANO_ADAPTER)
