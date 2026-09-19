@@ -23,6 +23,7 @@ env:
   NDK_VERSION: "27.0.12077973"
   SIANO_USERLAND_REF: d4f8930ab56d13c479037f2e242461062d96c127
   PX4_USERLAND_REF: 639e65feee7c9f503d44023edd9ab9bba12d5d74
+  PX4_DRV_REF: 2b3f79b5bc5db56e8556bb28397f7d8f74b2adeb
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
@@ -100,6 +101,12 @@ jobs:
           repository: Khronos31/px4-userland
           ref: ${{ env.PX4_USERLAND_REF }}
           path: px4-userland
+      - uses: actions/checkout@v5
+        if: needs.prepare.outputs.component == 'mirakc'
+        with:
+          repository: nns779/px4_drv
+          ref: ${{ env.PX4_DRV_REF }}
+          path: px4_drv
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -155,6 +162,7 @@ jobs:
             ./gradlew --no-daemon \
               -PsianoUserlandDir="$GITHUB_WORKSPACE/siano-userland" \
               -Ppx4UserlandDir="$GITHUB_WORKSPACE/px4-userland" \
+              -Ppx4DrvDir="$GITHUB_WORKSPACE/px4_drv" \
               :mirakc:assembleRelease
             apk=mirakc/build/outputs/apk/release/mirakc-release.apk
           else

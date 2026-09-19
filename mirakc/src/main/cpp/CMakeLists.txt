@@ -76,3 +76,29 @@ if(MIRAKC_BUILD_PX4_ADAPTER)
     )
     target_link_libraries(px4_adapter log)
 endif()
+
+option(MIRAKC_BUILD_PX4_FWTOOL "Build the pinned PX4 firmware generator" OFF)
+if(MIRAKC_BUILD_PX4_FWTOOL)
+    set(PX4_DRV_DIR "" CACHE PATH "Pinned px4_drv checkout")
+    if(NOT IS_DIRECTORY "${PX4_DRV_DIR}/fwtool")
+        message(FATAL_ERROR "PX4_DRV_DIR must point to a px4_drv checkout")
+    endif()
+    add_executable(px4_fwtool
+        ${PX4_DRV_DIR}/fwtool/fwtool.c
+        ${PX4_DRV_DIR}/fwtool/tsv.c
+        ${PX4_DRV_DIR}/fwtool/crc32.c
+    )
+    target_include_directories(px4_fwtool PRIVATE ${PX4_DRV_DIR}/fwtool)
+    target_compile_options(px4_fwtool PRIVATE -fPIE)
+    target_link_options(px4_fwtool PRIVATE
+        -fPIE
+        -pie
+        -Wl,-z,max-page-size=16384
+        -Wl,-z,common-page-size=16384
+        -Wl,-z,relro
+        -Wl,-z,now
+    )
+    set_target_properties(px4_fwtool PROPERTIES
+        OUTPUT_NAME "libmirakc-px4-fwtool.so"
+    )
+endif()

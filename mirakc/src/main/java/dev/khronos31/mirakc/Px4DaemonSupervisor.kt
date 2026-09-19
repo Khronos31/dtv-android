@@ -116,15 +116,15 @@ internal class Px4DaemonSupervisor(
     fun status(): String = state
 
     private fun startGeneration(): Px4Generation? {
+        val pair = pairDevices()
+        if (pair == null) {
+            setState("waiting (PX4 pair 1/2 not permitted)")
+            return null
+        }
         val firmwareFile = try {
             validatedFirmware()
         } catch (error: Exception) {
             setState("disabled (firmware ${error.message ?: "invalid"})")
-            return null
-        }
-        val pair = pairDevices()
-        if (pair == null) {
-            setState("waiting (PX4 pair 1/2 not permitted)")
             return null
         }
         val binary = executable()

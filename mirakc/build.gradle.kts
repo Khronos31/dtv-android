@@ -51,6 +51,14 @@ val px4AdapterCmake = layout.projectDirectory.file("src/main/cpp/CMakeLists.txt"
 val px4AdapterVerifier = layout.projectDirectory.file("../tools/mirakc/verify-android-elf.sh")
 val px4UserlandDir = providers.gradleProperty("px4UserlandDir")
     .orElse("/config/GitHub/px4-userland")
+val px4DrvDir = providers.gradleProperty("px4DrvDir")
+    .orElse("/config/GitHub/px4_drv")
+val px4DrvPinnedRef = "2b3f79b5bc5db56e8556bb28397f7d8f74b2adeb"
+val px4FwtoolBinaries = listOf(
+    nativeOutputDir.file("arm64-v8a/libmirakc-px4-fwtool.so"),
+    nativeOutputDir.file("armeabi-v7a/libmirakc-px4-fwtool.so")
+)
+val px4FwtoolGeneratedAssets = layout.buildDirectory.dir("generated/px4-fwtool-assets")
 val androidNdkRoot = providers.environmentVariable("ANDROID_NDK_HOME")
     .orElse(providers.environmentVariable("ANDROID_NDK_ROOT"))
     .orElse("/config/.tools/android-sdk/ndk/$configuredNdkVersion")
@@ -214,6 +222,111 @@ val preparePx4AdapterBinaries = tasks.register("preparePx4AdapterBinaries") {
         }
         buildAbi("arm64-v8a")
         buildAbi("armeabi-v7a")
+    }
+}
+
+val preparePx4FwtoolBinaries = tasks.register("preparePx4FwtoolBinaries") {
+    inputs.property("px4DrvDir", px4DrvDir)
+    inputs.property("px4DrvPinnedRef", px4DrvPinnedRef)
+    inputs.files(px4AdapterCmake, px4AdapterVerifier)
+    inputs.files(
+        px4DrvDir.map { directoryName ->
+            val root = file(directoryName)
+            listOf(
+                root.resolve("fwtool/fwtool.c"),
+                root.resolve("fwtool/tsv.c"),
+                root.resolve("fwtool/tsv.h"),
+                root.resolve("fwtool/crc32.c"),
+                root.resolve("fwtool/crc32.h"),
+                root.resolve("fwtool/fwinfo.tsv"),
+                root.resolve("LICENSE")
+            )
+        }
+    )
+    outputs.files(px4FwtoolBinaries)
+    outputs.dir(px4FwtoolGeneratedAssets)
+
+    doLast {
+        val sourceRoot = file(px4DrvDir.get())
+        if (!sourceRoot.isDirectory) {
+            throw GradleException("px4_drv checkout not found at $sourceRoot")
+        }
+        val head = gitOutput(sourceRoot, "rev-parse", "HEAD")
+        if (head.first != 0 || head.second != px4DrvPinnedRef) {
+            throw GradleException(
+                "px4_drv HEAD mismatch at $sourceRoot: expected $px4DrvPinnedRef, " +
+                    "found ${head.second.ifBlank { "unavailable" }}"
+            )
+        }
+        if (gitOutput(sourceRoot, "diff", "--quiet").first != 0 ||
+            gitOutput(sourceRoot, "diff", "--cached", "--quiet").first != 0
+        ) {
+            throw GradleException("px4_drv checkout is dirty at $sourceRoot")
+        }
+        val required = listOf(
+            sourceRoot.resolve("fwtool/fwtool.c"),
+            sourceRoot.resolve("fwtool/tsv.c"),
+            sourceRoot.resolve("fwtool/tsv.h"),
+            sourceRoot.resolve("fwtool/crc32.c"),
+            sourceRoot.resolve("fwtool/crc32.h"),
+            sourceRoot.resolve("fwtool/fwinfo.tsv"),
+            sourceRoot.resolve("LICENSE")
+        )
+        required.filterNot { it.isFile }.firstOrNull()?.let {
+            throw GradleException("px4_drv checkout is missing $it")
+        }
+        val ndk = file(androidNdkRoot.get())
+        if (!ndk.isDirectory) throw GradleException("Android NDK not found at $ndk")
+        fun buildAbi(abi: String) {
+            val buildDir = project.rootDir.resolve(".work/build-px4-fwtool-$abi")
+            val destination = nativeOutputDir.dir(abi)
+                .file("libmirakc-px4-fwtool.so").asFile
+            project.exec {
+                workingDir(project.rootDir)
+                commandLine(
+                    "cmake", "-S", px4AdapterSource.asFile.parent,
+                    "-B", buildDir.absolutePath, "-G", "Ninja",
+                    "-DCMAKE_BUILD_TYPE=Release",
+                    "-DCMAKE_TOOLCHAIN_FILE=${ndk.resolve("build/cmake/android.toolchain.cmake")}",
+                    "-DANDROID_ABI=$abi", "-DANDROID_PLATFORM=android-24",
+                    "-DANDROID_STL=c++_static",
+                    "-DMIRAKC_BUILD_PX4_FWTOOL=ON",
+                    "-DPX4_DRV_DIR=${sourceRoot.absolutePath}"
+                )
+            }
+            project.exec {
+                workingDir(project.rootDir)
+                commandLine("ninja", "-C", buildDir.absolutePath, "px4_fwtool")
+            }
+            val built = buildDir.resolve("libmirakc-px4-fwtool.so")
+            if (!built.isFile) throw GradleException("PX4 fwtool build produced no $built")
+            destination.parentFile.mkdirs()
+            built.copyTo(destination, overwrite = true)
+            destination.setExecutable(true, false)
+            project.exec {
+                commandLine(
+                    ndk.resolve("toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip").absolutePath,
+                    "--strip-unneeded", destination.absolutePath
+                )
+            }
+            project.exec {
+                commandLine("/bin/sh", px4AdapterVerifier.asFile.absolutePath, destination.absolutePath, abi)
+            }
+        }
+        buildAbi("arm64-v8a")
+        buildAbi("armeabi-v7a")
+
+        val assetDir = px4FwtoolGeneratedAssets.get().asFile
+        assetDir.deleteRecursively()
+        val packagedAssetDir = assetDir.resolve("px4-fwtool")
+        packagedAssetDir.mkdirs()
+        sourceRoot.resolve("fwtool/fwinfo.tsv").copyTo(packagedAssetDir.resolve("fwinfo.tsv"), overwrite = true)
+        sourceRoot.resolve("LICENSE").copyTo(packagedAssetDir.resolve("LICENSE"), overwrite = true)
+        packagedAssetDir.resolve("SOURCE.txt").writeText(
+            "fwtool from nns779/px4_drv\n" +
+                "commit: $px4DrvPinnedRef\n" +
+                "license: GPL-2.0-only\n"
+        )
     }
 }
 
@@ -659,6 +772,7 @@ plugins.withId("com.android.application") {
             dependsOn(prepareSianoBinaries)
             dependsOn(prepareSianoAdapterBinaries)
             dependsOn(preparePx4AdapterBinaries)
+            dependsOn(preparePx4FwtoolBinaries)
             dependsOn(prepareMirakcAribBinaries)
             dependsOn(preparePx4Binaries)
             dependsOn(prepareMirakcBinary)
@@ -721,6 +835,8 @@ android {
     externalNativeBuild {
         cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" }
     }
+
+    sourceSets.getByName("main").assets.srcDir(px4FwtoolGeneratedAssets)
 
     packagingOptions {
         doNotStrip("**/*.so")

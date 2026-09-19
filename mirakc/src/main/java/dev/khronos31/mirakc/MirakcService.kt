@@ -55,6 +55,13 @@ class MirakcService : Service() {
     private var scanThread: Thread? = null
     @Volatile private var scanning = false
     @Volatile private var scanLabel = "idle"
+    private val px4FirmwareAcquirer by lazy {
+        Px4FirmwareAcquirer(
+            destinationDirectory = { getExternalFilesDir(null) },
+            fwtool = { File(applicationInfo.nativeLibraryDir, "libmirakc-px4-fwtool.so") },
+            openFwtoolAsset = { name -> assets.open("px4-fwtool/$name") }
+        )
+    }
 
     private val usbPermissionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -101,7 +108,7 @@ class MirakcService : Service() {
             firmware = ::firmwareFile,
             px4Devices = ::permittedPx4Identities,
             openPx4 = ::openPx4ForDaemon,
-            px4Firmware = ::px4FirmwareFile,
+            px4Firmware = ::ensurePx4Firmware,
             onStateChanged = ::publishStatus
         )
         try {
@@ -376,11 +383,7 @@ class MirakcService : Service() {
         return file
     }
 
-    private fun px4FirmwareFile(): File {
-        val directory = getExternalFilesDir(null)
-            ?: throw IOException("external files directory unavailable")
-        return File(directory, "it930x-firmware.bin")
-    }
+    private fun ensurePx4Firmware(): File = px4FirmwareAcquirer.ensure()
 
     private fun sianoExecutable(): File {
         val source = File(applicationInfo.nativeLibraryDir, "libsiano-ts.so")

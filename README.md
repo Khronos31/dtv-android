@@ -24,7 +24,7 @@ APK は2本あります。
 | | |
 | --- | --- |
 | 本体 | Android TV / Google TV（Google TV Streamer で動作確認） |
-| チューナー | PLEX PX-S1UD、または同じ Siano チップの USB チューナー |
+| チューナー | PLEX PX-S1UD、同じ Siano チップの USB チューナー、または PLEX PX-Q3U4 |
 | カードリーダー | CCID 対応の USB カードリーダー（Identive/SCM SCR33xx v2.0 で動作確認） |
 | カード | B-CAS カード |
 | その他 | USB ハブ（本体のポートが1つしかないため）、録画用の USB ストレージ（任意・exFAT） |
@@ -48,6 +48,13 @@ APK は2本あります。
    ファイルマネージャー系のアプリから入れても構いません。提供元不明のアプリの
    インストールを許可する必要があります。
 3. チューナーとカードリーダーを USB ハブ経由でテレビに挿します。
+
+PX-Q3U4を使う場合、初回起動時にアプリが公式PLEX HTTPS配布物から必要なSYSを
+取得し、同梱のGPL-2.0 `px4_drv/fwtool`（v0.2.1固定）で
+`it930x-firmware.bin`を生成します。ZIP、SYS、生成済みfirmwareはAPKに含めず、
+アプリ専用外部ファイル領域へ検証後に原子的にキャッシュします。既存の有効な
+キャッシュはネットワークなしで再利用できます。取得や生成に失敗した場合はPX4
+だけを無効化し、Sianoとmirakcは継続します。手動のfirmware provisionは不要です。
 
 ## 使い方
 
@@ -231,6 +238,9 @@ recisdb は入っていません。
 APKに別プロセスとして同梱する `siano-userland` の `siano-ts` は
 GPL-2.0-or-later であり、対応するソースとライセンスは
 [siano-userland](https://github.com/Khronos31/siano-userland) にあります。
+PX4 firmware生成器`fwtool`は`nns779/px4_drv` v0.2.1
+(commit `2b3f79b5bc5db56e8556bb28397f7d8f74b2adeb`)由来のGPL-2.0-onlyです。
+対応するLICENSEとsource provenanceはAPKの`px4-fwtool/`に含まれます。
 
 ## ビルド
 
@@ -251,10 +261,21 @@ JDK 17 と Android NDK r26 以降が要ります。Gradle タスクは SDK の `
 `scripts/build-android.sh` を呼び、検証済みの実行ファイルを mirakc の APK に
 入れます。
 
+PX-Q3U4 の `px4d` は pinned な
+[px4-userland](https://github.com/Khronos31/px4-userland) v0.1.3
+（commit `639e65feee7c9f503d44023edd9ab9bba12d5d74`）を使います。PX4 firmware
+生成器のビルドには [nns779/px4_drv](https://github.com/nns779/px4_drv) v0.2.1
+（commit `2b3f79b5bc5db56e8556bb28397f7d8f74b2adeb`）の detached checkout も必要です。
+それぞれ `-Ppx4UserlandDir` と `-Ppx4DrvDir` で渡せます（既定値は作者の環境の
+`/config/GitHub/px4-userland` と `/config/GitHub/px4_drv`）。両方とも指定した
+commit の clean checkout にしてください。
+
 ```sh
 export JAVA_HOME=/path/to/jdk17
 export ANDROID_NDK_HOME=/path/to/android-sdk/ndk/27.0.12077973
 ./gradlew -PsianoUserlandDir=/path/to/siano-userland \
+    -Ppx4UserlandDir=/path/to/px4-userland-v0.1.3 \
+    -Ppx4DrvDir=/path/to/px4_drv-v0.2.1 \
     :mirakc:assembleDebug :epgstation-server:assembleDebug
 ```
 
