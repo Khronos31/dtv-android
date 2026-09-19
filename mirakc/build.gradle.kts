@@ -37,7 +37,7 @@ val sianoBuildScript = sianoUserlandDir.map { file(it).resolve("scripts/build-an
 val sianoPinnedRef = "d4f8930ab56d13c479037f2e242461062d96c127"
 
 val mirakcAribSourceDir = providers.gradleProperty("mirakcAribSourceDir")
-    .orElse(layout.projectDirectory.dir("../.work/mirakc-arib-0.24.37").asFile.absolutePath)
+    .orElse(layout.projectDirectory.dir("../.work/mirakc-arib-0.24.38").asFile.absolutePath)
 val mirakcAribBuildScript = layout.projectDirectory.file("../tools/mirakc-arib/build-android.sh")
 val mirakcAribBootstrapScript = layout.projectDirectory.file("../tools/mirakc-arib/bootstrap-autotools.sh")
 val mirakcAribToolchainFile = layout.projectDirectory.file("../tools/mirakc-arib/android.toolchain.cmake")
@@ -67,9 +67,9 @@ val mirakcBinaries = listOf(
     nativeOutputDir.file("arm64-v8a/libmirakc.so"),
     nativeOutputDir.file("armeabi-v7a/libmirakc.so")
 )
-val mirakcPinnedRef = "b7a20d75d95595e0bca83dfb1b5473cfa5be6a93"
+val mirakcPinnedRef = "fc9610f51f8621aa8db508ddd36c7f1e2785d7be"
 val mirakcSourceDir = providers.gradleProperty("mirakcSourceDir")
-    .orElse(layout.projectDirectory.dir("../.work/mirakc-3.4.85").asFile.absolutePath)
+    .orElse(layout.projectDirectory.dir("../.work/mirakc-3.4.86").asFile.absolutePath)
 val mirakcBuildScript = layout.projectDirectory.file("../tools/mirakc/build-android.sh")
 val mirakcVerifierScript = layout.projectDirectory.file("../tools/mirakc/verify-android-elf.sh")
 val mirakcAndroidPatch = layout.projectDirectory.file("../tools/mirakc/patches/mirakc-android-web-resilience.patch")

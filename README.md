@@ -14,9 +14,9 @@ APK は2本あります。
 `mirakc-vX.Y.Z` と `epgstation-server-vX.Y.Z` に分かれているため、必要なAPKの
 リリースから対応するファイルを選んでください。
 
-mirakc APK は上流の mirakc `3.4.85` を Android 向けに移植して組み込み、番組表・
+mirakc APK は上流の mirakc `3.4.86` を Android 向けに移植して組み込み、番組表・
 ストリーム・HTTP API はその実装を使います。ジョブとフィルターのコマンドには、
-上流の mirakc-arib `0.24.37` を固定して同梱しています。
+上流の mirakc-arib `0.24.38` を固定して同梱しています。
 
 番組表や録画予約の画面は、スマートフォンや PC のブラウザから開きます。
 テレビの画面で録画を見るときは
@@ -130,9 +130,9 @@ EPGStation Server をもう一度開いてください。一度開けば常駐�
   Android TV / Fire TV 向けの EPGStation クライアント。リモコンの十字キーだけで
   快適に録画を見られます。テレビ側の視聴体験はこのアプリにお任せするのが一番です。
 * **[mirakc](https://github.com/mirakc/mirakc)** —— Mirakurun 互換の PVR
-  バックエンド。この APK は上流 `3.4.85` を Android 向けに移植して使っています。
+  バックエンド。この APK は上流 `3.4.86` を Android 向けに移植して使っています。
 * **[mirakc-arib](https://github.com/mirakc/mirakc-arib)** —— mirakc の EPG ジョブと
-  ストリームフィルターが使う上流コマンド群。APK には `0.24.37` を固定して
+  ストリームフィルターが使う上流コマンド群。APK には `0.24.38` を固定して
   同梱しています。
 * **[libarib25](https://github.com/stz2012/libarib25)**（stz2012 さん）——
   B-CAS による復号。この APK に組み込んで使わせていただいています。
@@ -173,8 +173,8 @@ siano-ts --channel N --firmware <filesDir>/isdbt_rio.inp --fd 3
 #### 上流 mirakc の HTTP・EPG・ストリーム
 
 HTTP API、チャンネル・サービス・番組情報、ライブストリーム、イベント通知は
-上流 mirakc `3.4.85` が提供します。EPG のサービススキャン、時刻同期、番組表更新、
-ストリームのサービス／番組フィルターは、固定した mirakc-arib `0.24.37` の
+上流 mirakc `3.4.86` が提供します。EPG のサービススキャン、時刻同期、番組表更新、
+ストリームのサービス／番組フィルターは、固定した mirakc-arib `0.24.38` の
 コマンドを上流ジョブから呼び出します。APK 独自の旧 HTTP サーバー、TS の SI
 パーサー、手動スキャン処理は含みません。
 
@@ -249,7 +249,7 @@ JDK 17 と Android NDK r26 以降が要ります。Gradle タスクは SDK の `
 `scripts/build-android.sh` を呼び、検証済みの実行ファイルを mirakc の APK に
 入れます。
 
-上流 mirakc `3.4.85` と mirakc-arib `0.24.37` も、それぞれ固定した commit の
+上流 mirakc `3.4.86` と mirakc-arib `0.24.38` も、それぞれ固定した commit の
 ソースから Android ABI ごとにビルドします。mirakc のビルドには
 `tools/mirakc/build-android.sh`、mirakc-arib には `tools/mirakc-arib/build-android.sh`
 を使います。

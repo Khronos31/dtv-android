@@ -6,9 +6,9 @@ set -eu
 project_root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd -P)
 work_root=$project_root/.work
 source_url=${MIRAKC_SOURCE_URL:-https://github.com/mirakc/mirakc.git}
-source_ref=${MIRAKC_SOURCE_REF:-b7a20d75d95595e0bca83dfb1b5473cfa5be6a93}
+source_ref=${MIRAKC_SOURCE_REF:-fc9610f51f8621aa8db508ddd36c7f1e2785d7be}
 requested_abi=${ANDROID_ABI:-arm64-v8a}
-source_dir=${MIRAKC_SOURCE_DIR:-$work_root/mirakc-3.4.85}
+source_dir=${MIRAKC_SOURCE_DIR:-$work_root/mirakc-3.4.86}
 build_dir=${MIRAKC_BUILD_DIR:-$work_root/build-mirakc-$requested_abi}
 output_dir=${MIRAKC_OUTPUT_DIR:-$work_root/mirakc-output-$requested_abi}
 
@@ -94,8 +94,8 @@ rustup target list --installed | grep -Fx "$rust_target" >/dev/null \
     || fail "Rust target $rust_target is not installed (install it with rustup target add)"
 
 # Deterministic digests of the pinned Git tree and lockfile.
-source_tree_sha256=e52b10a87c9fafecbb59641a7989075c1a4e0fa0e4c98ea6cdfb88e2da723551
-cargo_lock_sha256=e0a246be3977014523f46e15a1cdadd946513bc443a12ee9629142740b9cf6d9
+source_tree_sha256=8f558fa37f2e9c475ad7c029ed06655bee624ffabb4310a5191827c6ae0fd72a
+cargo_lock_sha256=42749dcfa137347602a770fd86bae1691ad60b8d363e36f05e99b840f314acf7
 patch_file=$project_root/tools/mirakc/patches/mirakc-android-web-resilience.patch
 patch_sha256=ed942f8d1f24dc7ba87387d0d7bc37bd9d61ce49a17091a3bcc8f52d6d0ed67f
 
@@ -124,8 +124,8 @@ actual_tree_sha256=$(git -C "$source_dir" archive --format=tar "$source_ref" | g
 actual_lock_sha256=$(sha256sum "$source_dir/Cargo.lock" | awk '{print $1}')
 [ "$actual_lock_sha256" = "$cargo_lock_sha256" ] \
     || fail "Cargo.lock checksum mismatch: $actual_lock_sha256"
-grep -F 'version = "3.4.85"' "$source_dir/mirakc/Cargo.toml" >/dev/null \
-    || fail 'pinned source is not mirakc 3.4.85'
+grep -F 'version = "3.4.86"' "$source_dir/mirakc/Cargo.toml" >/dev/null \
+    || fail 'pinned source is not mirakc 3.4.86'
 [ -f "$patch_file" ] || fail "missing upstream patch: $patch_file"
 actual_patch_sha256=$(sha256sum "$patch_file" | awk '{print $1}')
 [ "$actual_patch_sha256" = "$patch_sha256" ] \

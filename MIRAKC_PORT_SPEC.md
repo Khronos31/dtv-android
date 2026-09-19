@@ -1,6 +1,6 @@
 # mirakc Android port specification
 
-Status: Draft; Kotlin compatibility-server removal is implemented; Phase 0 feasibility and acceptance evidence remain open
+Status: Draft; Phase 0 feasibility is complete; remaining acceptance evidence is open
 Date: 2026-09-13
 
 ## Objective
@@ -13,8 +13,8 @@ devices or a PLEX PX-Q3U4 without a kernel driver.
 
 The pinned inputs for the first port are:
 
-- mirakc `3.4.85` (`b7a20d75d95595e0bca83dfb1b5473cfa5be6a93`);
-- mirakc-arib `0.24.37` (`6fef5309b9d93868cbfad37c8a0c4537742f6501`);
+- mirakc `3.4.86` (`fc9610f51f8621aa8db508ddd36c7f1e2785d7be`);
+- mirakc-arib `0.24.38` (`e85e1f991aa91ba0e6c6e02d14a17d159901e181`);
 - siano-userland `v0.1.5` (`d4f8930ab56d13c479037f2e242461062d96c127`);
 - px4-userland `v0.1.3` (`639e65feee7c9f503d44023edd9ab9bba12d5d74`).
 
@@ -43,7 +43,7 @@ moving branch.
 4. `./gradlew --no-daemon test :mirakc:lintDebug` exits 0.  Existing tests and
    their expected values are not weakened or skipped.
 5. On the Google TV Streamer, the Android foreground service starts the bundled
-   upstream mirakc, `GET /api/version` reports `3.4.85`, and stopping/restarting
+   upstream mirakc, `GET /api/version` reports `3.4.86`, and stopping/restarting
    the service leaves no mirakc, mirakc-arib, siano or px4 child processes.
    Across ten tune/job/stop/reconnect cycles, `/proc/<pid>/fd` confirms that
    mirakc and unrelated children inherit no USB or smart-card descriptors and
@@ -107,8 +107,8 @@ moving branch.
 | Candidate | Classification | Evidence |
 | --- | --- | --- |
 | Former Kotlin server in this repository | adapt/reference | Reuse its Android lifecycle, UsbManager and proven CCID/libarib25 code.  It is no longer the APK's HTTP, EPG or stream implementation. |
-| `mirakc/mirakc` 3.4.85 | adapt/port | Canonical server.  Its unmodified Rust workspace cross-builds for `armv7-linux-androideabi` API 24 with NDK r27; the stripped binary is 17,753,224 bytes and gzip-compresses to 6,763,891 bytes.  On the 32-bit Google TV Streamer it reports the correct version, serves `/api/version` and `/api/status`, and uses 8,616 KiB idle PSS with an empty temporary config.  Android packaging and descriptor inheritance are not upstream features. |
-| `mirakc/mirakc-arib` 0.24.37 | adapt/port | Canonical companion commands used by mirakc jobs and filters.  The checked-out source plus pinned submodules is about 111 MB; upstream has cross-compilation support but no Android toolchain. |
+| `mirakc/mirakc` 3.4.86 | adapt/port | Canonical server.  Its pinned Rust workspace is the source for the Android build; Android packaging and descriptor inheritance are not upstream features. |
+| `mirakc/mirakc-arib` 0.24.38 | adapt/port | Canonical companion commands used by mirakc jobs and filters.  The pinned source and submodules are built for Android by the repository harness. |
 | Linux/musl mirakc container binaries | reject | Wrong ABI/runtime for Bionic and cannot receive Android UsbManager descriptors. |
 | Public Android mirakc ports | build | GitHub repository and code searches on 2026-09-13 found no maintained Android port to adopt. |
 | `hassio-addons/mirakc` | adapt/reference | Reuse configuration and process topology concepts; its container/device access model cannot be adopted on Android. |
@@ -123,7 +123,7 @@ moving branch.
    unverified because that device exposes no 64-bit ABI.  Risk: Linux
    assumptions compile but fail at runtime.
 2. **Mandatory mirakc-arib feasibility gate.** Before replacing any Kotlin
-   server path, cross-build the exact, unpruned `0.24.37` source and submodules
+   server path, cross-build the exact, unpruned `0.24.38` source and submodules
    for armv7a, package and execute it from `nativeLibraryDir`, and pass upstream
    or behavior-equivalent fixtures for `scan-services`, `sync-clocks`,
    `collect-eits`, `filter-service`, and `filter-program`.  Measure one live
@@ -158,8 +158,8 @@ moving branch.
    reconnect USB, stop/restart the APK, and produce the final evidence receipt.
    Risk: individually green components fail under concurrent job/stream load.
 
-The two least-known mandatory components are increments 1 and 2.  No supply
-chain or migration increment proceeds until both feasibility gates are green.
+The two least-known mandatory components were increments 1 and 2.  Both Phase 0
+feasibility gates are complete; remaining acceptance evidence is still required.
 
 ## Rollback
 

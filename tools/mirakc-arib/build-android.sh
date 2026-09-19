@@ -9,8 +9,8 @@ set -eu
 
 project_root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd -P)
 source_url=${MIRAKC_ARIB_SOURCE_URL:-https://github.com/mirakc/mirakc-arib.git}
-source_ref=${MIRAKC_ARIB_SOURCE_REF:-6fef5309b9d93868cbfad37c8a0c4537742f6501}
-source_dir=${MIRAKC_ARIB_SOURCE_DIR:-$project_root/.work/mirakc-arib-0.24.37}
+source_ref=${MIRAKC_ARIB_SOURCE_REF:-e85e1f991aa91ba0e6c6e02d14a17d159901e181}
+source_dir=${MIRAKC_ARIB_SOURCE_DIR:-$project_root/.work/mirakc-arib-0.24.38}
 requested_abi=${ANDROID_ABI:-${MIRAKC_ARIB_ABI:-armeabi-v7a}}
 build_dir=${MIRAKC_ARIB_BUILD_DIR:-$project_root/.work/build-mirakc-arib-$requested_abi}
 output=${MIRAKC_ARIB_OUTPUT:-$project_root/mirakc/src/main/jniLibs/$requested_abi/libmirakc-arib.so}
