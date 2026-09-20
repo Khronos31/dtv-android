@@ -73,6 +73,11 @@ val androidNdkRoot = providers.environmentVariable("ANDROID_NDK_HOME")
     .orElse(providers.environmentVariable("ANDROID_NDK_ROOT"))
     .orElse("/config/.tools/android-sdk/ndk/$configuredNdkVersion")
 
+val t1StateMachineSource = layout.projectDirectory.file("src/main/cpp/t1_state_machine.c")
+val t1StateMachineHeader = layout.projectDirectory.file("src/main/cpp/t1_state_machine.h")
+val t1StateMachineTests = layout.projectDirectory.file("src/main/cpp/tests/t1_state_machine_test.cpp")
+val t1StateMachineTestScript = layout.projectDirectory.file("../tools/mirakc/test-t1-state-machine.sh")
+
 val runPx4TunePlanHostTests = tasks.register<Exec>("runPx4TunePlanHostTests") {
     workingDir(project.rootDir)
     commandLine("/bin/sh", px4TunePlanTestScript.asFile.absolutePath)
@@ -84,6 +89,23 @@ val runPx4TunePlanHostTests = tasks.register<Exec>("runPx4TunePlanHostTests") {
         px4CardRetryTests,
         px4TunePlanTestScript
     )
+}
+
+val runT1StateMachineHostTests = tasks.register<Exec>("runT1StateMachineHostTests") {
+    group = "verification"
+    description = "Runs deterministic host tests for the T=1 state machine"
+    workingDir(project.rootDir)
+    commandLine("/bin/sh", t1StateMachineTestScript.asFile.absolutePath)
+    inputs.files(
+        t1StateMachineSource,
+        t1StateMachineHeader,
+        t1StateMachineTests,
+        t1StateMachineTestScript
+    )
+}
+
+tasks.matching { it.name == "check" || it.name == "test" }.configureEach {
+    dependsOn(runT1StateMachineHostTests)
 }
 
 val mirakcBinaries = listOf(

@@ -103,28 +103,21 @@ ninja_bin=${NINJA:-$(command -v ninja || true)}
 [ -x "$ninja_bin" ] || fail 'ninja is required'
 
 # aribb24 is the only pinned dependency whose repository intentionally omits
-# generated autotools files.  Bootstrap a pinned host toolchain in the
-# persistent tools volume when it is not already available, then export that
-# PATH for every ExternalProject configure command.
+# generated autotools files.  Bootstrap the pinned host toolchain; its
+# validated marker fast path makes this cheap when already up to date.  Then
+# export that PATH for every ExternalProject configure command.
 autotools_root=${MIRAKC_ARIB_AUTOTOOLS_ROOT:-/config/.tools}
 autotools_prefix=${MIRAKC_ARIB_AUTOTOOLS_PREFIX:-$autotools_root/autotools}
 autotools_bootstrap=$project_root/tools/mirakc-arib/bootstrap-autotools.sh
-if [ ! -x "$autotools_prefix/bin/autoreconf" ] || [ ! -x "$autotools_prefix/bin/m4" ] \
-    || [ ! -x "$autotools_prefix/bin/automake" ] || [ ! -x "$autotools_prefix/bin/libtoolize" ]; then
-    [ -x "$autotools_bootstrap" ] || fail "autotools bootstrap script is missing: $autotools_bootstrap"
-    MIRAKC_ARIB_AUTOTOOLS_ROOT="$autotools_root" \
-        MIRAKC_ARIB_AUTOTOOLS_PREFIX="$autotools_prefix" "$autotools_bootstrap"
-fi
+[ -x "$autotools_bootstrap" ] || fail "autotools bootstrap script is missing: $autotools_bootstrap"
+MIRAKC_ARIB_AUTOTOOLS_ROOT="$autotools_root" \
+    MIRAKC_ARIB_AUTOTOOLS_PREFIX="$autotools_prefix" "$autotools_bootstrap"
 PATH=$autotools_prefix/bin:$PATH
 export PATH
-if [ -d /usr/share/aclocal ]; then
-    # pkg.m4 is provided by the host pkg-config package; the four executable
-    # autotools themselves remain the pinned /config/.tools toolchain above.
-    ACLOCAL_PATH=$autotools_prefix/share/aclocal:/usr/share/aclocal
-else
-    ACLOCAL_PATH=$autotools_prefix/share/aclocal
-fi
+ACLOCAL_PATH=$autotools_prefix/share/aclocal
 export ACLOCAL_PATH
+[ -s "$autotools_prefix/share/aclocal/pkg.m4" ] \
+    || fail "portable pkg.m4 is missing: $autotools_prefix/share/aclocal/pkg.m4"
 for tool in autoreconf autoconf automake aclocal m4; do
     command -v "$tool" >/dev/null 2>&1 || fail "$tool is required to regenerate aribb24 autotools input (install portable autotools; no generated files are accepted from the host tree)"
 done

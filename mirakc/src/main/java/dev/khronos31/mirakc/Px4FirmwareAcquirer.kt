@@ -186,14 +186,34 @@ internal class Px4FirmwareAcquirer(
         }
         try {
             if (!waitForBounded(process, FWTOOL_TIMEOUT_MS)) {
-                process.destroyForcibly()
+                terminateAndReap(process)
                 throw IOException("fwtool timeout")
             }
             drain.join(1_000)
             if (process.exitValue() != 0) throw IOException("fwtool failed")
         } finally {
-            if (process.isAlive) process.destroyForcibly()
+            if (!hasExited(process)) terminateAndReap(process)
             drain.interrupt()
+        }
+    }
+
+    private fun hasExited(process: Process): Boolean = try {
+        process.exitValue()
+        true
+    } catch (_: IllegalThreadStateException) {
+        false
+    }
+
+    private fun terminateAndReap(process: Process) {
+        process.destroy()
+        if (!waitForBounded(process, FWTOOL_TERMINATION_TIMEOUT_MS)) {
+            // Android's API 24 Process has no destroyForcibly(); destroy() is
+            // the available kill request. Retry once, then report if bounded
+            // reaping still cannot be observed.
+            process.destroy()
+            if (!waitForBounded(process, FWTOOL_TERMINATION_TIMEOUT_MS)) {
+                Log.e(TAG, "fwtool did not exit after destroy")
+            }
         }
     }
 
@@ -292,6 +312,7 @@ internal class Px4FirmwareAcquirer(
         const val READ_TIMEOUT_MS = 10_000
         const val TOTAL_TIMEOUT_NS = 60_000_000_000L
         const val FWTOOL_TIMEOUT_MS = 30_000L
+        const val FWTOOL_TERMINATION_TIMEOUT_MS = 1_000L
         const val MAX_REDIRECTS = 3
         const val MAX_TOOL_LOG_BYTES = 16 * 1024
         const val TAG = "Px4FirmwareAcquirer"

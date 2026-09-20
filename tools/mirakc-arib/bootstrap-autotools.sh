@@ -67,26 +67,36 @@ automake_url=https://ftp.gnu.org/gnu/automake/automake-1.17.tar.xz
 libtool_version=2.5.4
 libtool_sha256=f81f5860666b0bc7d84baddefa60d1cb9fa6fceb2398cc3baca6afaa60266675
 libtool_url=https://ftp.gnu.org/gnu/libtool/libtool-2.5.4.tar.xz
+pkg_config_version=0.29.2
+pkg_config_sha256=6fc69c01688c9458a57eb9a1664c9aba372ccda420a02bf4429fe610e7e7d591
+pkg_config_url=https://pkg-config.freedesktop.org/releases/pkg-config-0.29.2.tar.gz
+pkg_m4_sha256=140b9a7bc1fa8730b62e74f8413af2bd15b53969a084fc4a041ba70b11e352f3
 
 marker=$prefix/.mirakc-autotools-versions
+pkg_m4=$prefix/share/aclocal/pkg.m4
 if [ -f "$marker" ] \
     && [ "$(sed -n '1p' "$marker")" = "m4=$m4_version" ] \
     && [ "$(sed -n '2p' "$marker")" = "autoconf=$autoconf_version" ] \
     && [ "$(sed -n '3p' "$marker")" = "automake=$automake_version" ] \
     && [ "$(sed -n '4p' "$marker")" = "libtool=$libtool_version" ] \
+    && [ "$(sed -n '5p' "$marker")" = "pkg-config=$pkg_config_version" ] \
+    && [ "$(sed -n '6p' "$marker")" = "pkg.m4=$pkg_m4_sha256" ] \
     && [ -x "$prefix/bin/m4" ] && [ -x "$prefix/bin/autoreconf" ] \
     && [ -x "$prefix/bin/autoconf" ] && [ -x "$prefix/bin/automake" ] \
-    && [ -x "$prefix/bin/aclocal" ] && [ -x "$prefix/bin/libtoolize" ]; then
+    && [ -x "$prefix/bin/aclocal" ] && [ -x "$prefix/bin/libtoolize" ] \
+    && [ -s "$pkg_m4" ] \
+    && [ "$(sha256sum "$pkg_m4" | awk '{print $1}')" = "$pkg_m4_sha256" ]; then
     printf '%s\n' "autotools bootstrap: using $prefix"
     exit 0
 fi
 
-download()
+download_archive()
 {
     name=$1
     url=$2
     expected=$3
-    archive=$cache_dir/$name.tar.xz
+    suffix=$4
+    archive=$cache_dir/$name.$suffix
     mkdir -p "$cache_dir"
     if [ ! -f "$archive" ]; then
         temporary=$archive.tmp.$$
@@ -107,7 +117,7 @@ build_tool()
     archive=$cache_dir/$name-$version.tar.xz
     source=$work_dir/$name-$version
 
-    download "$name-$version" "$url" "$expected"
+    download_archive "$name-$version" "$url" "$expected" tar.xz
     rm -rf "$source"
     mkdir -p "$work_dir"
     tar -xJf "$archive" -C "$work_dir"
@@ -129,6 +139,20 @@ build_tool autoconf "$autoconf_version" "$autoconf_url" "$autoconf_sha256"
 build_tool automake "$automake_version" "$automake_url" "$automake_sha256"
 build_tool libtool "$libtool_version" "$libtool_url" "$libtool_sha256"
 
+mkdir -p "$(dirname -- "$pkg_m4")"
+pkg_archive=$cache_dir/pkg-config-$pkg_config_version.tar.gz
+download_archive "pkg-config-$pkg_config_version" "$pkg_config_url" "$pkg_config_sha256" tar.gz
+temporary=$pkg_m4.tmp.$$
+temporary_input=$temporary.in
+trap 'rm -f "$temporary" "$temporary_input"' EXIT HUP INT TERM
+tar -xOzf "$pkg_archive" "pkg-config-$pkg_config_version/pkg.m4.in" > "$temporary_input"
+sed "s/@VERSION@/$pkg_config_version/g" "$temporary_input" > "$temporary"
+[ "$(sha256sum "$temporary" | awk '{print $1}')" = "$pkg_m4_sha256" ] \
+    || fail 'extracted pkg.m4 digest mismatch'
+mv "$temporary" "$pkg_m4"
+rm -f "$temporary_input"
+trap - EXIT HUP INT TERM
+
 temporary_marker=$marker.tmp.$$
 trap 'rm -f "$temporary_marker"' EXIT HUP INT TERM
 mkdir -p "$prefix"
@@ -137,6 +161,8 @@ mkdir -p "$prefix"
     printf 'autoconf=%s\n' "$autoconf_version"
     printf 'automake=%s\n' "$automake_version"
     printf 'libtool=%s\n' "$libtool_version"
+    printf 'pkg-config=%s\n' "$pkg_config_version"
+    printf 'pkg.m4=%s\n' "$pkg_m4_sha256"
 } > "$temporary_marker"
 mv "$temporary_marker" "$marker"
 trap - EXIT HUP INT TERM
