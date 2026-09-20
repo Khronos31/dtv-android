@@ -102,6 +102,8 @@ done
 guard_path=$work/bin:$(dirname "$(command -v cmake)"):$(dirname "$(command -v ninja)"):/usr/bin:/bin
 network_namespace=${MIRAKC_REQUIRE_NETWORK_NAMESPACE:-auto}
 network_launcher=
+run_uid=$(id -u)
+run_gid=$(id -g)
 case "$network_namespace" in
 auto|required)
     if command -v unshare >/dev/null 2>&1; then
@@ -110,7 +112,10 @@ auto|required)
         fi
     fi
     if [ -z "$network_launcher" ] && command -v sudo >/dev/null 2>&1; then
-        if sudo -n unshare -n -- true >/dev/null 2>&1; then
+        # sudo is needed only to create the network namespace. Drop back to
+        # the invoking uid/gid before running the build so its outputs remain
+        # removable by the caller's EXIT trap.
+        if sudo -n unshare -n --setuid "$run_uid" --setgid "$run_gid" -- true >/dev/null 2>&1; then
             network_launcher=sudo-unshare
         fi
     fi
@@ -130,7 +135,7 @@ esac
 run_guarded() {
     case "$network_launcher" in
     unshare) unshare -n -- "$@" ;;
-    sudo-unshare) sudo -n unshare -n -- "$@" ;;
+    sudo-unshare) sudo -n unshare -n --setuid "$run_uid" --setgid "$run_gid" -- "$@" ;;
     disabled|'') "$@" ;;
     esac
 }
