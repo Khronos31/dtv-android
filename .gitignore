@@ -20,3 +20,5 @@ mirakc/src/main/assets/isdbt_rio.inp
 /px4-userland/
 /px4_drv/
 epgstation-server/.generated/
+__pycache__/
+*.py[cod]

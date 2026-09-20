@@ -19,6 +19,18 @@ if git -C "$root" check-ignore -q -- unexpected-external/probe; then
     printf '%s\n' 'root ignore is too broad for external checkouts' >&2
     exit 1
 fi
+for python_cache in \
+    tools/mirakc/__pycache__/audit-source.cpython-313.pyc \
+    tools/python-shim/distutils/__pycache__/core.cpython-313.pyc; do
+    git -C "$root" check-ignore -q -- "$python_cache" || {
+        printf '%s\n' "missing Python cache ignore for $python_cache" >&2
+        exit 1
+    }
+done
+if git -C "$root" check-ignore -q -- unexpected-source.py; then
+    printf '%s\n' 'root ignore hides an unexpected source file' >&2
+    exit 1
+fi
 
 temporary=$(mktemp -d /tmp/mirakc-apk-metadata-test.XXXXXX)
 dirty_license=
