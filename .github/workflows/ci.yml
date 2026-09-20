@@ -86,6 +86,17 @@ jobs:
             -Ppx4UserlandDir="$GITHUB_WORKSPACE/px4-userland" \
             -Ppx4DrvDir="$GITHUB_WORKSPACE/px4_drv" \
             :mirakc:assembleDebug
+      - name: Cache pinned Swagger UI source archive
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/mirakc-dependencies"
+          curl -fL --retry 3 \
+            -o "$RUNNER_TEMP/mirakc-dependencies/swagger-ui-5.17.14.zip" \
+            https://github.com/swagger-api/swagger-ui/archive/refs/tags/v5.17.14.zip
+          printf '%s  %s\n' \
+            481244d0812097b11fbaeef79f71d942b171617f9c9f9514e63acbe13e71ccdc \
+            "$RUNNER_TEMP/mirakc-dependencies/swagger-ui-5.17.14.zip" \
+            | sha256sum -c -
       - name: Verify corresponding-source archive offline Cargo proof
         env:
           CARGO_HOME: ${{ runner.temp }}/cargo
@@ -95,13 +106,17 @@ jobs:
           MIRAKC_TEST_PX4_ROOT: ${{ github.workspace }}/px4-userland
           MIRAKC_TEST_PX4_DRV_ROOT: ${{ github.workspace }}/px4_drv
           MIRAKC_TEST_LIBUSB_ARCHIVE: ${{ github.workspace }}/siano-userland/build/android-aarch64/src/libusb-1.0.30.tar.bz2
+          MIRAKC_TEST_SWAGGER_UI_ARCHIVE: ${{ runner.temp }}/mirakc-dependencies/swagger-ui-5.17.14.zip
           MIRAKC_TEST_AUTOTOOLS_CACHE: ${{ runner.temp }}/mirakc-arib-tools/autotools-sources
           MIRAKC_TEST_ARCHIVE_OUTPUT: ${{ runner.temp }}/mirakc-corresponding-source.tar.gz
         run: tools/mirakc/test-source-package.sh
-      - name: Clean-room Siano/PX4 native relink proof
+      - name: Clean-room complete native inventory and relink proof
         env:
           MIRAKC_REQUIRE_NETWORK_NAMESPACE: required
-        run: tools/mirakc/test-source-native-rebuild.sh "$RUNNER_TEMP/mirakc-corresponding-source.tar.gz"
+        run: >-
+          tools/mirakc/test-source-native-rebuild.sh
+          "$RUNNER_TEMP/mirakc-corresponding-source.tar.gz"
+          "$GITHUB_WORKSPACE/mirakc/build/outputs/apk/debug/mirakc-debug.apk"
       - name: Audit APK native and source metadata
         run: tools/mirakc/audit-apk.sh mirakc/build/outputs/apk/debug/mirakc-debug.apk "$GITHUB_SHA"
       - name: Verify the APK carries its module version

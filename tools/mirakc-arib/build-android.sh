@@ -17,12 +17,18 @@ output=${MIRAKC_ARIB_OUTPUT:-$project_root/mirakc/src/main/jniLibs/$requested_ab
 abi=$requested_abi
 api=${MIRAKC_ARIB_API:-24}
 ndk=${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}
+clean_room=${MIRAKC_CLEAN_ROOM:-0}
 
 fail()
 {
     printf '%s\n' "mirakc-arib Android build: $*" >&2
     exit 1
 }
+
+case "$clean_room" in
+0|1) ;;
+*) fail "MIRAKC_CLEAN_ROOM must be 0 or 1" ;;
+esac
 
 # The build uses recursive reset/clean because upstream's ExternalProject graph
 # builds some dependencies in source. Restrict that destructive operation to a
@@ -123,16 +129,20 @@ for tool in autoreconf autoconf automake aclocal m4; do
 done
 command -v pkg-config >/dev/null 2>&1 || fail 'pkg-config is required by aribb24 configure'
 
-if [ ! -d "$source_dir/.git" ]; then
-    mkdir -p "$(dirname -- "$source_dir")"
-    git clone --recurse-submodules --no-shallow-submodules "$source_url" "$source_dir"
-fi
+if [ "$clean_room" -eq 1 ]; then
+    [ -d "$source_dir" ] || fail "clean-room source tree is missing: $source_dir"
+else
+    if [ ! -d "$source_dir/.git" ]; then
+        mkdir -p "$(dirname -- "$source_dir")"
+        git clone --recurse-submodules --no-shallow-submodules "$source_url" "$source_dir"
+    fi
 
-git -C "$source_dir" fetch --no-tags "$source_url" "$source_ref"
-git -C "$source_dir" checkout --detach "$source_ref"
-git -C "$source_dir" submodule sync --recursive
-git -C "$source_dir" submodule update --init --recursive
-[ "$(git -C "$source_dir" rev-parse HEAD)" = "$source_ref" ] || fail "source ref mismatch"
+    git -C "$source_dir" fetch --no-tags "$source_url" "$source_ref"
+    git -C "$source_dir" checkout --detach "$source_ref"
+    git -C "$source_dir" submodule sync --recursive
+    git -C "$source_dir" submodule update --init --recursive
+    [ "$(git -C "$source_dir" rev-parse HEAD)" = "$source_ref" ] || fail "source ref mismatch"
+fi
 
 # ExternalProject builds aribb24 in-source and TSDuck regenerates files in its
 # submodule.  Remove those outputs before each ABI build so no host objects or
@@ -141,13 +151,18 @@ git -C "$source_dir" submodule update --init --recursive
 # Ignore submodule worktree state for the parent check: ExternalProject
 # applies its reviewed source patches in-place, then reset every submodule
 # below to the gitlink before starting this build.
-git -C "$source_dir" checkout -- CMakeLists.txt
-git -C "$source_dir" diff --ignore-submodules=all --quiet \
-    || fail "source tree has tracked modifications: $source_dir"
-git -C "$source_dir" diff --ignore-submodules=all --cached --quiet \
-    || fail "source tree has staged modifications: $source_dir"
-git -C "$source_dir" clean -ffdqx
-git -C "$source_dir" submodule foreach --recursive 'git reset --hard && git clean -ffdqx'
+source_patch_backup=$work_root/mirakc-arib-source-CMakeLists-$abi
+if [ "$clean_room" -eq 1 ]; then
+    cp -f "$source_dir/CMakeLists.txt" "$source_patch_backup"
+else
+    git -C "$source_dir" checkout -- CMakeLists.txt
+    git -C "$source_dir" diff --ignore-submodules=all --quiet \
+        || fail "source tree has tracked modifications: $source_dir"
+    git -C "$source_dir" diff --ignore-submodules=all --cached --quiet \
+        || fail "source tree has staged modifications: $source_dir"
+    git -C "$source_dir" clean -ffdqx
+    git -C "$source_dir" submodule foreach --recursive 'git reset --hard && git clean -ffdqx'
+fi
 
 android_patch=$project_root/tools/mirakc-arib/patches/tsduck-android.patch
 [ -f "$android_patch" ] || fail "Android TSDuck patch is missing: $android_patch"
@@ -155,7 +170,11 @@ source_patch_applied=0
 restore_source_patch()
 {
     if [ "$source_patch_applied" -eq 1 ]; then
-        git -C "$source_dir" checkout -- CMakeLists.txt
+        if [ "$clean_room" -eq 1 ]; then
+            cp -f "$source_patch_backup" "$source_dir/CMakeLists.txt"
+        else
+            git -C "$source_dir" checkout -- CMakeLists.txt
+        fi
         source_patch_applied=0
     fi
 }
@@ -165,10 +184,12 @@ source_patch_applied=1
 
 # `git submodule status` prefixes a line with '+' or '-' when a checkout does
 # not match its gitlink.  That must never be silently accepted for this gate.
-if git -C "$source_dir" submodule status --recursive | awk 'substr($1,1,1) == "+" || substr($1,1,1) == "-" || substr($1,1,1) == "U" { bad=1 } END { exit bad }'; then
-    :
-else
-    fail 'one or more recursive submodules do not match the pinned gitlinks'
+if [ "$clean_room" -eq 0 ]; then
+    if git -C "$source_dir" submodule status --recursive | awk 'substr($1,1,1) == "+" || substr($1,1,1) == "-" || substr($1,1,1) == "U" { bad=1 } END { exit bad }'; then
+        :
+    else
+        fail 'one or more recursive submodules do not match the pinned gitlinks'
+    fi
 fi
 
 # A previous configure or interrupted build may leave this dedicated build

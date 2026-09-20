@@ -11,6 +11,7 @@ requested_abi=${ANDROID_ABI:-arm64-v8a}
 source_dir=${MIRAKC_SOURCE_DIR:-$work_root/mirakc-3.4.86}
 build_dir=${MIRAKC_BUILD_DIR:-$work_root/build-mirakc-$requested_abi}
 output_dir=${MIRAKC_OUTPUT_DIR:-$work_root/mirakc-output-$requested_abi}
+clean_room=${MIRAKC_CLEAN_ROOM:-0}
 
 fail()
 {
@@ -33,6 +34,12 @@ armeabi-v7a|armv7a)
     ;;
 *) fail "unsupported ABI '$requested_abi' (use arm64-v8a or armeabi-v7a)" ;;
 esac
+
+case "$clean_room" in
+0|1) ;;
+*) fail "MIRAKC_CLEAN_ROOM must be 0 or 1" ;;
+esac
+clean_git_bin=${MIRAKC_GIT_BIN:-git}
 
 [ ! -L "$work_root" ] || fail "managed work root must not be a symlink: $work_root"
 mkdir -p "$work_root"
@@ -90,6 +97,7 @@ done
 for tool in cargo rustc rustup git sha256sum tar gzip readelf realpath; do
     command -v "$tool" >/dev/null 2>&1 || fail "$tool is required"
 done
+[ "$clean_room" -eq 0 ] || command -v patch >/dev/null 2>&1 || fail "patch is required for clean-room source adaptation"
 rustup target list --installed | grep -Fx "$rust_target" >/dev/null \
     || fail "Rust target $rust_target is not installed (install it with rustup target add)"
 
@@ -100,27 +108,39 @@ patch_file=$project_root/tools/mirakc/patches/mirakc-android-web-resilience.patc
 patch_sha256=7e526b62a6cd92bb9a1f731e42bc971e93ff85c0180fd0148dc38b80d6d965ff
 
 mkdir -p "$(dirname -- "$source_dir")"
-if [ ! -e "$source_dir" ]; then
-    git clone --recurse-submodules --no-shallow-submodules "$source_url" "$source_dir"
-elif [ ! -e "$source_dir/.git" ]; then
-    fail "managed source path is not a Git checkout: $source_dir"
-fi
-git -C "$source_dir" diff --quiet \
-    || fail "source checkout has tracked modifications: $source_dir"
-git -C "$source_dir" diff --cached --quiet \
-    || fail "source checkout has staged modifications: $source_dir"
-git -C "$source_dir" fetch --no-tags "$source_url" "$source_ref"
-git -C "$source_dir" checkout --detach "$source_ref"
-git -C "$source_dir" submodule sync --recursive
-git -C "$source_dir" submodule update --init --recursive
-[ "$(git -C "$source_dir" rev-parse HEAD)" = "$source_ref" ] \
-    || fail "source ref mismatch: expected $source_ref"
-git -C "$source_dir" clean -ffdqx
-git -C "$source_dir" submodule foreach --recursive 'git reset --hard && git clean -ffdqx'
+if [ "$clean_room" -eq 1 ]; then
+    [ -d "$source_dir" ] || fail "clean-room source tree is missing: $source_dir"
+    [ -x "$clean_git_bin" ] || fail "clean-room Git executable is missing: $clean_git_bin"
+    "$clean_git_bin" -C "$source_dir" init -q
+    "$clean_git_bin" -C "$source_dir" config user.name clean-room
+    "$clean_git_bin" -C "$source_dir" config user.email clean-room@example.invalid
+    "$clean_git_bin" -C "$source_dir" add -A -f
+    if ! "$clean_git_bin" -C "$source_dir" commit -q -m clean-room-source; then
+        "$clean_git_bin" -C "$source_dir" commit --allow-empty -q -m clean-room-source
+    fi
+else
+    if [ ! -e "$source_dir" ]; then
+        git clone --recurse-submodules --no-shallow-submodules "$source_url" "$source_dir"
+    elif [ ! -e "$source_dir/.git" ]; then
+        fail "managed source path is not a Git checkout: $source_dir"
+    fi
+    git -C "$source_dir" diff --quiet \
+        || fail "source checkout has tracked modifications: $source_dir"
+    git -C "$source_dir" diff --cached --quiet \
+        || fail "source checkout has staged modifications: $source_dir"
+    git -C "$source_dir" fetch --no-tags "$source_url" "$source_ref"
+    git -C "$source_dir" checkout --detach "$source_ref"
+    git -C "$source_dir" submodule sync --recursive
+    git -C "$source_dir" submodule update --init --recursive
+    [ "$(git -C "$source_dir" rev-parse HEAD)" = "$source_ref" ] \
+        || fail "source ref mismatch: expected $source_ref"
+    git -C "$source_dir" clean -ffdqx
+    git -C "$source_dir" submodule foreach --recursive 'git reset --hard && git clean -ffdqx'
 
-actual_tree_sha256=$(git -C "$source_dir" archive --format=tar "$source_ref" | gzip -n | sha256sum | awk '{print $1}')
-[ "$actual_tree_sha256" = "$source_tree_sha256" ] \
-    || fail "source tree checksum mismatch: $actual_tree_sha256"
+    actual_tree_sha256=$(git -C "$source_dir" archive --format=tar "$source_ref" | gzip -n | sha256sum | awk '{print $1}')
+    [ "$actual_tree_sha256" = "$source_tree_sha256" ] \
+        || fail "source tree checksum mismatch: $actual_tree_sha256"
+fi
 actual_lock_sha256=$(sha256sum "$source_dir/Cargo.lock" | awk '{print $1}')
 [ "$actual_lock_sha256" = "$cargo_lock_sha256" ] \
     || fail "Cargo.lock checksum mismatch: $actual_lock_sha256"
@@ -140,7 +160,12 @@ cleanup_patch()
     exit_code=$?
     cleanup_failed=0
     if [ "$patch_applied" -eq 1 ]; then
-        if git -C "$source_dir" apply --reverse --check --unidiff-zero -p0 "$patch_file" >/dev/null 2>&1; then
+        if [ "$clean_room" -eq 1 ]; then
+            if ! "$clean_git_bin" -C "$source_dir" apply --reverse --unidiff-zero -p0 "$patch_file"; then
+                printf '%s\n' 'mirakc Android build: failed to reverse upstream patch' >&2
+                cleanup_failed=1
+            fi
+        elif git -C "$source_dir" apply --reverse --check --unidiff-zero -p0 "$patch_file" >/dev/null 2>&1; then
             if ! git -C "$source_dir" apply --reverse --unidiff-zero -p0 "$patch_file"; then
                 printf '%s\n' 'mirakc Android build: failed to reverse upstream patch' >&2
                 cleanup_failed=1
@@ -157,10 +182,18 @@ cleanup_patch()
     exit "$exit_code"
 }
 trap cleanup_patch EXIT
-git -C "$source_dir" apply --check --unidiff-zero -p0 "$patch_file" \
-    || fail 'upstream Android patch does not apply cleanly'
-git -C "$source_dir" apply --unidiff-zero -p0 "$patch_file" \
-    || fail 'failed to apply upstream Android patch'
+mkdir -p "$build_dir"
+if [ "$clean_room" -eq 1 ]; then
+    "$clean_git_bin" -C "$source_dir" apply --check --unidiff-zero -p0 "$patch_file" \
+        || fail 'upstream Android patch does not apply cleanly'
+    "$clean_git_bin" -C "$source_dir" apply --unidiff-zero -p0 "$patch_file" \
+        || fail 'failed to apply upstream Android patch'
+else
+    git -C "$source_dir" apply --check --unidiff-zero -p0 "$patch_file" \
+        || fail 'upstream Android patch does not apply cleanly'
+    git -C "$source_dir" apply --unidiff-zero -p0 "$patch_file" \
+        || fail 'failed to apply upstream Android patch'
+fi
 patch_applied=1
 
 mkdir -p "$build_dir" "$output_dir"

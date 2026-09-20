@@ -13,6 +13,12 @@ mkdir "$temporary/dtv"
 git archive HEAD | tar -x -C "$temporary/dtv"
 mkdir -p "$temporary/dtv/tools/mirakc"
 cp "$package" "$audit" "$0" "$root/tools/mirakc/test-source-native-rebuild.sh" "$temporary/dtv/tools/mirakc/"
+cp "$root/tools/mirakc/build-android.sh" "$temporary/dtv/tools/mirakc/build-android.sh"
+mkdir -p "$temporary/dtv/tools/mirakc-arib"
+cp "$root/tools/mirakc-arib/build-android.sh" "$root/tools/mirakc-arib/bootstrap-autotools.sh" \
+   "$temporary/dtv/tools/mirakc-arib/"
+cp "$root/tools/mirakc/patches/mirakc-android-web-resilience.patch" \
+   "$temporary/dtv/tools/mirakc/patches/mirakc-android-web-resilience.patch"
 (cd "$temporary/dtv" && git init -q && git config user.name fixture && git config user.email fixture@example.invalid && git add -A && git commit -q -m fixture)
 dtv_commit=$(git -C "$temporary/dtv" rev-parse HEAD)
 mirakc_root=${MIRAKC_TEST_MIRAKC_ROOT:-$root/.work/mirakc-3.4.86}
@@ -21,10 +27,11 @@ siano_root=${MIRAKC_TEST_SIANO_ROOT:-$root/.work/pinned-siano-userland}
 px4_root=${MIRAKC_TEST_PX4_ROOT:-$root/.work/pinned-px4-userland}
 px4_drv_root=${MIRAKC_TEST_PX4_DRV_ROOT:-$root/.work/pinned-px4_drv}
 libusb_archive=${MIRAKC_TEST_LIBUSB_ARCHIVE:-$siano_root/build/android-aarch64/src/libusb-1.0.30.tar.bz2}
+swagger_archive=${MIRAKC_TEST_SWAGGER_UI_ARCHIVE:-/config/.work/mirakc-swagger-ui/swagger-ui-5.17.14.zip}
 cargo_vendor="$temporary/cargo-vendor"
 autotools_cache=${MIRAKC_TEST_AUTOTOOLS_CACHE:-/config/.work/mirakc-arib-tools/autotools-sources}
 cargo vendor --manifest-path "$mirakc_root/Cargo.toml" --locked --versioned-dirs "$cargo_vendor" >/dev/null 2>&1
-common_args="--dtv-root $temporary/dtv --dtv-ref HEAD --mirakc-root $mirakc_root --arib-root $arib_root --siano-root $siano_root --px4-root $px4_root --px4-drv-root $px4_drv_root --libusb-archive $libusb_archive --autotools-cache $autotools_cache --cargo-vendor-dir $cargo_vendor"
+common_args="--dtv-root $temporary/dtv --dtv-ref HEAD --mirakc-root $mirakc_root --arib-root $arib_root --siano-root $siano_root --px4-root $px4_root --px4-drv-root $px4_drv_root --libusb-archive $libusb_archive --swagger-ui-archive $swagger_archive --autotools-cache $autotools_cache --cargo-vendor-dir $cargo_vendor"
 if python3 "$package" --output-dir "$temporary/dirty" --dtv-root "$root" >/dev/null 2>&1; then
     printf '%s\n' 'source package accepted the dirty DTV checkout' >&2
     exit 1

@@ -25,6 +25,8 @@ CARGO_VENDOR_CONFIG = (
     b"[source.vendored-sources]\n"
     b"directory = \"third_party/cargo/vendor\"\n"
 )
+SWAGGER_UI_ARCHIVE = "third_party/swagger-ui/swagger-ui-5.17.14.zip"
+SWAGGER_UI_ARCHIVE_SHA256 = "481244d0812097b11fbaeef79f71d942b171617f9c9f9514e63acbe13e71ccdc"
 
 
 def fail(message: str) -> None:
@@ -410,6 +412,9 @@ def audit_source_archive(path: Path, expected_dtv_commit: str | None = None) -> 
     for name, expected_digest in TOOLCHAIN_ARCHIVES.items():
         if name not in members or sha256_bytes(member_bytes(path, name)) != expected_digest:
             fail(f"toolchain archive mismatch: {name}")
+    if (SWAGGER_UI_ARCHIVE not in members or
+            sha256_bytes(member_bytes(path, SWAGGER_UI_ARCHIVE)) != SWAGGER_UI_ARCHIVE_SHA256):
+        fail("pinned Swagger UI archive is missing or mismatched")
     notice = member_bytes(path, "DEPENDENCY-NOTICE.txt").decode("utf-8")
     required_notice = (
         "firmware.status=excluded-from-source-archive",
