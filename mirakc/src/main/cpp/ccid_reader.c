@@ -1,4 +1,5 @@
 #include "ccid_reader.h"
+#include "t1_state_machine.h"
 
 #include <errno.h>
 #include <linux/usbdevice_fs.h>
@@ -35,6 +36,7 @@ static int g_fd = -1;
 static uint8_t g_seq;
 static int g_tpdu = 1;    /* 1 = wrap APDUs in T=1 blocks ourselves */
 static uint8_t g_ns;      /* our T=1 send sequence number */
+static uint8_t g_nr;      /* next T=1 receive sequence number expected */
 static int g_ifsc = 32;   /* max INF the card accepts, from GetParameters */
 static int g_verbose;     /* full hex tracing budget, spent during init */
 
@@ -194,6 +196,7 @@ int ccid_open(int usb_fd) {
     g_fd = usb_fd;
     g_seq = 0;
     g_ns = 0;
+    g_nr = 0;
     g_tpdu = 1;
     g_ifsc = 32;
     g_verbose = 60;
@@ -264,76 +267,16 @@ static int t1_negotiate_ifsd(int ifsd) {
     return 0;
 }
 
-/* Carries one APDU over T=1, handling chaining in both directions plus S-block requests. */
+static int t1_exchange_callback(void *context, const uint8_t *request, int request_len,
+                                uint8_t *response, int response_capacity) {
+    (void)context;
+    return ccid_xfr_block(request, request_len, response, response_capacity);
+}
+
+/* Carries one APDU over T=1, including bounded R-block recovery. */
 static int t1_transmit(const uint8_t *apdu, int apdu_len, uint8_t *resp, int resp_max) {
-    uint8_t sbuf[T1_MAX_INF];
-    uint8_t rinf[T1_MAX_INF];
-    uint8_t rpcb = 0;
-    int sent = 0;
-    int out = 0;
-
-    int chunk = apdu_len > g_ifsc ? g_ifsc : apdu_len;
-    uint8_t pcb = (uint8_t)((g_ns << 6) | (chunk < apdu_len ? 0x20 : 0x00));
-    const uint8_t *payload = apdu;
-    int payload_len = chunk;
-
-    for (int guard = 0; guard < 64; guard++) {
-        int rlen = t1_exchange(pcb, payload, payload_len, &rpcb, rinf, (int)sizeof(rinf));
-        if (rlen < 0) return -1;
-        if ((pcb & 0x80) == 0) {
-            g_ns ^= 1;
-            sent += payload_len;
-        }
-
-        if ((rpcb & 0x80) == 0) {
-            /* I-block: response data from the card */
-            if (out + rlen > resp_max) {
-                LOGE("response overflows caller buffer (%d + %d > %d)", out, rlen, resp_max);
-                return -1;
-            }
-            memcpy(resp + out, rinf, (size_t)rlen);
-            out += rlen;
-            if ((rpcb & 0x20) == 0) return out;
-            /* card is chaining: acknowledge with an R-block */
-            pcb = (uint8_t)(0x80 | ((((rpcb >> 6) & 1) ^ 1) << 4));
-            payload = NULL;
-            payload_len = 0;
-            continue;
-        }
-
-        if ((rpcb & 0xC0) == 0x80) {
-            /* R-block */
-            if (rpcb & 0x0F) {
-                LOGE("card reported a transmission error, R-block pcb=0x%02x", rpcb);
-                return -1;
-            }
-            if (sent >= apdu_len) {
-                LOGE("unexpected R-block 0x%02x after the final I-block", rpcb);
-                return -1;
-            }
-            int c = apdu_len - sent;
-            int more = c > g_ifsc;
-            if (more) c = g_ifsc;
-            pcb = (uint8_t)((g_ns << 6) | (more ? 0x20 : 0x00));
-            payload = apdu + sent;
-            payload_len = c;
-            continue;
-        }
-
-        /* S-block. Requests (bit 0x20 clear) get the matching response echoed back. */
-        if (rpcb & 0x20) {
-            LOGE("unsolicited S-block response pcb=0x%02x", rpcb);
-            return -1;
-        }
-        LOGI("S-block request pcb=0x%02x len=%d, answering", rpcb, rlen);
-        if (rlen > (int)sizeof(sbuf)) rlen = (int)sizeof(sbuf);
-        if (rlen > 0) memcpy(sbuf, rinf, (size_t)rlen);
-        pcb = (uint8_t)(rpcb | 0x20);
-        payload = sbuf;
-        payload_len = rlen;
-    }
-    LOGE("T=1 exchange did not converge");
-    return -1;
+    return t1_sm_transmit(apdu, apdu_len, resp, resp_max, &g_ns, &g_nr, g_ifsc,
+                          t1_exchange_callback, NULL);
 }
 
 static void read_parameters(void) {
@@ -372,6 +315,7 @@ int ccid_power_on(void) {
     hexlog("ATR", atr, n);
 
     g_ns = 0;
+    g_nr = 0;
     g_ifsc = 32;
     read_parameters();
     if (g_tpdu && t1_negotiate_ifsd(T1_MAX_INF) != 0) {

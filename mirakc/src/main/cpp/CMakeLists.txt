@@ -21,6 +21,7 @@ if(MIRAKC_BUILD_B25_FILTER)
         b25_filter_main.cpp
         b25_filter.cpp
         ccid_reader.c
+        t1_state_machine.c
         b_cas_card_ccid.c
         arib25/arib_std_b25.c
         arib25/ts_section_parser.c
@@ -72,6 +73,7 @@ if(MIRAKC_BUILD_PX4_ADAPTER)
         px4_tune_plan.cpp
         b25_filter.cpp
         ccid_reader.c
+        t1_state_machine.c
         b_cas_card_ccid.c
         arib25/arib_std_b25.c
         arib25/ts_section_parser.c

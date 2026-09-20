@@ -186,6 +186,8 @@ val prepareB25FilterBinaries = tasks.register("prepareB25FilterBinaries") {
         layout.projectDirectory.file("src/main/cpp/b25_filter.cpp"),
         layout.projectDirectory.file("src/main/cpp/ccid_reader.c"),
         layout.projectDirectory.file("src/main/cpp/ccid_reader.h"),
+        layout.projectDirectory.file("src/main/cpp/t1_state_machine.c"),
+        layout.projectDirectory.file("src/main/cpp/t1_state_machine.h"),
         layout.projectDirectory.file("src/main/cpp/b_cas_card_ccid.c"),
         layout.projectDirectory.file("src/main/cpp/arib25/b_cas_card.h"),
         fileTree(layout.projectDirectory.dir("src/main/cpp/arib25"))
@@ -251,6 +253,10 @@ val preparePx4AdapterBinaries = tasks.register("preparePx4AdapterBinaries") {
         px4AdapterCmake,
         px4AdapterVerifier,
         layout.projectDirectory.file("src/main/cpp/b25_filter.cpp"),
+        layout.projectDirectory.file("src/main/cpp/ccid_reader.c"),
+        layout.projectDirectory.file("src/main/cpp/ccid_reader.h"),
+        layout.projectDirectory.file("src/main/cpp/t1_state_machine.c"),
+        layout.projectDirectory.file("src/main/cpp/t1_state_machine.h"),
         layout.projectDirectory.file("src/main/cpp/b_cas_card_ccid.c"),
         layout.projectDirectory.file("src/main/cpp/arib25/b_cas_card.h"),
         fileTree(layout.projectDirectory.dir("src/main/cpp/arib25"))
