@@ -230,7 +230,7 @@ LIBARIB25_TREE_IDENTITY = "93c5d79f3aaa8215c28fbf5e44287f49d78dbc07df58c5199a53e
 TOOLCHAIN = {
     "schema": 2,
     "gradle": {"wrapper": "7.6.4", "distribution_url": "https://services.gradle.org/distributions/gradle-7.6.4-bin.zip", "distribution_sha256": "bed1da33cca0f557ab13691c77f38bb67388119e4794d113e051039b80af9bb1", "verification": "official Gradle release checksum"},
-    "jdk": {"distribution": "temurin", "version": "17.0.20.1", "runtime_version": "17.0.20.1+1", "observed": "Temurin 17.0.20.1+1", "required_major": 17, "verification": "setup-java exact JEP-322 selector plus exact runtime check; no archive checksum recorded"},
+    "jdk": {"distribution": "temurin", "selector": "17", "runtime_version": "17.0.20.1+1", "observed": "Temurin 17.0.20.1+1", "required_major": 17, "verification": "setup-java selector 17 plus exact runtime gate; no archive checksum recorded"},
     "android_gradle_plugin": "7.4.2",
     "kotlin": "1.9.24",
     "android_ndk": {"version": "27.0.12077973", "verification": "sdkmanager exact package version; no installer archive checksum recorded"},

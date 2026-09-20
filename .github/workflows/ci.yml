@@ -8,7 +8,7 @@ env:
   # Pinned so that a runner image refresh cannot change what ships in the APK.
   NDK_VERSION: "27.0.12077973"
   ANDROID_CMAKE_VERSION: "3.22.1"
-  JAVA_VERSION: "17.0.20.1"
+  JAVA_VERSION: "17"
   JAVA_RUNTIME_VERSION: "17.0.20.1+1"
   RUST_VERSION: "1.98.1"
   SIANO_USERLAND_REF: d4f8930ab56d13c479037f2e242461062d96c127
