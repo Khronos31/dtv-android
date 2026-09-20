@@ -141,10 +141,27 @@ if [ "$full_gate" -eq 1 ]; then
             exit 1
         }
     done
+    rustup_bin=$(command -v rustup)
+    rustup_home=${RUSTUP_HOME:-}
+    if [ -z "$rustup_home" ]; then
+        rustup_home=$(
+            "$rustup_bin" show home 2>/dev/null || true
+        )
+    fi
+    [ -n "$rustup_home" ] && [ -d "$rustup_home" ] && [ -r "$rustup_home" ] || {
+        printf '%s\n' "the invoking Rust toolchain home is unavailable: ${rustup_home:-unset}" >&2
+        exit 1
+    }
+    rustup_home=$(CDPATH='' cd -- "$rustup_home" && pwd -P)
+    if ! RUSTUP_HOME="$rustup_home" "$rustup_bin" target list --installed >/dev/null 2>&1; then
+        printf '%s\n' "cannot read installed Rust targets from RUSTUP_HOME=$rustup_home" >&2
+        exit 1
+    fi
 fi
 cargo_bin_dir=$(dirname "$(command -v cargo 2>/dev/null || printf '%s' /nonexistent)")
+rustup_bin_dir=$(dirname "$(command -v rustup 2>/dev/null || printf '%s' /nonexistent)")
 git_bin=$(command -v git 2>/dev/null || printf '%s' /nonexistent)
-guard_path=$work/bin:$cargo_bin_dir:$(dirname "$(command -v cmake)"):$(dirname "$(command -v ninja)"):/usr/bin:/bin
+guard_path=$work/bin:$cargo_bin_dir:$rustup_bin_dir:$(dirname "$(command -v cmake)"):$(dirname "$(command -v ninja)"):/usr/bin:/bin
 network_namespace=${MIRAKC_REQUIRE_NETWORK_NAMESPACE:-auto}
 network_launcher=
 run_uid=$(id -u)
@@ -188,6 +205,8 @@ printf 'clean-room source-fetch guard: PATH wrappers; network namespace=%s\n' \
     "${network_launcher:-unavailable}"
 
 full_native_root=$work/full-native
+clean_home=$work/home
+mkdir -p "$clean_home"
 if [ "$full_gate" -eq 1 ]; then
     mkdir -p "$full_native_root/lib/arm64-v8a" "$full_native_root/lib/armeabi-v7a"
 fi
@@ -375,6 +394,7 @@ if [ "$full_gate" -eq 1 ]; then
         mirakc_output=$dtv/.work/mirakc-output-$abi/mirakc-$abi
         run_guarded env \
             ANDROID_NDK_HOME="$ndk" ANDROID_ABI="$abi" PATH="$guard_path" \
+            HOME="$clean_home" RUSTUP_HOME="$rustup_home" \
             CARGO_HOME="$cargo_home" CARGO_NET_OFFLINE=true \
             VERGEN_GIT_SHA=fc9610f51f8621aa8db508ddd36c7f1e2785d7be \
             SWAGGER_UI_DOWNLOAD_URL="file://$swagger_archive" \
