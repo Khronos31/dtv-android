@@ -122,6 +122,7 @@ EXPECTED = {
             "sources/dtv-android/tools/mirakc/package-source.py",
             "sources/dtv-android/tools/mirakc/audit-source.py",
             "sources/dtv-android/tools/mirakc/test-source-package.sh",
+            "sources/dtv-android/tools/mirakc/test-source-native-rebuild.sh",
             "sources/dtv-android/tools/mirakc/build-android.sh",
             "sources/dtv-android/tools/mirakc-arib/build-android.sh",
         ),

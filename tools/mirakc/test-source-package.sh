@@ -12,7 +12,7 @@ trap 'rm -rf "$temporary"' EXIT HUP INT TERM
 mkdir "$temporary/dtv"
 git archive HEAD | tar -x -C "$temporary/dtv"
 mkdir -p "$temporary/dtv/tools/mirakc"
-cp "$package" "$audit" "$0" "$temporary/dtv/tools/mirakc/"
+cp "$package" "$audit" "$0" "$root/tools/mirakc/test-source-native-rebuild.sh" "$temporary/dtv/tools/mirakc/"
 (cd "$temporary/dtv" && git init -q && git config user.name fixture && git config user.email fixture@example.invalid && git add -A && git commit -q -m fixture)
 dtv_commit=$(git -C "$temporary/dtv" rev-parse HEAD)
 mirakc_root=${MIRAKC_TEST_MIRAKC_ROOT:-$root/.work/mirakc-3.4.86}
@@ -37,6 +37,9 @@ cmp -s \
     "$temporary/one/mirakc-corresponding-source.tar.gz" \
     "$temporary/two/mirakc-corresponding-source.tar.gz"
 python3 "$audit" --expected-dtv-commit "$dtv_commit" "$temporary/one/mirakc-corresponding-source.tar.gz" >/dev/null
+if [ -n "${MIRAKC_TEST_ARCHIVE_OUTPUT:-}" ]; then
+    cp "$temporary/one/mirakc-corresponding-source.tar.gz" "$MIRAKC_TEST_ARCHIVE_OUTPUT"
+fi
 
 # Prove the extracted archive resolves and type-checks without registry/network
 # state. The root .cargo/config.toml must select only the archived vendor tree.
