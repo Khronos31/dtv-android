@@ -71,11 +71,23 @@ def check_checkout(root: Path, expected: str, name: str) -> str:
     if actual != expected:
         fail(f"{name} HEAD mismatch: expected {expected}, found {actual}")
     status = subprocess.run(
-        ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all", "--ignore-submodules=dirty"],
+        ["git", "-C", str(root), "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=dirty"],
         check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        errors="surrogateescape",
     )
-    if status.returncode != 0 or status.stdout:
-        fail(f"{name} checkout is not clean: {root}")
+    if status.returncode != 0:
+        fail(f"{name} checkout cleanliness check failed: {root}")
+    if status.stdout:
+        records = [record for record in status.stdout.split("\0") if record]
+        shown = []
+        for record in records[:32]:
+            path = record[3:] if len(record) >= 3 else record
+            if len(path) > 240:
+                path = path[:237] + "..."
+            shown.append(f"{record[:2]} {path!r}")
+        if len(records) > len(shown):
+            shown.append(f"... ({len(records) - len(shown)} more paths)")
+        fail(f"{name} checkout is not clean: {root}; dirty paths: {'; '.join(shown)}")
     return actual
 
 

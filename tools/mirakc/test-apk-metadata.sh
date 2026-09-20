@@ -50,6 +50,15 @@ px4_root=${MIRAKC_TEST_PX4_ROOT:-$root/.work/pinned-px4-userland}
 px4_drv_root=${MIRAKC_TEST_PX4_DRV_ROOT:-$root/.work/pinned-px4_drv}
 libusb_archive=${MIRAKC_TEST_LIBUSB_ARCHIVE:-$siano_root/build/android-aarch64/src/libusb-1.0.30.tar.bz2}
 args="--dtv-root $temporary/dtv --dtv-ref HEAD --mirakc-root $mirakc_root --arib-root $arib_root --siano-root $siano_root --px4-root $px4_root --px4-drv-root $px4_drv_root --arib25-root $root/mirakc/src/main/cpp/arib25 --libusb-archive $libusb_archive"
+printf '%s\n' 'untracked fixture path' > "$temporary/dtv/unexpected-untracked.txt"
+# shellcheck disable=SC2086
+if python3 "$generator" --output "$temporary/dirty-dtv" $args \
+    > /dev/null 2> "$temporary/dirty-dtv.stderr"; then
+    printf '%s\n' 'metadata generator accepted an arbitrary untracked DTV path' >&2
+    exit 1
+fi
+grep -F -- 'unexpected-untracked.txt' "$temporary/dirty-dtv.stderr" >/dev/null
+rm -- "$temporary/dtv/unexpected-untracked.txt"
 # shellcheck disable=SC2086
 python3 "$generator" --output "$temporary/one" $args >/dev/null
 # shellcheck disable=SC2086
