@@ -16,4 +16,7 @@ captures/
 mirakc/src/main/jniLibs/
 mirakc/src/main/assets/isdbt_rio.inp
 .work/
+/siano-userland/
+/px4-userland/
+/px4_drv/
 epgstation-server/.generated/

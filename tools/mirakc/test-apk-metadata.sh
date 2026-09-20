@@ -5,6 +5,21 @@ set -eu
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd -P)
 generator=$root/tools/mirakc/generate-apk-metadata.py
 auditor=$root/tools/mirakc/audit-apk-metadata.py
+
+# CI checks out external source repositories at these exact root paths.  They
+# are ignored as whole checkout directories, while an unrelated untracked
+# directory must remain visible to the DTV cleanliness gate.
+for external_checkout in siano-userland px4-userland px4_drv; do
+    git -C "$root" check-ignore -q -- "$external_checkout/probe" || {
+        printf '%s\n' "missing root ignore for $external_checkout" >&2
+        exit 1
+    }
+done
+if git -C "$root" check-ignore -q -- unexpected-external/probe; then
+    printf '%s\n' 'root ignore is too broad for external checkouts' >&2
+    exit 1
+fi
+
 temporary=$(mktemp -d /tmp/mirakc-apk-metadata-test.XXXXXX)
 dirty_license=
 dirty_license_backup=
