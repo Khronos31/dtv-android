@@ -208,4 +208,11 @@ new native state in a separate, disposable namespace; it must not perform an
 irreversible schema conversion.  Record the exact install command, package
 manager result, restored configuration and service behavior.  A failed rescue
 test blocks release.  Temporary native probes under `/data/local/tmp` are
-removed after measurement.
+removed after measurement.  The reserved rescue identity is `0.3.1`/301
+(never a normal 0.3.1 release; future native releases start at 0.3.2 or later),
+built from annotated `mirakc-v0.2.0` peeled commit
+`5a4d647c9e4b46f3f637165fa107f87d34ea22ed` and
+`siano-userland` `v0.1.1` peeled commit
+`1a22a7180abd6c7be1d1dda6b866ec321a4e28ab`.  The executable rehearsal and
+receipt verifier are documented in `tools/mirakc/RESCUE-REHEARSAL.md`; this
+rescue gate is not a substitute for the final candidate matrix.

@@ -30,12 +30,17 @@ jobs:
   build:
     name: Build unsigned mirakc candidate
     runs-on: ubuntu-latest
+    outputs:
+      git_head: ${{ steps.resolve-candidate.outputs.git_head }}
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 1
           persist-credentials: false
+      - name: Resolve candidate commit
+        id: resolve-candidate
+        run: echo "git_head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v5
         with:
           repository: Khronos31/siano-userland
@@ -51,6 +56,17 @@ jobs:
           repository: nns779/px4_drv
           ref: ${{ env.PX4_DRV_REF }}
           path: px4_drv
+      - uses: actions/checkout@v5
+        with:
+          ref: mirakc-v0.2.0
+          fetch-depth: 0
+          path: legacy-dtv
+      - uses: actions/checkout@v5
+        with:
+          repository: Khronos31/siano-userland
+          ref: v0.1.1
+          fetch-depth: 0
+          path: legacy-siano-userland
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -65,6 +81,8 @@ jobs:
           python-version: "3.13"
       - name: Device evidence host self-test
         run: tools/mirakc/test-device-evidence.sh
+      - name: Rescue rehearsal host self-test
+        run: tools/mirakc/test-rescue-rehearsal.sh
       - name: Install the pinned NDK
         run: |
           set -euo pipefail
@@ -96,8 +114,11 @@ jobs:
         env:
           MIRAKC_ARIB_AUTOTOOLS_ROOT: ${{ runner.temp }}/mirakc-arib-tools
           CARGO_HOME: ${{ runner.temp }}/cargo
+          CANDIDATE_REF: ${{ inputs.ref }}
         run: |
           set -euo pipefail
+          test "$(cat mirakc/VERSION)" = "0.3.0" \
+            || { echo "rescue pair requires a 0.3.0 candidate checkout" >&2; exit 1; }
           ./gradlew --no-daemon \
             -PsianoUserlandDir="$GITHUB_WORKSPACE/siano-userland" \
             -Ppx4UserlandDir="$GITHUB_WORKSPACE/px4-userland" \
@@ -108,10 +129,25 @@ jobs:
           mkdir -p out
           cp "$apk" out/mirakc-unsigned.apk
           {
+            echo "kind=candidate"
+            echo "git_ref=$CANDIDATE_REF"
             echo "git_head=$(git rev-parse HEAD)"
             echo "version=$(cat mirakc/VERSION)"
-            echo "apk_sha256=$(sha256sum "$apk" | awk '{ print $1 }')"
-          } > out/BUILD_INFO.txt
+            echo "unsigned_apk_sha256=$(sha256sum "$apk" | awk '{ print $1 }')"
+          } > out/CANDIDATE_BUILD_INFO.txt
+      - name: Build and audit unsigned legacy server rescue
+        run: |
+          set -euo pipefail
+          tools/mirakc/build-legacy-rescue.sh \
+            --legacy-root "$GITHUB_WORKSPACE/legacy-dtv" \
+            --siano-root "$GITHUB_WORKSPACE/legacy-siano-userland" \
+            --out "$GITHUB_WORKSPACE/out"
+          aapt2="$(find "$ANDROID_SDK_ROOT/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt2 -print | sort -V | tail -n 1)"
+          test -x "$aapt2"
+          python3 tools/mirakc/verify-rescue-apk.py \
+            out/mirakc-legacy-server-rescue-0.3.1-unsigned.apk --aapt2 "$aapt2"
+          python3 tools/mirakc/verify-rescue-build-info.py \
+            out/CANDIDATE_BUILD_INFO.txt out/RESCUE_BUILD_INFO.txt
       - uses: actions/upload-artifact@v4
         with:
           name: mirakc-unsigned-candidate
@@ -123,6 +159,11 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.build.outputs.git_head }}
+          fetch-depth: 1
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           name: mirakc-unsigned-candidate
@@ -136,6 +177,9 @@ jobs:
           set -euo pipefail
           runtime_version="$(java -XshowSettings:properties -version 2>&1 | sed -n 's/^[[:space:]]*java.runtime.version = //p')"
           test "$runtime_version" = "$JAVA_RUNTIME_VERSION"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
       - name: Decode the production release keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
@@ -153,39 +197,95 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          unsigned=candidate/mirakc-unsigned.apk
-          signed="$RUNNER_TEMP/mirakc-signed-candidate.apk"
           apksigner="$(find "$ANDROID_SDK_ROOT/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner -print | sort -V | tail -n 1)"
           aapt2="$(find "$ANDROID_SDK_ROOT/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt2 -print | sort -V | tail -n 1)"
           [[ -x "$apksigner" && -x "$aapt2" ]] || { echo "Android build tools not found" >&2; exit 1; }
-          package_name="$("$aapt2" dump badging "$unsigned" | awk -F"'" '/^package: name=/{ print $2; exit }')"
-          [[ "$package_name" == dev.khronos31.mirakc ]] \
-            || { echo "Unexpected APK package: $package_name" >&2; exit 1; }
-          version="$("$aapt2" dump badging "$unsigned" | awk -F"'" '/^package: name=/{ for (i = 1; i <= NF; i++) if ($i ~ /versionName=$/) { print $(i + 1); exit } }')"
-          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] \
-            || { echo "Invalid candidate version: $version" >&2; exit 1; }
-          "$apksigner" sign --ks "$RUNNER_TEMP/release.keystore" \
-            --ks-pass "env:KEYSTORE_PASSWORD" --ks-key-alias "$KEY_ALIAS" \
-            --key-pass "env:KEY_PASSWORD" --out "$signed" "$unsigned"
-          "$apksigner" verify --print-certs "$signed"
-          cert_sha256="$("$apksigner" verify --print-certs "$signed" \
-            | awk -F': ' '/certificate SHA-256 digest/ { print $NF; exit }')"
-          expected_cert_sha256=1fd02c94f29a5756ed1d560ac4ecb6813fa0b2e634473a6f31da210ffd5223c4
-          [[ "${#expected_cert_sha256}" -eq 64 ]] \
-            || { echo "Internal error: expected mirakc certificate fingerprint is not 64 hex characters" >&2; exit 1; }
-          [[ "$cert_sha256" == "$expected_cert_sha256" ]] \
-            || { echo "Unexpected mirakc signing certificate: $cert_sha256" >&2; exit 1; }
-          signed_package="$("$aapt2" dump badging "$signed" | awk -F"'" '/^package: name=/{ print $2; exit }')"
-          [[ "$signed_package" == dev.khronos31.mirakc ]] \
-            || { echo "Signed APK package changed: $signed_package" >&2; exit 1; }
+          test "$(git rev-parse HEAD)" = "$(sed -n 's/^git_head=//p' candidate/CANDIDATE_BUILD_INFO.txt)" \
+            || { echo "resolved candidate checkout does not match downloaded build-info" >&2; exit 1; }
+          python3 tools/mirakc/verify-rescue-build-info.py \
+            candidate/CANDIDATE_BUILD_INFO.txt candidate/RESCUE_BUILD_INFO.txt
+          EXPECTED_CERT_SHA256=1fd02c94f29a5756ed1d560ac4ecb6813fa0b2e634473a6f31da210ffd5223c4
+          sign_apk() {
+            unsigned=$1
+            signed=$2
+            expected_version=$3
+            expected_code=$4
+            metadata="$("$aapt2" dump badging "$unsigned" | sed -n "s/^package: name='\([^']*\)' versionCode='\([^']*\)' versionName='\([^']*\)'.*/\1 \2 \3/p")"
+            read -r package_name version_code version <<<"$metadata"
+            [[ "$package_name" == dev.khronos31.mirakc && "$version" == "$expected_version" && "$version_code" == "$expected_code" ]] \
+              || { echo "Unexpected unsigned APK metadata: $metadata" >&2; exit 1; }
+            "$apksigner" sign --ks "$RUNNER_TEMP/release.keystore" \
+              --ks-pass "env:KEYSTORE_PASSWORD" --ks-key-alias "$KEY_ALIAS" \
+              --key-pass "env:KEY_PASSWORD" --out "$signed" "$unsigned"
+            "$apksigner" verify --print-certs "$signed" >&2
+            cert_sha256="$("$apksigner" verify --print-certs "$signed" \
+              | awk -F': ' '/certificate SHA-256 digest/ { print $NF; exit }')"
+            [[ "$cert_sha256" == "$EXPECTED_CERT_SHA256" ]] \
+              || { echo "Unexpected mirakc signing certificate: $cert_sha256" >&2; exit 1; }
+            signed_metadata="$("$aapt2" dump badging "$signed" | sed -n "s/^package: name='\([^']*\)' versionCode='\([^']*\)' versionName='\([^']*\)'.*/\1 \2 \3/p")"
+            read -r signed_package signed_code signed_version <<<"$signed_metadata"
+            [[ "$signed_package" == dev.khronos31.mirakc && "$signed_version" == "$expected_version" && "$signed_code" == "$expected_code" ]] \
+              || { echo "Signed APK metadata changed: $signed_metadata" >&2; exit 1; }
+            printf '%s' "$cert_sha256"
+          }
+          candidate_cert="$(sign_apk candidate/mirakc-unsigned.apk "$RUNNER_TEMP/mirakc-signed-candidate.apk" 0.3.0 300)"
+          rescue_cert="$(sign_apk candidate/mirakc-legacy-server-rescue-0.3.1-unsigned.apk "$RUNNER_TEMP/mirakc-signed-legacy-server-rescue-0.3.1.apk" 0.3.1 301)"
+          python3 tools/mirakc/verify-rescue-apk.py \
+            "$RUNNER_TEMP/mirakc-signed-legacy-server-rescue-0.3.1.apk" \
+            --aapt2 "$aapt2" --apksigner "$apksigner"
           mkdir -p out
-          cp "$signed" out/mirakc-signed-candidate.apk
-          (cd out && sha256sum mirakc-signed-candidate.apk > SHA256SUMS)
+          cp "$RUNNER_TEMP/mirakc-signed-candidate.apk" out/mirakc-signed-candidate.apk
+          cp "$RUNNER_TEMP/mirakc-signed-legacy-server-rescue-0.3.1.apk" out/mirakc-signed-legacy-server-rescue-0.3.1.apk
+          (cd out && sha256sum mirakc-signed-candidate.apk mirakc-signed-legacy-server-rescue-0.3.1.apk > SHA256SUMS)
           {
-            cat candidate/BUILD_INFO.txt
-            echo "signed_apk_sha256=$(sha256sum "$signed" | awk '{ print $1 }')"
-            echo "cert_sha256=$cert_sha256"
-          } > out/BUILD_INFO.txt
+            cp candidate/CANDIDATE_BUILD_INFO.txt out/CANDIDATE_BUILD_INFO.txt
+            cp candidate/RESCUE_BUILD_INFO.txt out/RESCUE_BUILD_INFO.txt
+            python3 - \
+              candidate/CANDIDATE_BUILD_INFO.txt candidate/RESCUE_BUILD_INFO.txt \
+              "$candidate_cert" "$rescue_cert" \
+              "$(sha256sum "$RUNNER_TEMP/mirakc-signed-candidate.apk" | awk '{ print $1 }')" \
+              "$(sha256sum "$RUNNER_TEMP/mirakc-signed-legacy-server-rescue-0.3.1.apk" | awk '{ print $1 }')" \
+              > out/BUILD_INFO.json <<'PY'
+          import json
+          import sys
+
+          def read_info(path):
+              values = {}
+              for line in open(path, encoding="utf-8"):
+                  key, separator, value = line.rstrip("\n").partition("=")
+                  if not separator or not key or key in values:
+                      raise SystemExit(f"invalid build info: {path}")
+                  values[key] = value
+              return values
+
+          candidate = read_info(sys.argv[1])
+          rescue = read_info(sys.argv[2])
+          expected_cert = "1fd02c94f29a5756ed1d560ac4ecb6813fa0b2e634473a6f31da210ffd5223c4"
+          if candidate.get("version") != "0.3.0" or candidate.get("kind") != "candidate":
+              raise SystemExit("candidate build-info changed during combined generation")
+          if rescue.get("kind") != "legacy-server-rescue" or rescue.get("version_name") != "0.3.1" or rescue.get("version_code") != "301":
+              raise SystemExit("rescue build-info changed during combined generation")
+          if sys.argv[3] != expected_cert or sys.argv[4] != expected_cert:
+              raise SystemExit("signed certificate is not the production certificate")
+          for value in (sys.argv[5], sys.argv[6]):
+              if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+                  raise SystemExit("signed APK digest is not a lowercase SHA-256")
+          json.dump({
+              "schema": 1,
+              "candidate": {
+                  "build": candidate,
+                  "signed_apk_sha256": sys.argv[5],
+                  "certificate_sha256": sys.argv[3],
+              },
+              "rescue": {
+                  "build": rescue,
+                  "signed_apk_sha256": sys.argv[6],
+                  "certificate_sha256": sys.argv[4],
+              },
+          }, sys.stdout, sort_keys=True, indent=2)
+          sys.stdout.write("\n")
+          PY
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: mirakc-signed-candidate

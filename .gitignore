@@ -19,6 +19,8 @@ mirakc/src/main/assets/isdbt_rio.inp
 /siano-userland/
 /px4-userland/
 /px4_drv/
+/legacy-dtv/
+/legacy-siano-userland/
 epgstation-server/.generated/
 __pycache__/
 *.py[cod]
