@@ -115,6 +115,7 @@ jobs:
           MIRAKC_ARIB_AUTOTOOLS_ROOT: ${{ runner.temp }}/mirakc-arib-tools
           CARGO_HOME: ${{ runner.temp }}/cargo
           CANDIDATE_REF: ${{ inputs.ref }}
+          CANDIDATE_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
           test "$(cat mirakc/VERSION)" = "0.3.0" \
@@ -130,6 +131,7 @@ jobs:
           cp "$apk" out/mirakc-unsigned.apk
           {
             echo "kind=candidate"
+            echo "candidate_run_id=$CANDIDATE_RUN_ID"
             echo "git_ref=$CANDIDATE_REF"
             echo "git_head=$(git rev-parse HEAD)"
             echo "version=$(cat mirakc/VERSION)"

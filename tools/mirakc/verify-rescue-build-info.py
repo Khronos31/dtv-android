@@ -43,7 +43,7 @@ def require_sha(value: object, field: str) -> None:
 def verify(candidate_path: Path, rescue_path: Path) -> dict[str, object]:
     candidate = read_info(candidate_path)
     rescue = read_info(rescue_path)
-    if candidate.get("kind") != "candidate" or candidate.get("version") != "0.3.0":
+    if candidate.get("kind") != "candidate" or candidate.get("version") != "0.3.0" or re.fullmatch(r"[1-9][0-9]*", candidate.get("candidate_run_id", "")) is None:
         raise BuildInfoError("candidate build-info identity mismatch")
     if not candidate.get("git_ref") or re.fullmatch(r"[0-9a-f]{40}", candidate.get("git_head", "")) is None:
         raise BuildInfoError("candidate ref/head is missing or malformed")

@@ -3,17 +3,17 @@ name: Release
 on:
   push:
     tags:
-      - "mirakc-v*"
       - "epgstation-server-v*"
   workflow_dispatch:
     inputs:
       tag:
-        description: Exact component release tag (for example, mirakc-v0.2.0)
+        description: Exact component release tag (mirakc-v0.3.0 or epgstation-server-vX.Y.Z)
         required: true
         type: string
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: dtv-android-release-${{ inputs.tag || github.ref_name }}
@@ -21,23 +21,25 @@ concurrency:
 
 env:
   NDK_VERSION: "27.0.12077973"
-  ANDROID_CMAKE_VERSION: "3.22.1"
   JAVA_VERSION: "17"
   JAVA_RUNTIME_VERSION: "17.0.20.1+1"
-  RUST_VERSION: "1.98.1"
-  SIANO_USERLAND_REF: d4f8930ab56d13c479037f2e242461062d96c127
-  PX4_USERLAND_REF: 639e65feee7c9f503d44023edd9ab9bba12d5d74
-  PX4_DRV_REF: 2b3f79b5bc5db56e8556bb28397f7d8f74b2adeb
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   prepare:
-    name: Validate release tag
+    name: Validate release tag and attestation
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.prepare.outputs.tag }}
       component: ${{ steps.prepare.outputs.component }}
       version: ${{ steps.prepare.outputs.version }}
+      tag_target: ${{ steps.prepare.outputs.tag_target }}
+      candidate_run_id: ${{ steps.prepare.outputs.candidate_run_id }}
+      candidate_git_head: ${{ steps.prepare.outputs.candidate_git_head }}
+      candidate_apk_sha256: ${{ steps.prepare.outputs.candidate_apk_sha256 }}
+      rescue_apk_sha256: ${{ steps.prepare.outputs.rescue_apk_sha256 }}
+      device_receipt_manifest_sha256: ${{ steps.prepare.outputs.device_receipt_manifest_sha256 }}
+      rescue_receipt_manifest_sha256: ${{ steps.prepare.outputs.rescue_receipt_manifest_sha256 }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -47,33 +49,48 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-      - name: Validate tag and module version
+      - name: Validate tag, module version, and annotated mirakc attestation
         id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           tag="$RELEASE_TAG"
           case "$tag" in
-            mirakc-v*) component=mirakc; version="${tag:8}" ;;
-            epgstation-server-v*) component=epgstation-server; version="${tag:19}" ;;
+            mirakc-v*) component=mirakc; version="${tag#mirakc-v}" ;;
+            epgstation-server-v*) component=epgstation-server; version="${tag#epgstation-server-v}" ;;
             *) echo "Unsupported release tag: $tag" >&2; exit 1 ;;
           esac
-          if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo "Release tag must end in a semantic version" >&2
-            exit 1
-          fi
+          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+            echo "Release tag must end in a semantic version" >&2; exit 1;
+          }
           python3 tools/scripts/release_version.py check --component "$component" --tag "$tag"
-
           git fetch --force origin --tags
+          tag_type="$(git cat-file -t "refs/tags/$tag")"
+          tag_target="$(git rev-parse "refs/tags/$tag^{commit}")"
+          if [[ "$component" == mirakc ]]; then
+            [[ "$tag_type" == tag ]] || { echo "mirakc release tags must be annotated" >&2; exit 1; }
+            [[ "$version" == 0.3.0 && "$(cat mirakc/VERSION)" == 0.3.0 ]] || {
+              echo "mirakc promotion is only defined for version 0.3.0" >&2; exit 1;
+            }
+            git for-each-ref --format='%(contents)' "refs/tags/$tag" > "$RUNNER_TEMP/mirakc-attestation.txt"
+            parsed="$(python3 tools/mirakc/release-attestation.py parse --message "$RUNNER_TEMP/mirakc-attestation.txt")"
+            jq -e --arg head "$tag_target" '.candidate_git_head == $head' <<<"$parsed" >/dev/null || {
+              echo "tag target does not equal candidate_git_head" >&2; exit 1;
+            }
+            for field in candidate_run_id candidate_git_head candidate_apk_sha256 rescue_apk_sha256 device_receipt_manifest_sha256 rescue_receipt_manifest_sha256; do
+              jq -e --arg field "$field" '.[$field] | strings | length > 0' <<<"$parsed" >/dev/null
+            done
+          else
+            [[ "$tag_type" == tag || "$tag_type" == commit ]] || { echo "invalid EPGStation tag" >&2; exit 1; }
+          fi
           previous="$(git tag --list "${component}-v*" --sort=-version:refname \
             | grep -E "^${component}-v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$" \
             | grep -Fxv "$tag" | head -n 1 || true)"
           if [[ -n "$previous" ]]; then
             previous_version="${previous#"$component-v"}"
             newest="$(printf '%s\n%s\n' "$previous_version" "$version" | sort -V | tail -n 1)"
-            if [[ "$newest" != "$version" ]]; then
-              echo "$tag is not newer than $previous" >&2
-              exit 1
-            fi
+            [[ "$newest" == "$version" ]] || { echo "$tag is not newer than $previous" >&2; exit 1; }
           fi
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "A release already exists for $tag" >&2
@@ -83,34 +100,21 @@ jobs:
             echo "tag=$tag"
             echo "component=$component"
             echo "version=$version"
+            echo "tag_target=$tag_target"
+            if [[ "$component" == mirakc ]]; then
+              jq -r 'to_entries[] | "\(.key)=\(.value)"' <<<"$parsed"
+            fi
           } >> "$GITHUB_OUTPUT"
 
-  build:
-    name: Build ${{ needs.prepare.outputs.component }} APK
+  epgstation-build:
+    name: Build EPGStation APK
+    if: needs.prepare.outputs.component == 'epgstation-server'
     needs: prepare
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.prepare.outputs.tag }}
-      - uses: actions/checkout@v5
-        if: needs.prepare.outputs.component == 'mirakc'
-        with:
-          repository: Khronos31/siano-userland
-          ref: ${{ env.SIANO_USERLAND_REF }}
-          path: siano-userland
-      - uses: actions/checkout@v5
-        if: needs.prepare.outputs.component == 'mirakc'
-        with:
-          repository: Khronos31/px4-userland
-          ref: ${{ env.PX4_USERLAND_REF }}
-          path: px4-userland
-      - uses: actions/checkout@v5
-        if: needs.prepare.outputs.component == 'mirakc'
-        with:
-          repository: nns779/px4_drv
-          ref: ${{ env.PX4_DRV_REF }}
-          path: px4_drv
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -121,125 +125,148 @@ jobs:
           runtime_version="$(java -XshowSettings:properties -version 2>&1 | sed -n 's/^[[:space:]]*java.runtime.version = //p')"
           test "$runtime_version" = "$JAVA_RUNTIME_VERSION"
       - uses: actions/setup-node@v5
-        if: needs.prepare.outputs.component == 'epgstation-server'
         with:
           node-version: "22"
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-      - name: Host tools for EPGStation
-        if: needs.prepare.outputs.component == 'epgstation-server'
-        run: sudo apt-get update && sudo apt-get install -y patchelf
-      - name: Install the pinned NDK
-        run: |
-          set -euo pipefail
-          printf 'y\n%.0s' $(seq 20) \
-            | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" >/dev/null
-          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
-      - name: Install pinned Android CMake and bundled Ninja
-        if: needs.prepare.outputs.component == 'mirakc'
-        run: |
-          set -euo pipefail
-          printf 'y\n%.0s' $(seq 20) \
-            | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "cmake;$ANDROID_CMAKE_VERSION" >/dev/null
-          cmake_bin="$ANDROID_SDK_ROOT/cmake/$ANDROID_CMAKE_VERSION/bin"
-          test "$("$cmake_bin/cmake" --version | sed -n '1s/^cmake version \([0-9][0-9.]*\).*/\1/p')" = "$ANDROID_CMAKE_VERSION"
-          test "$("$cmake_bin/ninja" --version)" = "1.10.2"
-          echo "$cmake_bin" >> "$GITHUB_PATH"
-      - name: Install Rust Android targets
-        if: needs.prepare.outputs.component == 'mirakc'
-        run: |
-          set -euo pipefail
-          rustup show active-toolchain | grep -E "^${RUST_VERSION}(-|$)"
-          rustup target add --toolchain "$RUST_VERSION" armv7-linux-androideabi aarch64-linux-android
-          rustc --version | grep -E "^rustc ${RUST_VERSION} "
-          cargo --version | grep -E "^cargo ${RUST_VERSION} "
-      - name: Cache portable aribb24 host tools
-        if: needs.prepare.outputs.component == 'mirakc'
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/mirakc-arib-tools
-          key: mirakc-arib-autotools-${{ runner.os }}-${{ hashFiles('tools/mirakc-arib/bootstrap-autotools.sh') }}
-      - name: Decode the release keystore
+      - name: Build and verify EPGStation
         env:
+          COMPONENT: epgstation-server
+          TAG: ${{ needs.prepare.outputs.tag }}
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-        run: |
-          set -euo pipefail
-          if [[ -z "${KEYSTORE_BASE64:-}" ]]; then
-            echo "The KEYSTORE_BASE64 secret is not set; refusing to ship an unsigned APK" >&2
-            exit 1
-          fi
-          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
-      - name: Build and verify
-        env:
-          MIRAKC_ARIB_AUTOTOOLS_ROOT: ${{ runner.temp }}/mirakc-arib-tools
-          CARGO_HOME: ${{ runner.temp }}/cargo
           KEYSTORE_FILE: ${{ runner.temp }}/release.keystore
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-          COMPONENT: ${{ needs.prepare.outputs.component }}
-          TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
-          if [[ "$COMPONENT" == mirakc ]]; then
-            ./gradlew --no-daemon \
-              -PsianoUserlandDir="$GITHUB_WORKSPACE/siano-userland" \
-              -Ppx4UserlandDir="$GITHUB_WORKSPACE/px4-userland" \
-              -Ppx4DrvDir="$GITHUB_WORKSPACE/px4_drv" \
-              :mirakc:assembleRelease
-            apk=mirakc/build/outputs/apk/release/mirakc-release.apk
-          else
-            ./gradlew --no-daemon :epgstation-server:assembleRelease
-            apk=epgstation-server/build/outputs/apk/release/epgstation-server-release.apk
+          printf 'y\n%.0s' $(seq 20) | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" >/dev/null
+          export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/$NDK_VERSION"
+          if [[ -z "${KEYSTORE_BASE64:-}" ]]; then
+            echo "The KEYSTORE_BASE64 secret is not set" >&2
+            exit 1
           fi
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$KEYSTORE_FILE"
+          sudo apt-get update
+          sudo apt-get install -y patchelf
+          ./gradlew --no-daemon :epgstation-server:assembleRelease
+          apk=epgstation-server/build/outputs/apk/release/epgstation-server-release.apk
           python3 tools/scripts/release_version.py check --component "$COMPONENT" --tag "$TAG" --apk "$apk"
           apksigner="$(find "$ANDROID_SDK_ROOT/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner -print | sort -V | tail -n 1)"
+          test -x "$apksigner"
           "$apksigner" verify --print-certs "$apk"
-          if [[ "$COMPONENT" == mirakc ]]; then
-            cert_sha256="$("$apksigner" verify --print-certs "$apk" \
-              | awk -F': ' '/certificate SHA-256 digest/ { print $NF; exit }')"
-            expected_cert_sha256=1fd02c94f29a5756ed1d560ac4ecb6813fa0b2e634473a6f31da210ffd5223c4
-            [[ "${#expected_cert_sha256}" -eq 64 ]] \
-              || { echo "Internal error: expected mirakc certificate fingerprint is not 64 hex characters" >&2; exit 1; }
-            [[ "$cert_sha256" == "$expected_cert_sha256" ]] \
-              || { echo "Unexpected mirakc signing certificate: $cert_sha256" >&2; exit 1; }
-          fi
           mkdir -p out
           cp "$apk" "out/${COMPONENT}-${TAG#*-v}.apk"
           (cd out && sha256sum "${COMPONENT}-${TAG#*-v}.apk" > SHA256SUMS)
       - uses: actions/upload-artifact@v4
         with:
-          name: apk-${{ needs.prepare.outputs.component }}
+          name: apk-epgstation-server
+          path: out/*
+
+  mirakc-promote:
+    name: Promote exact signed mirakc candidate
+    if: needs.prepare.outputs.component == 'mirakc'
+    needs: prepare
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG_TARGET: ${{ needs.prepare.outputs.tag_target }}
+      CANDIDATE_RUN_ID: ${{ needs.prepare.outputs.candidate_run_id }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.tag_target }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Verify exact successful signed-candidate run and artifact
+        run: |
+          set -euo pipefail
+          run_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN_ID")"
+          jq -e --arg head "$TAG_TARGET" \
+            '.path == ".github/workflows/signed-candidate.yml" and .event == "workflow_dispatch" and .conclusion == "success" and .head_sha == $head' \
+            <<<"$run_json" >/dev/null
+          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          git for-each-ref --format='%(contents)' "refs/tags/$RELEASE_TAG" > "$RUNNER_TEMP/mirakc-attestation.txt"
+          rm -rf artifact
+          mkdir artifact
+          gh run download "$CANDIDATE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name mirakc-signed-candidate --dir artifact
+          python3 tools/mirakc/verify-release-artifact.py artifact --expected-head "$TAG_TARGET" --expected-run "$CANDIDATE_RUN_ID"
+      - name: Verify APKs, source metadata, and annotated acceptance
+        env:
+          EXPECTED_CANDIDATE_SHA: ${{ needs.prepare.outputs.candidate_apk_sha256 }}
+          EXPECTED_RESCUE_SHA: ${{ needs.prepare.outputs.rescue_apk_sha256 }}
+          EXPECTED_DEVICE_MANIFEST: ${{ needs.prepare.outputs.device_receipt_manifest_sha256 }}
+          EXPECTED_RESCUE_MANIFEST: ${{ needs.prepare.outputs.rescue_receipt_manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          sdkroot="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          export ANDROID_SDK_ROOT="$sdkroot"
+          aapt2="$(find "$sdkroot/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt2 -print | sort -V | tail -n 1)"
+          apksigner="$(find "$sdkroot/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner -print | sort -V | tail -n 1)"
+          test -x "$aapt2" -a -x "$apksigner"
+          candidate_metadata="$($aapt2 dump badging artifact/mirakc-signed-candidate.apk | sed -n "s/^package: name='\([^']*\)' versionCode='\([^']*\)' versionName='\([^']*\)'.*/\1 \2 \3/p")"
+          test "$candidate_metadata" = "dev.khronos31.mirakc 300 0.3.0"
+          candidate_cert="$($apksigner verify --print-certs artifact/mirakc-signed-candidate.apk | awk -F': ' '/certificate SHA-256 digest/ { print $NF; exit }' | tr -d ':' | tr '[:upper:]' '[:lower:]')"
+          test "$candidate_cert" = "1fd02c94f29a5756ed1d560ac4ecb6813fa0b2e634473a6f31da210ffd5223c4"
+          python3 tools/mirakc/verify-rescue-apk.py artifact/mirakc-signed-legacy-server-rescue-0.3.1.apk --aapt2 "$aapt2" --apksigner "$apksigner"
+          tools/mirakc/audit-apk.sh artifact/mirakc-signed-candidate.apk "$TAG_TARGET"
+          python3 tools/mirakc/release-attestation.py acceptance \
+            --message "$RUNNER_TEMP/mirakc-attestation.txt" > acceptance.json
+          jq -e --arg c "$EXPECTED_CANDIDATE_SHA" --arg r "$EXPECTED_RESCUE_SHA" \
+            --arg d "$EXPECTED_DEVICE_MANIFEST" --arg s "$EXPECTED_RESCUE_MANIFEST" \
+            '.schema == 1 and .kind == "mirakc-release-acceptance" and .candidate_apk_sha256 == $c and .rescue_apk_sha256 == $r and .device_receipt_manifest_sha256 == $d and .rescue_receipt_manifest_sha256 == $s' \
+            acceptance.json >/dev/null
+          mkdir -p out
+          cp artifact/mirakc-signed-candidate.apk out/mirakc-0.3.0.apk
+          cp artifact/mirakc-signed-legacy-server-rescue-0.3.1.apk out/mirakc-0.3.0-legacy-server-rescue.apk
+          cp acceptance.json out/mirakc-0.3.0-acceptance.json
+          sha256sum out/mirakc-0.3.0.apk out/mirakc-0.3.0-legacy-server-rescue.apk out/mirakc-0.3.0-acceptance.json > out/SHA256SUMS
+          test "$(sha256sum out/mirakc-0.3.0.apk | cut -d' ' -f1)" = "$EXPECTED_CANDIDATE_SHA"
+          test "$(sha256sum out/mirakc-0.3.0-legacy-server-rescue.apk | cut -d' ' -f1)" = "$EXPECTED_RESCUE_SHA"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-mirakc
           path: out/*
 
   publish:
     name: Publish GitHub Release
-    needs: [prepare, build]
+    needs: [prepare, epgstation-build, mirakc-promote]
+    if: always() && needs.prepare.result == 'success' && ((needs.prepare.outputs.component == 'epgstation-server' && needs.epgstation-build.result == 'success') || (needs.prepare.outputs.component == 'mirakc' && needs.mirakc-promote.result == 'success'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: apk-${{ needs.prepare.outputs.component }}
           path: dist
-      - name: Confirm the artifact name carries the release version
+      - name: Confirm exact release inventory
         env:
           COMPONENT: ${{ needs.prepare.outputs.component }}
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
-          apk="dist/${COMPONENT}-${VERSION}.apk"
-          [[ -f "$apk" ]] || { echo "Missing expected artifact: $apk" >&2; exit 1; }
-          [[ -f dist/SHA256SUMS ]] || { echo "Missing SHA256SUMS" >&2; exit 1; }
-          ls -l dist
+          if [[ "$COMPONENT" == mirakc ]]; then
+            wanted='SHA256SUMS mirakc-0.3.0-acceptance.json mirakc-0.3.0-legacy-server-rescue.apk mirakc-0.3.0.apk'
+          else
+            wanted="$(printf '%s\n' "${COMPONENT}-${VERSION}.apk" SHA256SUMS | sort | tr '\n' ' ' | sed 's/ $//')"
+          fi
+          actual="$(find dist -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | sort | tr '\n' ' ' | sed 's/ $//')"
+          test "$actual" = "$wanted"
       - name: Create the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          COMPONENT: ${{ needs.prepare.outputs.component }}
         run: |
-          gh release create "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --generate-notes \
-            --title "$RELEASE_TAG" \
-            dist/*.apk dist/SHA256SUMS
+          set -euo pipefail
+          if [[ "$COMPONENT" == mirakc ]]; then
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "$RELEASE_TAG" \
+              dist/mirakc-0.3.0.apk dist/mirakc-0.3.0-legacy-server-rescue.apk dist/mirakc-0.3.0-acceptance.json dist/SHA256SUMS
+          else
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "$RELEASE_TAG" \
+              "dist/${COMPONENT}-${{ needs.prepare.outputs.version }}.apk" dist/SHA256SUMS
+          fi

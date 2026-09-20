@@ -66,6 +66,8 @@ jobs:
         run: tools/mirakc/test-device-evidence.sh
       - name: Rescue rehearsal host self-test
         run: tools/mirakc/test-rescue-rehearsal.sh
+      - name: Release attestation host self-test
+        run: tools/mirakc/test-release-attestation.sh
       - name: Install the pinned NDK
         run: |
           set -euo pipefail

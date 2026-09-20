@@ -51,7 +51,7 @@ with tempfile.TemporaryDirectory(prefix="rescue-build-info-test-") as temporary:
     candidate_info = directory / "candidate.txt"
     rescue_info = directory / "rescue.txt"
     candidate_info.write_text("\n".join([
-        "kind=candidate", "git_ref=main", "git_head=" + "a" * 40,
+        "kind=candidate", "candidate_run_id=123", "git_ref=main", "git_head=" + "a" * 40,
         "version=0.3.0", "unsigned_apk_sha256=" + "b" * 64, "",
     ]))
     rescue_info.write_text("\n".join([
