@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 import re
 import sys
 import tarfile
+import tomllib
 
 
 class AuditError(Exception):
@@ -18,6 +19,12 @@ class AuditError(Exception):
 
 
 _PAYLOAD_CACHE: dict[str, dict[str, bytes]] = {}
+CARGO_VENDOR_CONFIG = (
+    b"[source.crates-io]\n"
+    b"replace-with = \"vendored-sources\"\n\n"
+    b"[source.vendored-sources]\n"
+    b"directory = \"third_party/cargo/vendor\"\n"
+)
 
 
 def fail(message: str) -> None:
@@ -48,7 +55,8 @@ def archive_members(path: Path) -> dict[str, tarfile.TarInfo]:
                     fail(f"archive member is not a regular file: {member.name}")
                 if re.search(r"(^|/)(?:\.git|__pycache__)(?:/|$)", member.name):
                     fail(f"forbidden generated member: {member.name}")
-                if re.search(r"(?:\.o$|\.a$|\.so(?:\.|$)|\.dylib$|\.apk$|\.inp$|\.bin$|\.py[co]$)", member.name, re.I):
+                cargo_vendor_member = member.name.startswith("third_party/cargo/vendor/")
+                if not cargo_vendor_member and re.search(r"(?:\.o$|\.a$|\.so(?:\.|$)|\.dylib$|\.apk$|\.inp$|\.bin$|\.py[co]$)", member.name, re.I):
                     fail(f"forbidden binary/generated member: {member.name}")
                 members[member.name] = member
     except (OSError, tarfile.TarError) as error:
@@ -239,6 +247,71 @@ TOOLCHAIN_ARCHIVES = {
 }
 
 
+def verify_cargo_vendor(path: Path, members: dict[str, tarfile.TarInfo], manifest: dict) -> None:
+    inventory = manifest.get("cargo_vendor")
+    if not isinstance(inventory, dict) or inventory.get("config") != ".cargo/config.toml" or \
+       inventory.get("root") != "third_party/cargo/vendor" or inventory.get("lock") != "sources/mirakc/Cargo.lock":
+        fail("Cargo vendor inventory is missing or stale")
+    if ".cargo/config.toml" not in members or member_bytes(path, ".cargo/config.toml") != CARGO_VENDOR_CONFIG:
+        fail("Cargo offline source configuration is missing or mismatched")
+    try:
+        lock = tomllib.loads(member_bytes(path, "sources/mirakc/Cargo.lock").decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        fail(f"Cargo.lock is not valid TOML: {error}")
+    lock_packages = []
+    for package in lock.get("package", []):
+        source = package.get("source", "")
+        if source.startswith("registry+"):
+            if not isinstance(package.get("checksum"), str):
+                fail(f"registry Cargo package has no checksum: {package.get('name')}")
+            lock_packages.append((package.get("name"), package.get("version"), package["checksum"]))
+    prefix = "third_party/cargo/vendor/"
+    vendor_members = sorted(name for name in members if name.startswith(prefix))
+    if any("/" not in name[len(prefix):] for name in vendor_members):
+        fail("Cargo vendor contains a file outside a package directory")
+    package_dirs = sorted({name[len(prefix):].split("/", 1)[0] for name in vendor_members if "/" in name})
+    actual = []
+    for package_dir in package_dirs:
+        package_prefix = prefix + package_dir + "/"
+        cargo_toml_path = package_prefix + "Cargo.toml"
+        checksum_path = package_prefix + ".cargo-checksum.json"
+        if cargo_toml_path not in members or checksum_path not in members:
+            fail(f"Cargo vendor package is incomplete: {package_dir}")
+        try:
+            package = tomllib.loads(member_bytes(path, cargo_toml_path).decode("utf-8"))["package"]
+            checksum = json.loads(member_bytes(path, checksum_path).decode("utf-8"))
+        except (UnicodeDecodeError, tomllib.TOMLDecodeError, json.JSONDecodeError, KeyError) as error:
+            fail(f"Cargo vendor package metadata is invalid: {package_dir}: {error}")
+        file_digests = checksum.get("files")
+        if not isinstance(checksum.get("package"), str) or not isinstance(file_digests, dict):
+            fail(f"Cargo vendor package checksum is missing: {package_dir}")
+        package_files = {
+            name[len(package_prefix):] for name in vendor_members
+            if name.startswith(package_prefix) and name != checksum_path
+        }
+        if (not all(isinstance(relative, str) and isinstance(digest, str)
+                    for relative, digest in file_digests.items())
+                or set(file_digests) != package_files):
+            fail(f"Cargo vendor package file checksum inventory mismatch: {package_dir}")
+        for relative, digest in file_digests.items():
+            safe_member(relative)
+            member_name = package_prefix + relative
+            if member_name not in members or sha256_bytes(member_bytes(path, member_name)) != digest:
+                fail(f"Cargo vendor package file checksum mismatch: {package_dir}/{relative}")
+        actual.append({
+            "name": package.get("name"),
+            "version": package.get("version"),
+            "path": prefix[:-1] + "/" + package_dir,
+            "checksum": checksum["package"],
+            "files": [name for name in vendor_members if name.startswith(package_prefix)],
+        })
+    actual.sort(key=lambda item: item["path"])
+    if inventory.get("packages") != actual:
+        fail("Cargo vendor package inventory or file list mismatch")
+    if sorted((item["name"], item["version"], item["checksum"]) for item in actual) != sorted(lock_packages):
+        fail("Cargo vendor packages do not exactly match registry Cargo.lock checksums")
+
+
 def audit_source_archive(path: Path, expected_dtv_commit: str | None = None) -> None:
     members = archive_members(path)
     verify_checksums(path, members)
@@ -270,6 +343,7 @@ def audit_source_archive(path: Path, expected_dtv_commit: str | None = None) -> 
             fail(f"source manifest digest mismatch: {name}")
         if metadata.get("size") != len(member_bytes(path, name)):
             fail(f"source manifest size mismatch: {name}")
+    verify_cargo_vendor(path, members, manifest)
     components = manifest.get("components")
     if not isinstance(components, list) or {c.get("name") for c in components if isinstance(c, dict)} != set(EXPECTED):
         fail("source manifest component set mismatch")

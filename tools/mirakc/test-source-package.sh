@@ -21,7 +21,10 @@ siano_root=${MIRAKC_TEST_SIANO_ROOT:-$root/.work/pinned-siano-userland}
 px4_root=${MIRAKC_TEST_PX4_ROOT:-$root/.work/pinned-px4-userland}
 px4_drv_root=${MIRAKC_TEST_PX4_DRV_ROOT:-$root/.work/pinned-px4_drv}
 libusb_archive=${MIRAKC_TEST_LIBUSB_ARCHIVE:-$siano_root/build/android-aarch64/src/libusb-1.0.30.tar.bz2}
-common_args="--dtv-root $temporary/dtv --dtv-ref HEAD --mirakc-root $mirakc_root --arib-root $arib_root --siano-root $siano_root --px4-root $px4_root --px4-drv-root $px4_drv_root --libusb-archive $libusb_archive --autotools-cache /config/.work/mirakc-arib-tools/autotools-sources"
+cargo_vendor="$temporary/cargo-vendor"
+autotools_cache=${MIRAKC_TEST_AUTOTOOLS_CACHE:-/config/.work/mirakc-arib-tools/autotools-sources}
+cargo vendor --manifest-path "$mirakc_root/Cargo.toml" --locked --versioned-dirs "$cargo_vendor" >/dev/null 2>&1
+common_args="--dtv-root $temporary/dtv --dtv-ref HEAD --mirakc-root $mirakc_root --arib-root $arib_root --siano-root $siano_root --px4-root $px4_root --px4-drv-root $px4_drv_root --libusb-archive $libusb_archive --autotools-cache $autotools_cache --cargo-vendor-dir $cargo_vendor"
 if python3 "$package" --output-dir "$temporary/dirty" --dtv-root "$root" >/dev/null 2>&1; then
     printf '%s\n' 'source package accepted the dirty DTV checkout' >&2
     exit 1
@@ -34,6 +37,19 @@ cmp -s \
     "$temporary/one/mirakc-corresponding-source.tar.gz" \
     "$temporary/two/mirakc-corresponding-source.tar.gz"
 python3 "$audit" --expected-dtv-commit "$dtv_commit" "$temporary/one/mirakc-corresponding-source.tar.gz" >/dev/null
+
+# Prove the extracted archive resolves and type-checks without registry/network
+# state. The root .cargo/config.toml must select only the archived vendor tree.
+mkdir "$temporary/extracted"
+tar -xzf "$temporary/one/mirakc-corresponding-source.tar.gz" -C "$temporary/extracted"
+mkdir "$temporary/cargo-home" "$temporary/cargo-target"
+(
+    cd "$temporary/extracted"
+    CARGO_HOME="$temporary/cargo-home" CARGO_TARGET_DIR="$temporary/cargo-target" \
+        CARGO_NET_OFFLINE=true cargo metadata --manifest-path sources/mirakc/Cargo.toml --locked --format-version 1 >/dev/null
+    VERGEN_GIT_SHA=archive-test CARGO_HOME="$temporary/cargo-home" CARGO_TARGET_DIR="$temporary/cargo-target" \
+        CARGO_NET_OFFLINE=true cargo check --manifest-path sources/mirakc/Cargo.toml --locked --workspace >/dev/null
+)
 
 python3 - "$temporary/one/mirakc-corresponding-source.tar.gz" "$temporary/extra.tar.gz" <<'PY'
 import io
@@ -86,6 +102,41 @@ with tarfile.open(destination, "w:gz") as archive:
 PY
 if python3 "$audit" --expected-dtv-commit "$dtv_commit" "$temporary/manifest-mutated.tar.gz" >/dev/null 2>&1; then
     printf '%s\n' 'source audit accepted a manifest digest mutation' >&2
+    exit 1
+fi
+
+python3 - "$temporary/one/mirakc-corresponding-source.tar.gz" "$temporary/vendor-mutated.tar.gz" <<'PY'
+import hashlib
+import io
+import sys
+import tarfile
+
+source, destination = sys.argv[1:]
+payloads = {}
+infos = {}
+with tarfile.open(source, "r:gz") as archive:
+    for info in archive.getmembers():
+        infos[info.name] = info
+        payloads[info.name] = archive.extractfile(info).read()
+vendor_name = next(
+    name for name in sorted(payloads)
+    if name.startswith("third_party/cargo/vendor/")
+    and not name.endswith("/")
+)
+payloads[vendor_name] += b"\nmutation\n"
+rows = []
+for name in sorted(payloads):
+    if name != "SHA256SUMS":
+        rows.append(f"{hashlib.sha256(payloads[name]).hexdigest()}  {name}")
+payloads["SHA256SUMS"] = ("\n".join(rows) + "\n").encode()
+with tarfile.open(destination, "w:gz") as archive:
+    for name in sorted(payloads):
+        info = infos[name]
+        info.size = len(payloads[name])
+        archive.addfile(info, io.BytesIO(payloads[name]))
+PY
+if python3 "$audit" --expected-dtv-commit "$dtv_commit" "$temporary/vendor-mutated.tar.gz" >/dev/null 2>&1; then
+    printf '%s\n' 'source audit accepted a Cargo vendor mutation' >&2
     exit 1
 fi
 

@@ -86,6 +86,17 @@ jobs:
             -Ppx4UserlandDir="$GITHUB_WORKSPACE/px4-userland" \
             -Ppx4DrvDir="$GITHUB_WORKSPACE/px4_drv" \
             :mirakc:assembleDebug
+      - name: Verify corresponding-source archive offline Cargo proof
+        env:
+          CARGO_HOME: ${{ runner.temp }}/cargo
+          MIRAKC_TEST_MIRAKC_ROOT: ${{ github.workspace }}/.work/mirakc-3.4.86
+          MIRAKC_TEST_ARIB_ROOT: ${{ github.workspace }}/.work/mirakc-arib-0.24.38
+          MIRAKC_TEST_SIANO_ROOT: ${{ github.workspace }}/siano-userland
+          MIRAKC_TEST_PX4_ROOT: ${{ github.workspace }}/px4-userland
+          MIRAKC_TEST_PX4_DRV_ROOT: ${{ github.workspace }}/px4_drv
+          MIRAKC_TEST_LIBUSB_ARCHIVE: ${{ github.workspace }}/siano-userland/build/android-aarch64/src/libusb-1.0.30.tar.bz2
+          MIRAKC_TEST_AUTOTOOLS_CACHE: ${{ runner.temp }}/mirakc-arib-tools/autotools-sources
+        run: tools/mirakc/test-source-package.sh
       - name: Audit APK native and source metadata
         run: tools/mirakc/audit-apk.sh mirakc/build/outputs/apk/debug/mirakc-debug.apk "$GITHUB_SHA"
       - name: Verify the APK carries its module version

@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import tomllib
 
 
 AUDIT_PATH = Path(__file__).with_name("audit-source.py")
@@ -36,6 +37,7 @@ FIRMWARE_URL = EXPECTED["linux-firmware-siano"]["url"]
 FIRMWARE_SHA256 = EXPECTED["linux-firmware-siano"]["sha256"]
 FIRMWARE_LICENSE_URL = EXPECTED["linux-firmware-siano"]["license_url"]
 FIRMWARE_LICENSE_SHA256 = EXPECTED["linux-firmware-siano"]["license_sha256"]
+CARGO_CONFIG = audit_module.CARGO_VENDOR_CONFIG
 
 
 def fail(message: str) -> None:
@@ -183,6 +185,83 @@ def copy_toolchain_archives(cache: Path, stage: Path) -> None:
         write_file(stage / relative, source.read_bytes())
 
 
+def copy_cargo_vendor(source: Path, destination: Path) -> None:
+    if not source.is_dir() or source.is_symlink():
+        fail(f"Cargo vendor directory is missing or unsafe: {source}")
+    for path in sorted(source.rglob("*")):
+        relative = path.relative_to(source).as_posix()
+        safe_name(relative)
+        if path.is_dir() and not path.is_symlink():
+            continue
+        if path.is_symlink() or not path.is_file():
+            fail(f"Cargo vendor contains a non-regular member: {source / relative}")
+        write_file(destination / relative, path.read_bytes(), path.stat().st_mode & 0o7777)
+
+
+def cargo_vendor_dependencies(mirakc_root: Path, stage: Path, supplied: Path | None) -> dict:
+    vendor_root = stage / "third_party/cargo/vendor"
+    if supplied is None:
+        vendor_root.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            subprocess.run(
+                ["cargo", "vendor", "--manifest-path", str(mirakc_root / "Cargo.toml"),
+                 "--locked", "--versioned-dirs", str(vendor_root)],
+                check=True, cwd=mirakc_root, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True,
+            )
+        except (OSError, subprocess.CalledProcessError) as error:
+            fail(f"cargo vendor failed for pinned mirakc: {error}")
+    else:
+        copy_cargo_vendor(supplied.resolve(), vendor_root)
+    write_file(stage / ".cargo/config.toml", CARGO_CONFIG)
+
+    packages = []
+    if not any(vendor_root.iterdir()):
+        fail("Cargo vendor produced no registry packages")
+    for package_root in sorted(vendor_root.iterdir()):
+        if not package_root.is_dir() or package_root.is_symlink():
+            fail(f"Cargo vendor root contains an unsafe package: {package_root}")
+        cargo_toml = package_root / "Cargo.toml"
+        checksum_path = package_root / ".cargo-checksum.json"
+        if not cargo_toml.is_file() or not checksum_path.is_file():
+            fail(f"Cargo vendor package is incomplete: {package_root}")
+        try:
+            package = tomllib.loads(cargo_toml.read_text(encoding="utf-8"))["package"]
+            checksum = json.loads(checksum_path.read_text(encoding="utf-8"))
+        except (OSError, KeyError, UnicodeDecodeError, json.JSONDecodeError, tomllib.TOMLDecodeError) as error:
+            fail(f"invalid Cargo vendor package {package_root}: {error}")
+        file_digests = checksum.get("files")
+        if (not isinstance(checksum.get("package"), str) or not isinstance(file_digests, dict)
+                or not isinstance(package.get("name"), str) or not isinstance(package.get("version"), str)):
+            fail(f"Cargo vendor package lacks registry identity: {package_root}")
+        files = sorted(path.relative_to(stage).as_posix() for path in package_root.rglob("*") if path.is_file())
+        if any(path.is_symlink() for path in package_root.rglob("*")):
+            fail(f"Cargo vendor package contains a symlink: {package_root}")
+        package_files = {path.relative_to(package_root).as_posix() for path in package_root.rglob("*")
+                         if path.is_file() and path.name != ".cargo-checksum.json"}
+        if (not all(isinstance(relative, str) and isinstance(digest, str)
+                    for relative, digest in file_digests.items())
+                or set(file_digests) != package_files):
+            fail(f"Cargo vendor package file checksum inventory mismatch: {package_root}")
+        for relative, digest in file_digests.items():
+            safe_name(relative)
+            if sha256(package_root / relative) != digest:
+                fail(f"Cargo vendor package file checksum mismatch: {package_root / relative}")
+        packages.append({
+            "name": package["name"],
+            "version": package["version"],
+            "path": package_root.relative_to(stage).as_posix(),
+            "checksum": checksum["package"],
+            "files": files,
+        })
+    return {
+        "config": ".cargo/config.toml",
+        "root": "third_party/cargo/vendor",
+        "lock": "sources/mirakc/Cargo.lock",
+        "packages": packages,
+    }
+
+
 def component_files(stage: Path, prefix: str) -> list[str]:
     root = stage / prefix
     if not root.is_dir():
@@ -240,7 +319,7 @@ def deterministic_tar(stage: Path, output: Path) -> None:
                         stream.addfile(info, handle)
 
 
-def build_manifest(stage: Path, commits: dict[str, str], normalized: list[dict[str, str]], dtv_version: str, dtv_tree: str) -> None:
+def build_manifest(stage: Path, commits: dict[str, str], normalized: list[dict[str, str]], dtv_version: str, dtv_tree: str, cargo_vendor: dict) -> None:
     components = []
     inventory = []
     for name, expected in EXPECTED.items():
@@ -301,6 +380,7 @@ def build_manifest(stage: Path, commits: dict[str, str], normalized: list[dict[s
         "files": files,
         "toolchain_manifest": "toolchain-manifest.json",
         "normalizations": normalized,
+        "cargo_vendor": cargo_vendor,
         "excluded_materials": {
             "siano_firmware_url": FIRMWARE_URL,
             "siano_firmware_sha256": FIRMWARE_SHA256,
@@ -350,6 +430,7 @@ def package(args: argparse.Namespace) -> Path:
             relative = path.removeprefix("sources/dtv-android/mirakc/src/main/cpp/arib25/")
             write_file(stage / "sources/libarib25" / relative, (stage / path).read_bytes(), (stage / path).stat().st_mode & 0o7777)
         copy_archive_contents(args.libusb_archive.resolve(), stage)
+        cargo_vendor = cargo_vendor_dependencies(repos["mirakc"], stage, args.cargo_vendor_dir)
         copy_toolchain_archives(args.autotools_cache.resolve(), stage)
         write_json(stage / "toolchain-manifest.json", TOOLCHAIN)
         write_file(stage / "DEPENDENCY-NOTICE.txt", (
@@ -364,7 +445,7 @@ def package(args: argparse.Namespace) -> Path:
         ).encode("utf-8"))
         commits = {name: EXPECTED[name]["commit"] for name in repos if name != "dtv-android"}
         commits["dtv-android"] = dtv_commit
-        build_manifest(stage, commits, normalized, dtv_version, dtv_tree)
+        build_manifest(stage, commits, normalized, dtv_version, dtv_tree, cargo_vendor)
         write_checksums(stage)
         deterministic_tar(stage, output)
     audit_source_archive(output, expected_dtv_commit=dtv_commit)
@@ -383,6 +464,7 @@ def main() -> int:
     parser.add_argument("--px4-drv-root", type=Path, default=Path(".work/pinned-px4_drv"))
     parser.add_argument("--libusb-archive", type=Path, default=Path("/config/GitHub/siano-userland/build/android-aarch64/src/libusb-1.0.30.tar.bz2"))
     parser.add_argument("--autotools-cache", type=Path, default=Path("/config/.work/mirakc-arib-tools/autotools-sources"))
+    parser.add_argument("--cargo-vendor-dir", type=Path)
     args = parser.parse_args()
     output = package(args)
     print(f"aggregate source package: {output}")
