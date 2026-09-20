@@ -63,6 +63,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
+      - name: Device evidence host self-test
+        run: tools/mirakc/test-device-evidence.sh
       - name: Install the pinned NDK
         run: |
           set -euo pipefail
