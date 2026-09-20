@@ -127,6 +127,7 @@ EXPECTED = {
             "sources/dtv-android/tools/mirakc/test-source-native-rebuild.sh",
             "sources/dtv-android/tools/mirakc/build-android.sh",
             "sources/dtv-android/tools/mirakc-arib/build-android.sh",
+            "sources/dtv-android/rust-toolchain.toml",
         ),
     },
     "mirakc": {
@@ -228,15 +229,15 @@ LIBARIB25_TREE_IDENTITY = "93c5d79f3aaa8215c28fbf5e44287f49d78dbc07df58c5199a53e
 
 TOOLCHAIN = {
     "schema": 2,
-    "gradle": {"wrapper": "7.6.4", "distribution_url": "https://services.gradle.org/distributions/gradle-7.6.4-bin.zip", "distribution_sha256": None, "installer_pin": "UNPINNED_URL_DIGEST"},
-    "jdk": {"observed": "Temurin 17.0.20.1+1", "required_major": 17, "installer_pin": "UNPINNED_ENVIRONMENT"},
+    "gradle": {"wrapper": "7.6.4", "distribution_url": "https://services.gradle.org/distributions/gradle-7.6.4-bin.zip", "distribution_sha256": "bed1da33cca0f557ab13691c77f38bb67388119e4794d113e051039b80af9bb1", "verification": "official Gradle release checksum"},
+    "jdk": {"distribution": "temurin", "version": "17.0.20.1+1", "observed": "Temurin 17.0.20.1+1", "required_major": 17, "verification": "setup-java exact version selector; no archive checksum recorded"},
     "android_gradle_plugin": "7.4.2",
     "kotlin": "1.9.24",
-    "android_ndk": {"version": "27.0.12077973", "installer_pin": "UNPINNED_SDK_INSTALLER_DIGEST"},
-    "android_cmake": "3.22.1",
-    "cmake": {"version": "4.4.3", "installer_pin": "UNPINNED_ENVIRONMENT"},
-    "ninja": {"version": "1.13.2", "installer_pin": "UNPINNED_ENVIRONMENT"},
-    "rust": {"channel": "stable", "rustc": "1.98.1", "rustc_commit": "48a229ceaefd4985c50990b14116b6d856af0985", "cargo": "1.98.1", "cargo_commit": "797e8a9bca276c1c9f9f738d2a20f484fa4eea9d", "installer_pin": "UNPINNED_RUSTUP_TOOLCHAIN_FILE"},
+    "android_ndk": {"version": "27.0.12077973", "verification": "sdkmanager exact package version; no installer archive checksum recorded"},
+    "android_cmake": {"version": "3.22.1", "sdk_package": "cmake;3.22.1", "verification": "sdkmanager exact package version; no installer archive checksum recorded"},
+    "cmake": {"version": "3.22.1", "provider": "Android SDK cmake;3.22.1/bin/cmake", "verification": "binary version checked before clean build"},
+    "ninja": {"version": "1.10.2", "provider": "bundled with Android SDK cmake;3.22.1", "verification": "binary version checked before clean build"},
+    "rust": {"channel": "1.98.1", "toolchain_file": "rust-toolchain.toml", "targets": ["aarch64-linux-android", "armv7-linux-androideabi"], "rustc": "1.98.1", "rustc_commit": "48a229ceaefd4985c50990b14116b6d856af0985", "cargo": "1.98.1", "cargo_commit": "797e8a9bca276c1c9f9f738d2a20f484fa4eea9d", "verification": "exact rustup channel and targets; no installer archive checksum recorded"},
     "cargo": {"lock_path": "sources/mirakc/Cargo.lock", "lock_sha256": "42749dcfa137347602a770fd86bae1691ad60b8d363e36f05e99b840f314acf7", "cargo_ndk": {"version": None, "provider": "not used; build invokes NDK clang/linker directly", "installer_pin": "NOT_APPLICABLE"}},
     "autotools": {"m4": "1.4.19", "autoconf": "2.72", "automake": "1.17", "libtool": "2.5.4", "pkg-config": "0.29.2", "installer_pin": "source_archives_below"},
 }
@@ -335,6 +336,24 @@ def audit_source_archive(path: Path, expected_dtv_commit: str | None = None) -> 
         fail("Cargo.lock is missing or mismatched")
     if "sources/dtv-android/gradle/wrapper/gradle-wrapper.properties" not in members:
         fail("Gradle wrapper manifest is missing")
+    wrapper_properties = member_bytes(
+        path, "sources/dtv-android/gradle/wrapper/gradle-wrapper.properties"
+    ).decode("utf-8")
+    expected_gradle_sum = "distributionSha256Sum=" + TOOLCHAIN["gradle"]["distribution_sha256"]
+    if expected_gradle_sum not in wrapper_properties.splitlines():
+        fail("Gradle wrapper distribution checksum is missing or mismatched")
+    try:
+        rust_toolchain = tomllib.loads(
+            member_bytes(path, "sources/dtv-android/rust-toolchain.toml").decode("utf-8")
+        )
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        fail(f"Rust toolchain file is not valid TOML: {error}")
+    expected_rust = TOOLCHAIN["rust"]
+    rust_toolchain_table = rust_toolchain.get("toolchain")
+    if not isinstance(rust_toolchain_table, dict) or \
+            rust_toolchain_table.get("channel") != expected_rust["channel"] or \
+            rust_toolchain_table.get("targets") != expected_rust["targets"]:
+        fail("Rust toolchain file is stale or mismatched")
     files = manifest.get("files")
     if not isinstance(files, dict):
         fail("source manifest files map is missing")

@@ -13,6 +13,9 @@ mkdir "$temporary/dtv"
 git archive HEAD | tar -x -C "$temporary/dtv"
 mkdir -p "$temporary/dtv/tools/mirakc"
 cp "$package" "$audit" "$0" "$root/tools/mirakc/test-source-native-rebuild.sh" "$temporary/dtv/tools/mirakc/"
+cp "$root/rust-toolchain.toml" "$temporary/dtv/rust-toolchain.toml"
+cp "$root/gradle/wrapper/gradle-wrapper.properties" \
+   "$temporary/dtv/gradle/wrapper/gradle-wrapper.properties"
 cp "$root/tools/mirakc/build-android.sh" "$temporary/dtv/tools/mirakc/build-android.sh"
 mkdir -p "$temporary/dtv/tools/mirakc-arib"
 cp "$root/tools/mirakc-arib/build-android.sh" "$root/tools/mirakc-arib/bootstrap-autotools.sh" \
@@ -53,11 +56,38 @@ fi
 mkdir "$temporary/extracted"
 tar -xzf "$temporary/one/mirakc-corresponding-source.tar.gz" -C "$temporary/extracted"
 mkdir "$temporary/cargo-home" "$temporary/cargo-target"
+mkdir "$temporary/network-bin"
+for network_tool in curl wget; do
+    cat > "$temporary/network-bin/$network_tool" <<'EOF'
+#!/bin/sh
+printf '%s\n' 'network access attempted during offline Cargo proof' >&2
+exit 97
+EOF
+    chmod 0755 "$temporary/network-bin/$network_tool"
+done
+cat > "$temporary/network-bin/git" <<'EOF'
+#!/bin/sh
+set -eu
+case "${1:-}" in
+clone|fetch|pull|push|remote|ls-remote|archive)
+    printf '%s\n' 'network/source fetch attempted during offline Cargo proof' >&2
+    exit 97
+    ;;
+esac
+exec /usr/bin/git "$@"
+EOF
+chmod 0755 "$temporary/network-bin/git"
+swagger_archive="$temporary/extracted/third_party/swagger-ui/swagger-ui-5.17.14.zip"
+test -f "$swagger_archive"
 (
     cd "$temporary/extracted"
-    CARGO_HOME="$temporary/cargo-home" CARGO_TARGET_DIR="$temporary/cargo-target" \
+    PATH="$temporary/network-bin:$PATH" \
+        SWAGGER_UI_DOWNLOAD_URL="file://$swagger_archive" \
+        CARGO_HOME="$temporary/cargo-home" CARGO_TARGET_DIR="$temporary/cargo-target" \
         CARGO_NET_OFFLINE=true cargo metadata --manifest-path sources/mirakc/Cargo.toml --locked --format-version 1 >/dev/null
-    VERGEN_GIT_SHA=archive-test CARGO_HOME="$temporary/cargo-home" CARGO_TARGET_DIR="$temporary/cargo-target" \
+    VERGEN_GIT_SHA=archive-test PATH="$temporary/network-bin:$PATH" \
+        SWAGGER_UI_DOWNLOAD_URL="file://$swagger_archive" \
+        CARGO_HOME="$temporary/cargo-home" CARGO_TARGET_DIR="$temporary/cargo-target" \
         CARGO_NET_OFFLINE=true cargo check --manifest-path sources/mirakc/Cargo.toml --locked --workspace >/dev/null
 )
 

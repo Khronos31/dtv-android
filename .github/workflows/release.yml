@@ -21,6 +21,9 @@ concurrency:
 
 env:
   NDK_VERSION: "27.0.12077973"
+  ANDROID_CMAKE_VERSION: "3.22.1"
+  JAVA_VERSION: "17.0.20.1+1"
+  RUST_VERSION: "1.98.1"
   SIANO_USERLAND_REF: d4f8930ab56d13c479037f2e242461062d96c127
   PX4_USERLAND_REF: 639e65feee7c9f503d44023edd9ab9bba12d5d74
   PX4_DRV_REF: 2b3f79b5bc5db56e8556bb28397f7d8f74b2adeb
@@ -110,7 +113,7 @@ jobs:
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: ${{ env.JAVA_VERSION }}
       - uses: actions/setup-node@v5
         if: needs.prepare.outputs.component == 'epgstation-server'
         with:
@@ -127,9 +130,24 @@ jobs:
           printf 'y\n%.0s' $(seq 20) \
             | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" >/dev/null
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+      - name: Install pinned Android CMake and bundled Ninja
+        if: needs.prepare.outputs.component == 'mirakc'
+        run: |
+          set -euo pipefail
+          printf 'y\n%.0s' $(seq 20) \
+            | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "cmake;$ANDROID_CMAKE_VERSION" >/dev/null
+          cmake_bin="$ANDROID_SDK_ROOT/cmake/$ANDROID_CMAKE_VERSION/bin"
+          test "$("$cmake_bin/cmake" --version | sed -n '1s/^cmake version \([0-9][0-9.]*\).*/\1/p')" = "$ANDROID_CMAKE_VERSION"
+          test "$("$cmake_bin/ninja" --version)" = "1.10.2"
+          echo "$cmake_bin" >> "$GITHUB_PATH"
       - name: Install Rust Android targets
         if: needs.prepare.outputs.component == 'mirakc'
-        run: rustup target add armv7-linux-androideabi aarch64-linux-android
+        run: |
+          set -euo pipefail
+          rustup show active-toolchain | grep -E "^${RUST_VERSION}(-|$)"
+          rustup target add --toolchain "$RUST_VERSION" armv7-linux-androideabi aarch64-linux-android
+          rustc --version | grep -E "^rustc ${RUST_VERSION} "
+          cargo --version | grep -E "^cargo ${RUST_VERSION} "
       - name: Cache portable aribb24 host tools
         if: needs.prepare.outputs.component == 'mirakc'
         uses: actions/cache@v4

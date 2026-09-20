@@ -135,6 +135,18 @@ exec /usr/bin/git "$@"
 EOF
 chmod 0755 "$work/bin/git"
 if [ "$full_gate" -eq 1 ]; then
+    cmake_bin=$(command -v cmake)
+    ninja_bin=$(command -v ninja)
+    cmake_version=$($cmake_bin --version | sed -n '1s/^cmake version \([0-9][0-9.]*\).*/\1/p')
+    [ "$cmake_version" = "3.22.1" ] || {
+        printf '%s\n' "CMake 3.22.1 is required for the complete clean-room native gate, got ${cmake_version:-unknown}" >&2
+        exit 1
+    }
+    ninja_version=$($ninja_bin --version)
+    [ "$ninja_version" = "1.10.2" ] || {
+        printf '%s\n' "Ninja 1.10.2 is required for the complete clean-room native gate, got ${ninja_version:-unknown}" >&2
+        exit 1
+    }
     for tool in cargo rustc rustup patch git; do
         command -v "$tool" >/dev/null 2>&1 || {
             printf '%s\n' "$tool is required for the complete clean-room native gate" >&2
@@ -153,10 +165,35 @@ if [ "$full_gate" -eq 1 ]; then
         exit 1
     }
     rustup_home=$(CDPATH='' cd -- "$rustup_home" && pwd -P)
-    if ! RUSTUP_HOME="$rustup_home" "$rustup_bin" target list --installed >/dev/null 2>&1; then
+    if ! installed_toolchains=$(RUSTUP_HOME="$rustup_home" "$rustup_bin" toolchain list); then
+        printf '%s\n' "cannot inspect installed Rust toolchains from RUSTUP_HOME=$rustup_home" >&2
+        exit 1
+    fi
+    printf '%s\n' "$installed_toolchains" | grep -E '^1\.98\.1-' >/dev/null || {
+        printf '%s\n' 'Rust 1.98.1 must already be installed before the clean-room gate' >&2
+        exit 1
+    }
+    if ! installed_targets=$(RUSTUP_HOME="$rustup_home" RUSTUP_TOOLCHAIN=1.98.1 \
+        "$rustup_bin" target list --installed); then
         printf '%s\n' "cannot read installed Rust targets from RUSTUP_HOME=$rustup_home" >&2
         exit 1
     fi
+    for target in aarch64-linux-android armv7-linux-androideabi; do
+        printf '%s\n' "$installed_targets" | grep -Fx "$target" >/dev/null || {
+            printf '%s\n' "Rust target $target is required for the complete clean-room native gate" >&2
+            exit 1
+        }
+    done
+    rustc_bin=$(command -v rustc)
+    cargo_bin=$(command -v cargo)
+    RUSTUP_TOOLCHAIN=1.98.1 "$rustc_bin" --version | grep -E '^rustc 1\.98\.1 ' >/dev/null || {
+        printf '%s\n' 'Rust 1.98.1 is required for the complete clean-room native gate' >&2
+        exit 1
+    }
+    RUSTUP_TOOLCHAIN=1.98.1 "$cargo_bin" --version | grep -E '^cargo 1\.98\.1 ' >/dev/null || {
+        printf '%s\n' 'Cargo 1.98.1 is required for the complete clean-room native gate' >&2
+        exit 1
+    }
 fi
 cargo_bin_dir=$(dirname "$(command -v cargo 2>/dev/null || printf '%s' /nonexistent)")
 rustup_bin_dir=$(dirname "$(command -v rustup 2>/dev/null || printf '%s' /nonexistent)")
@@ -395,6 +432,7 @@ if [ "$full_gate" -eq 1 ]; then
         run_guarded env \
             ANDROID_NDK_HOME="$ndk" ANDROID_ABI="$abi" PATH="$guard_path" \
             HOME="$clean_home" RUSTUP_HOME="$rustup_home" \
+            RUSTUP_TOOLCHAIN=1.98.1 \
             CARGO_HOME="$cargo_home" CARGO_NET_OFFLINE=true \
             VERGEN_GIT_SHA=fc9610f51f8621aa8db508ddd36c7f1e2785d7be \
             SWAGGER_UI_DOWNLOAD_URL="file://$swagger_archive" \
