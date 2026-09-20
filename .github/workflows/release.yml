@@ -22,7 +22,8 @@ concurrency:
 env:
   NDK_VERSION: "27.0.12077973"
   ANDROID_CMAKE_VERSION: "3.22.1"
-  JAVA_VERSION: "17.0.20.1+1"
+  JAVA_VERSION: "17.0.20.1"
+  JAVA_RUNTIME_VERSION: "17.0.20.1+1"
   RUST_VERSION: "1.98.1"
   SIANO_USERLAND_REF: d4f8930ab56d13c479037f2e242461062d96c127
   PX4_USERLAND_REF: 639e65feee7c9f503d44023edd9ab9bba12d5d74
@@ -114,6 +115,11 @@ jobs:
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
+      - name: Verify exact JDK runtime
+        run: |
+          set -euo pipefail
+          runtime_version="$(java -XshowSettings:properties -version 2>&1 | sed -n 's/^[[:space:]]*java.runtime.version = //p')"
+          test "$runtime_version" = "$JAVA_RUNTIME_VERSION"
       - uses: actions/setup-node@v5
         if: needs.prepare.outputs.component == 'epgstation-server'
         with:
