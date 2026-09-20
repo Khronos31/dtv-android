@@ -1,6 +1,7 @@
 import java.net.URI
 import java.security.MessageDigest
 import org.gradle.api.tasks.Exec
+import org.gradle.api.provider.Provider
 
 plugins {
     id("com.android.application")
@@ -883,6 +884,89 @@ val prepareFirmware = tasks.register("prepareFirmware") {
     }
 }
 
+val apkSourceMetadataDir = layout.buildDirectory.dir("generated/source-metadata")
+val apkSourceMetadataScript = layout.projectDirectory.file("../tools/mirakc/generate-apk-metadata.py")
+val apkSourceMetadataAuditScript = layout.projectDirectory.file("../tools/mirakc/audit-apk-metadata.py")
+val apkSourceMetadataDtvRef = providers.gradleProperty("dtvRef")
+    .orElse(providers.environmentVariable("DTV_REF"))
+    .orElse("HEAD")
+val apkSourceMetadataDtvRoot = providers.gradleProperty("dtvRoot")
+    .orElse(project.rootDir.absolutePath)
+val apkSourceMetadataLibusb = providers.gradleProperty("libusbArchive")
+    .orElse(sianoUserlandDir.map { directoryName ->
+        file(directoryName).resolve("build/android-aarch64/src/libusb-1.0.30.tar.bz2").absolutePath
+    })
+
+fun apkMetadataLicenseInputs(directory: Provider<String>) = directory.map { directoryName ->
+    project.fileTree(file(directoryName)) {
+        include(
+            "**/LICENSE", "**/LICENSE.*", "**/LICENCE", "**/LICENCE.*",
+            "**/COPYING", "**/COPYING.*", "**/NOTICE", "**/NOTICE.*",
+            "**/THIRD_PARTY_NOTICES*", "**/DEPENDENCY-NOTICE*"
+        )
+        exclude(".git/**", "**/.git/**", "**/build/**", "**/.cxx/**", "**/CMakeFiles/**")
+    }
+}
+val apkSourceMetadataMirakcLicenses = apkMetadataLicenseInputs(mirakcSourceDir)
+val apkSourceMetadataMirakcAribLicenses = apkMetadataLicenseInputs(mirakcAribSourceDir)
+val apkSourceMetadataSianoLicenses = apkMetadataLicenseInputs(sianoUserlandDir)
+val apkSourceMetadataPx4Licenses = apkMetadataLicenseInputs(px4UserlandDir)
+val apkSourceMetadataPx4DrvLicenses = apkMetadataLicenseInputs(px4DrvDir)
+val apkSourceMetadataDtvFiles = apkSourceMetadataDtvRoot.map { directoryName ->
+    listOf(
+        "LICENSE", "mirakc/VERSION", "mirakc/build.gradle.kts",
+        "tools/mirakc/generate-apk-metadata.py", "tools/mirakc/audit-apk-metadata.py",
+        "tools/mirakc/audit-source.py", "tools/mirakc/build-android.sh",
+        "tools/mirakc-arib/build-android.sh", "tools/mirakc-arib/bootstrap-autotools.sh",
+        "tools/mirakc-arib/android.toolchain.cmake", "tools/mirakc-arib/patches/tsduck-android.patch"
+    ).map { relative -> file(directoryName).resolve(relative) }
+}
+val generateApkSourceMetadata = tasks.register("generateApkSourceMetadata") {
+    group = "verification"
+    description = "Generates deterministic APK source and license provenance assets"
+    dependsOn(prepareMirakcBinary, prepareMirakcAribBinaries, prepareSianoBinaries)
+    inputs.property("dtvRef", apkSourceMetadataDtvRef)
+    inputs.property("dtvRoot", apkSourceMetadataDtvRoot)
+    inputs.property("dtvHead", apkSourceMetadataDtvRoot.map { gitOutput(file(it), "rev-parse", "HEAD").second })
+    inputs.files(
+        apkSourceMetadataScript,
+        apkSourceMetadataAuditScript,
+        layout.projectDirectory.file("../tools/mirakc/audit-source.py"),
+        layout.projectDirectory.file("LICENSE"),
+        layout.projectDirectory.file("VERSION"),
+        layout.projectDirectory.dir("src/main/cpp/arib25")
+    )
+    inputs.files(apkSourceMetadataDtvFiles)
+    inputs.files(mirakcTrackedSourceFiles, sianoTrackedSourceFiles, px4TrackedSourceFiles)
+    inputs.files(
+        apkSourceMetadataMirakcLicenses,
+        apkSourceMetadataMirakcAribLicenses,
+        apkSourceMetadataSianoLicenses,
+        apkSourceMetadataPx4Licenses,
+        apkSourceMetadataPx4DrvLicenses
+    )
+    inputs.files(apkSourceMetadataLibusb)
+    outputs.dir(apkSourceMetadataDir)
+    doLast {
+        project.exec {
+            workingDir(project.rootDir)
+            commandLine(
+                "python3", apkSourceMetadataScript.asFile.absolutePath,
+                "--output", apkSourceMetadataDir.get().asFile.absolutePath,
+                "--dtv-root", file(apkSourceMetadataDtvRoot.get()).absolutePath,
+                "--dtv-ref", apkSourceMetadataDtvRef.get(),
+                "--mirakc-root", file(mirakcSourceDir.get()).absolutePath,
+                "--arib-root", file(mirakcAribSourceDir.get()).absolutePath,
+                "--siano-root", file(sianoUserlandDir.get()).absolutePath,
+                "--px4-root", file(px4UserlandDir.get()).absolutePath,
+                "--px4-drv-root", file(px4DrvDir.get()).absolutePath,
+                "--arib25-root", layout.projectDirectory.dir("src/main/cpp/arib25").asFile.absolutePath,
+                "--libusb-archive", file(apkSourceMetadataLibusb.get()).absolutePath
+            )
+        }
+    }
+}
+
 plugins.withId("com.android.application") {
     tasks.matching { it.name == "preBuild" || it.name.endsWith("JniLibFolders") }
         .configureEach {
@@ -895,6 +979,7 @@ plugins.withId("com.android.application") {
             dependsOn(preparePx4Binaries)
             dependsOn(prepareMirakcBinary)
             dependsOn(prepareFirmware)
+            dependsOn(generateApkSourceMetadata)
         }
 }
 
@@ -955,6 +1040,7 @@ android {
     }
 
     sourceSets.getByName("main").assets.srcDir(px4FwtoolGeneratedAssets)
+    sourceSets.getByName("main").assets.srcDir(apkSourceMetadataDir)
 
     packagingOptions {
         doNotStrip("**/*.so")

@@ -86,8 +86,8 @@ jobs:
             -Ppx4UserlandDir="$GITHUB_WORKSPACE/px4-userland" \
             -Ppx4DrvDir="$GITHUB_WORKSPACE/px4_drv" \
             :mirakc:assembleDebug
-      - name: Audit APK native inventory
-        run: tools/mirakc/audit-apk-native.sh mirakc/build/outputs/apk/debug/mirakc-debug.apk
+      - name: Audit APK native and source metadata
+        run: tools/mirakc/audit-apk.sh mirakc/build/outputs/apk/debug/mirakc-debug.apk "$GITHUB_SHA"
       - name: Verify the APK carries its module version
         run: |
           python3 tools/scripts/release_version.py check --component mirakc \

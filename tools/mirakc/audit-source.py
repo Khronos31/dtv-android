@@ -179,6 +179,42 @@ EXPECTED = {
     },
 }
 
+# The mirakc-arib build links these pinned recursive submodules.  Keeping the
+# refs and URLs here lets both the corresponding-source and APK metadata
+# auditors share one provenance table.
+MIRAKC_ARIB_SUBMODULES = {
+    "mirakc-arib/vendor/aribb24": ("654026e064ec127beff43bf3ecdcebd54119be15", "https://github.com/mirakc/aribb24.git"),
+    "mirakc-arib/vendor/cppcodec": ("bd6ddf95129e769b50ef63e0f558fa21364f3f65", "https://github.com/tplgy/cppcodec.git"),
+    "mirakc-arib/vendor/cppcodec/test/catch": ("15cf3caaceb21172ea42a24e595a2eb58c3ec960", "https://github.com/catchorg/Catch2.git"),
+    "mirakc-arib/vendor/docopt": ("2df2b1cd28a870c810da2e0fcffbb97c9f89708e", "https://github.com/mirakc/docopt.cpp.git"),
+    "mirakc-arib/vendor/fmt": ("407c905e45ad75fc29bf0f9bb7c5c2fd3475976f", "https://github.com/fmtlib/fmt.git"),
+    "mirakc-arib/vendor/google-benchmark": ("0d98dba29d66e93259db7daa53a9327df767a415", "https://github.com/google/benchmark.git"),
+    "mirakc-arib/vendor/googletest": ("52eb8108c5bdec04579160ae17225d66034bd723", "https://github.com/google/googletest.git"),
+    "mirakc-arib/vendor/libisdb": ("1d73edac60f918d6ea777cd15793b885d14d5a87", "https://github.com/DBCTRADO/LibISDB.git"),
+    "mirakc-arib/vendor/libisdb/Thirdparty/fdk-aac": ("3f864cce9736cc8e9312835465fae18428d76295", "https://github.com/mstorsjo/fdk-aac.git"),
+    "mirakc-arib/vendor/rapidjson": ("24b5e7a8b27f42fa16b96fc70aade9106cf7102f", "https://github.com/Tencent/rapidjson.git"),
+    "mirakc-arib/vendor/rapidjson/thirdparty/gtest": ("ba96d0b1161f540656efdaed035b3c062b60e006", "https://github.com/google/googletest.git"),
+    "mirakc-arib/vendor/spdlog": ("79524ddd08a4ec981b7fea76afd08ee05f83755d", "https://github.com/gabime/spdlog.git"),
+    "mirakc-arib/vendor/tsduck-arib": ("c400025b7d31e26c0c15471e81adf2ad50632281", "https://github.com/mirakc/tsduck-arib.git"),
+}
+
+# These submodules are present in the corresponding-source checkout, but are
+# only used by MIRAKC_ARIB_TEST=ON (or nested test targets).  They therefore
+# are not packaged-native consumers and are deliberately omitted from the APK
+# provenance inventory.  The source archive still carries and audits them.
+MIRAKC_ARIB_APK_SOURCE_ONLY = frozenset({
+    "mirakc-arib/vendor/cppcodec/test/catch",
+    "mirakc-arib/vendor/google-benchmark",
+    "mirakc-arib/vendor/googletest",
+    "mirakc-arib/vendor/rapidjson/thirdparty/gtest",
+})
+MIRAKC_ARIB_APK_SUBMODULES = {
+    name: value for name, value in MIRAKC_ARIB_SUBMODULES.items()
+    if name not in MIRAKC_ARIB_APK_SOURCE_ONLY
+}
+
+LIBARIB25_TREE_IDENTITY = "93c5d79f3aaa8215c28fbf5e44287f49d78dbc07df58c5199a53e6b7887d91e9"
+
 TOOLCHAIN = {
     "schema": 2,
     "gradle": {"wrapper": "7.6.4", "distribution_url": "https://services.gradle.org/distributions/gradle-7.6.4-bin.zip", "distribution_sha256": None, "installer_pin": "UNPINNED_URL_DIGEST"},
@@ -273,7 +309,7 @@ def audit_source_archive(path: Path, expected_dtv_commit: str | None = None) -> 
                 fail(f"excluded component {name} is absent from license inventory")
             continue
         if name == "libarib25":
-            if not str(component.get("commit", "")).startswith(expected["commit_prefix"]):
+            if component.get("commit") != expected["commit_prefix"] + LIBARIB25_TREE_IDENTITY:
                 fail("libarib25 tree identity is missing")
         elif name != "dtv-android" and component.get("commit") != expected["commit"]:
             fail(f"component {name} commit mismatch")

@@ -15,7 +15,13 @@ mkdir -p "$temporary/dtv/tools/mirakc"
 cp "$package" "$audit" "$0" "$temporary/dtv/tools/mirakc/"
 (cd "$temporary/dtv" && git init -q && git config user.name fixture && git config user.email fixture@example.invalid && git add -A && git commit -q -m fixture)
 dtv_commit=$(git -C "$temporary/dtv" rev-parse HEAD)
-common_args="--dtv-root $temporary/dtv --dtv-ref HEAD --mirakc-root $root/.work/mirakc-3.4.86 --arib-root $root/.work/mirakc-arib-0.24.38 --siano-root $root/.work/pinned-siano-userland --px4-root $root/.work/pinned-px4-userland --px4-drv-root $root/.work/pinned-px4_drv --libusb-archive $root/../siano-userland/build/android-aarch64/src/libusb-1.0.30.tar.bz2 --autotools-cache /config/.work/mirakc-arib-tools/autotools-sources"
+mirakc_root=${MIRAKC_TEST_MIRAKC_ROOT:-$root/.work/mirakc-3.4.86}
+arib_root=${MIRAKC_TEST_ARIB_ROOT:-$root/.work/mirakc-arib-0.24.38}
+siano_root=${MIRAKC_TEST_SIANO_ROOT:-$root/.work/pinned-siano-userland}
+px4_root=${MIRAKC_TEST_PX4_ROOT:-$root/.work/pinned-px4-userland}
+px4_drv_root=${MIRAKC_TEST_PX4_DRV_ROOT:-$root/.work/pinned-px4_drv}
+libusb_archive=${MIRAKC_TEST_LIBUSB_ARCHIVE:-$siano_root/build/android-aarch64/src/libusb-1.0.30.tar.bz2}
+common_args="--dtv-root $temporary/dtv --dtv-ref HEAD --mirakc-root $mirakc_root --arib-root $arib_root --siano-root $siano_root --px4-root $px4_root --px4-drv-root $px4_drv_root --libusb-archive $libusb_archive --autotools-cache /config/.work/mirakc-arib-tools/autotools-sources"
 if python3 "$package" --output-dir "$temporary/dirty" --dtv-root "$root" >/dev/null 2>&1; then
     printf '%s\n' 'source package accepted the dirty DTV checkout' >&2
     exit 1
