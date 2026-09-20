@@ -22,7 +22,7 @@ import java.io.IOException
 
 class MirakcService : Service() {
     private val usbManager by lazy { getSystemService(USB_SERVICE) as UsbManager }
-    private var mirakcSupervisor: MirakcSupervisor? = null
+    @Volatile private var mirakcSupervisor: MirakcSupervisor? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var receiverRegistered = false
     private var lastError = "none"
@@ -84,6 +84,9 @@ class MirakcService : Service() {
             px4Firmware = ::ensurePx4Firmware,
             onStateChanged = ::publishStatus
         )
+        MirakcDiagnostics.triggerUpdateSchedules = {
+            mirakcSupervisor?.triggerUpdateSchedules() == true
+        }
         try {
             mirakcSupervisor?.start()
         } catch (error: Exception) {
@@ -106,6 +109,7 @@ class MirakcService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        MirakcDiagnostics.triggerUpdateSchedules = null
         mirakcSupervisor?.stop()
         mirakcSupervisor = null
         if (receiverRegistered) {

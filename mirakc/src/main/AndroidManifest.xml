@@ -35,5 +35,11 @@
             android:name=".MirakcService"
             android:exported="false"
             android:foregroundServiceType="dataSync|connectedDevice" />
+        <provider
+            android:name=".MirakcDiagnosticsProvider"
+            android:authorities="dev.khronos31.mirakc.diagnostics"
+            android:exported="true"
+            android:permission="android.permission.DUMP"
+            android:grantUriPermissions="false" />
     </application>
 </manifest>

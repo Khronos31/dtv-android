@@ -15,6 +15,11 @@ import time
 
 path = sys.argv[1]
 source = Path(path).read_text()
+repo = Path(path).parents[2]
+manifest = (repo / "mirakc/src/main/AndroidManifest.xml").read_text()
+provider_source = (repo / "mirakc/src/main/java/dev/khronos31/mirakc/MirakcDiagnosticsProvider.kt").read_text()
+supervisor_source = (repo / "mirakc/src/main/java/dev/khronos31/mirakc/MirakcSupervisor.kt").read_text()
+resilience_patch = (repo / "tools/mirakc/patches/mirakc-android-web-resilience.patch").read_text()
 spec = importlib.util.spec_from_file_location("device_evidence", path)
 assert spec and spec.loader
 module = importlib.util.module_from_spec(spec)
@@ -44,8 +49,26 @@ assert '"am", "start", "-n", f"{PACKAGE}/.MainActivity"' in source
 assert '"shell", "am", "force-stop", PACKAGE' in source and "stopservice" not in source
 assert "job_path" not in source and "rss_job_path" not in source
 assert "/api/streams/live/" in source and '"/api/streams"' in source
-assert '"logcat", "-d", "-v", "epoch", "-s", "EPGStationServer"' in source
+assert '"logcat"' in source and '"-s", "EPGStationServer"' in source
 assert '"-T"' not in source
+assert 'android:permission="android.permission.DUMP"' in manifest
+assert 'android:exported="true"' in manifest and "MirakcDiagnosticsProvider" in manifest
+assert "Binder.getCallingUid()" in provider_source
+assert "Process.SHELL_UID" in provider_source
+assert "checkCallingPermission(android.Manifest.permission.DUMP)" in provider_source
+assert "checkCallingOrSelfPermission" not in provider_source
+assert "Os.readlink" in provider_source and "canonicalPath" not in provider_source
+assert "MAX_PROCESSES" in provider_source and "MAX_SNAPSHOT_NANOS" in provider_source
+assert "1000)).await" in resilience_patch
+assert provider_source.count("ensureWithinDeadline") >= 4
+assert ".acceptance-update-schedules" in provider_source or ".acceptance-update-schedules" in supervisor_source
+assert 'ProcessBuilder("/system/bin/timeout"' not in supervisor_source
+assert ".acceptance-update-schedules" in supervisor_source
+assert supervisor_source.count("clearUpdateSchedulesTrigger()") >= 3
+service_source = (repo / "mirakc/src/main/java/dev/khronos31/mirakc/MirakcService.kt").read_text()
+assert "@Volatile private var mirakcSupervisor" in service_source
+assert "MirakcDiagnostics.triggerUpdateSchedules = null" in service_source
+assert "clearUpdateSchedulesTrigger" in supervisor_source
 assert "parse_device_epoch(self.adb_shell" in source
 cycle_source = source[source.index("    def check_cycles"):source.index("    def tracked_rows")]
 assert cycle_source.index("self.observe_job") < cycle_source.index("self.forward_mirakc")
@@ -65,6 +88,21 @@ else:
 processes = module.parse_processes("PID PPID ARGS\n123 1 libmirakc.so\n124 123 libpx4d.so\n")
 assert processes[124]["ppid"] == 123
 assert processes[124]["argv0"] == "libpx4d.so"
+assert processes[124]["args"] == ["libpx4d.so"]
+collect_process = module.parse_processes(
+    "123 1 /data/app/dev.khronos31.mirakc-abc/lib/libmirakc-arib.so collect-eits --sids=7\n"
+)[123]
+scan_process = module.parse_processes(
+    "124 1 /data/app/dev.khronos31.mirakc-abc/lib/libmirakc-arib.so scan-services\n"
+)[124]
+assert module.is_collect_eits_process(collect_process)
+assert not module.is_collect_eits_process(scan_process)
+try:
+    module.parse_processes("123 1 libmirakc.so\n123 1 libpx4d.so\n")
+except module.EvidenceError:
+    pass
+else:
+    raise AssertionError("duplicate process PID was accepted")
 
 clear = bytearray()
 for _ in range(12):
@@ -193,12 +231,37 @@ active_tables = {
     4: ["lrwx------ 1 u u 64 x -> /dev/bus/usb/001/003"],
 }
 assert module.validate_descriptor_snapshot(active_tables, active_rows)["px4_owner_pids"] == [4]
+snapshot_json = json.dumps({"schema": 1, "uid": 10131, "processes": [
+    {"pid": 2, "ppid": 1, "argv0": active_rows[2]["argv0"], "fds": [{"fd": 4, "target": "/dev/bus/usb/001/002"}]},
+]})
+diagnostic_rows, diagnostic_tables = module.parse_diagnostic_snapshot("Row: 0 json=" + snapshot_json)
+assert diagnostic_rows[2]["argv0"].endswith("libsiano-ts.so")
+assert diagnostic_tables[2] == ["4 -> /dev/bus/usb/001/002"]
 try:
     module.validate_descriptor_snapshot({1: []}, active_rows)
 except module.EvidenceError:
     pass
 else:
     raise AssertionError("idle descriptor snapshot without active owners was accepted")
+
+def expect_bad_snapshot(processes):
+    try:
+        module.parse_diagnostic_snapshot("json=" + json.dumps({"schema": 1, "processes": processes}))
+    except module.EvidenceError:
+        return
+    raise AssertionError("malformed diagnostic snapshot was accepted")
+
+expect_bad_snapshot([])
+expect_bad_snapshot([
+    {"pid": 2, "ppid": 1, "argv0": "x", "fds": []},
+    {"pid": 2, "ppid": 1, "argv0": "y", "fds": []},
+])
+expect_bad_snapshot([{"pid": 0, "ppid": 1, "argv0": "x", "fds": []}])
+expect_bad_snapshot([{"pid": 2, "ppid": 1, "argv0": "x", "fds": [
+    {"fd": 4, "target": "a"}, {"fd": 4, "target": "b"},
+]}])
+expect_bad_snapshot([{"pid": 2, "ppid": 1, "argv0": "x", "fds": [{"fd": -1, "target": "a"}]}])
+expect_bad_snapshot([{"pid": 2, "ppid": 1, "argv0": "x", "fds": [{"fd": 4, "target": "x" * (module.MAX_DIAGNOSTIC_TARGET_LENGTH + 1)}]}])
 
 concurrency_harness = module.Harness.__new__(module.Harness)
 concurrency_harness.plan = {"concurrency": {"gr_path": "/gr", "satellite_path": "/sat", "minimum_bytes": 1880}}
@@ -220,6 +283,7 @@ threads_before = {thread.ident for thread in threading.enumerate()}
 concurrency_result = concurrency_harness.check_concurrency()
 assert concurrency_result["common_overlap_seconds"] > 0
 assert not [thread for thread in threading.enumerate() if thread.ident not in threads_before]
+assert "trigger_update_schedules" in source
 
 with tempfile.TemporaryDirectory(prefix="device-evidence-fd-test-") as temporary:
     harness = module.Harness.__new__(module.Harness)

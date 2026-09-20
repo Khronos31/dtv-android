@@ -102,6 +102,11 @@ internal class MirakcSupervisor(
             reconfigurePending = false
             current = process
             process = null
+            try {
+                clearUpdateSchedulesTrigger()
+            } catch (error: IOException) {
+                Log.e(TAG, "acceptance trigger cleanup failed during stop", error)
+            }
             setStateLocked("stopped")
         }
         // nativeStop terminates the complete process group.  Do this outside
@@ -146,6 +151,21 @@ internal class MirakcSupervisor(
 
     fun px4Status(): String = px4.status()
 
+    /** Ask the running upstream JobManager to invoke its real EIT job once. */
+    fun triggerUpdateSchedules(): Boolean {
+        synchronized(lock) {
+            val triggerParent = updateSchedulesTrigger.parentFile ?: return false
+            if (stopping || process == null || !triggerParent.isDirectory) return false
+            if (updateSchedulesTrigger.exists()) return false
+            return try {
+                updateSchedulesTrigger.createNewFile()
+            } catch (error: IOException) {
+                Log.e(TAG, "update-schedules trigger failed", error)
+                false
+            }
+        }
+    }
+
     private fun startOnWorker() {
         var started: NativeUsbProcess.StartedMirakc? = null
         try {
@@ -164,6 +184,9 @@ internal class MirakcSupervisor(
             val recordingDir = epgDir.resolve("recordings")
             mkdir(cacheDir)
             mkdir(recordingDir)
+            // A marker is meaningful only while this exact upstream process
+            // is alive; never carry one across a crash/restart.
+            clearUpdateSchedulesTrigger()
             synchronized(lock) {
                 if (stopping) return
             }
@@ -239,6 +262,13 @@ internal class MirakcSupervisor(
         } catch (error: Exception) {
             Log.e(TAG, "breadcrumb startup failure")
             started?.let { stopStarted(it, "startup-failure") }
+            // A failed startup must not leave an acceptance trigger for a
+            // later, unrelated upstream process.
+            try {
+                clearUpdateSchedulesTrigger()
+            } catch (cleanupError: IOException) {
+                Log.e(TAG, "acceptance trigger cleanup failed after startup error", cleanupError)
+            }
             synchronized(lock) {
                 if (stopping) {
                     startup = null
@@ -283,6 +313,12 @@ internal class MirakcSupervisor(
                 pending
             }
             if (rerun) reconfigure()
+        }
+    }
+
+    private fun clearUpdateSchedulesTrigger() {
+        if (updateSchedulesTrigger.exists() && !updateSchedulesTrigger.delete()) {
+            throw IOException("cannot remove stale acceptance trigger: $updateSchedulesTrigger")
         }
     }
 
@@ -657,4 +693,7 @@ internal class MirakcSupervisor(
         const val DIAGNOSTICS_DRAIN_TIMEOUT_MS = 500L
         const val TAG = "MirakcSupervisor"
     }
+
+    private val updateSchedulesTrigger: File
+        get() = epgDir.resolve("cache/.acceptance-update-schedules")
 }

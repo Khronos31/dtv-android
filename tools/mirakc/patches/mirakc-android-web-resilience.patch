@@ -374,3 +374,30 @@ diff --git mirakc-core/src/epg/clock_synchronizer.rs mirakc-core/src/epg/clock_s
 +        assert_eq!(scan_attempt_limit(ChannelType::CS), 3);
 +        assert_eq!(scan_attempt_limit(ChannelType::SKY), 1);
 +    }
+diff --git mirakc-core/src/epg/job.rs mirakc-core/src/epg/job.rs
+index d89feda..e44aecf 100644
+--- mirakc-core/src/epg/job.rs
++++ mirakc-core/src/epg/job.rs
+@@ -59,0 +60,20 @@ where
++    /// Accept one app-private trigger without adding a public control endpoint.
++    /// The marker is created only by the Android app's DUMP-protected provider;
++    /// removing it before dispatch makes duplicate triggers idempotent.
++    fn schedule_acceptance_trigger(&self, ctx: &mut Context<Self>) {
++        let Some(cache_dir) = self.config.epg.cache_dir.clone() else {
++            return;
++        };
++        let marker = cache_dir.join(".acceptance-update-schedules");
++        let addr = ctx.address().clone();
++        ctx.spawn_task(async move {
++            loop {
++                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
++                match tokio::fs::remove_file(&marker).await {
++                    Ok(()) => addr.emit(InvokeUpdateSchedules).await,
++                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
++                    Err(error) => tracing::warn!(?error, "Failed to read acceptance trigger"),
++                }
++            }
++        });
++    }
+@@ -212,0 +234 @@ where
++        self.schedule_acceptance_trigger(ctx);

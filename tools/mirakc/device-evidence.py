@@ -33,14 +33,19 @@ MIRAKC_VERSION = "3.4.86"
 EXPECTED_PACKAGE_VERSION = "0.3.0"
 EXPECTED_PACKAGE_VERSION_CODE = "300"
 EXPECTED_CERT_SHA256 = "1fd02c94f29a5756ed1d560ac4ecb6813fa0b2e634473a6f31da210ffd5223c4"
-JOB_MARKERS = ("scan-services", "collect-eits")
+COLLECT_EITS_EXECUTABLE = "libmirakc-arib.so"
 EPGSTATION_DEVICE_PORT = 8888
+DIAGNOSTIC_URI = "content://dev.khronos31.mirakc.diagnostics/fds"
+DIAGNOSTIC_TRIGGER_METHOD = "trigger_update_schedules"
 EPGSTATION_REQUIRED_LOG_MARKERS = (
     "event stream started",
     "done update channel",
     "done update programs",
 )
 DEFAULT_MAX_BYTES = (32 * 1024 * 1024 // 188) * 188
+MAX_DIAGNOSTIC_PROCESSES = 128
+MAX_DIAGNOSTIC_FDS = 256
+MAX_DIAGNOSTIC_TARGET_LENGTH = 1024
 NATIVE_NAMES = (
     "libmirakc.so", "libmirakc-arib.so", "libsiano-ts.so", "libpx4d.so",
     "libpx4-ts.so", "libpx4ctl.so", "libusb_process.so",
@@ -104,8 +109,29 @@ def parse_processes(text: str) -> dict[int, dict[str, Any]]:
         if len(fields) < 3 or not fields[0].isdigit() or not fields[1].isdigit():
             continue
         pid, ppid = int(fields[0]), int(fields[1])
-        result[pid] = {"pid": pid, "ppid": ppid, "argv0": fields[2], "text": line}
+        if pid <= 0 or pid in result:
+            raise EvidenceError(f"process listing contains invalid or duplicate PID: {pid}")
+        result[pid] = {
+            "pid": pid,
+            "ppid": ppid,
+            "argv0": fields[2],
+            "args": fields[2:],
+            "text": line,
+        }
     return result
+
+
+def is_collect_eits_process(row: dict[str, Any]) -> bool:
+    """Accept only the real mirakc-arib collect-eits child, never a job label."""
+    argv0 = row.get("argv0")
+    args = row.get("args")
+    return (
+        isinstance(argv0, str)
+        and PurePosixPath(argv0).name == COLLECT_EITS_EXECUTABLE
+        and isinstance(args, list)
+        and all(isinstance(value, str) for value in args)
+        and "collect-eits" in args[1:]
+    )
 
 
 def parse_meminfo_pss(text: str) -> int:
@@ -275,6 +301,58 @@ def parse_device_epoch(text: str) -> float:
     if not re.fullmatch(r"\d+(?:\.\d+)?", value):
         raise EvidenceError(f"device date did not return a numeric epoch: {value!r}")
     return float(value)
+
+
+def parse_diagnostic_snapshot(text: str) -> tuple[dict[int, dict[str, Any]], dict[int, list[str]]]:
+    marker = "json="
+    position = text.find(marker)
+    if position < 0:
+        raise EvidenceError("diagnostic provider returned no JSON column")
+    try:
+        value = json.loads(text[position + len(marker):].strip())
+    except json.JSONDecodeError as error:
+        raise EvidenceError(f"diagnostic provider JSON is invalid: {error}") from error
+    if not isinstance(value, dict) or value.get("schema") != 1 or not isinstance(value.get("processes"), list):
+        raise EvidenceError("diagnostic provider schema mismatch")
+    process_items = value["processes"]
+    if not process_items or len(process_items) > MAX_DIAGNOSTIC_PROCESSES:
+        raise EvidenceError("diagnostic process set is empty or exceeds bound")
+    rows: dict[int, dict[str, Any]] = {}
+    tables: dict[int, list[str]] = {}
+    for item in process_items:
+        if (
+            not isinstance(item, dict)
+            or type(item.get("pid")) is not int
+            or type(item.get("ppid")) is not int
+        ):
+            raise EvidenceError("diagnostic process record is malformed")
+        pid = item["pid"]
+        ppid = item["ppid"]
+        if pid <= 0 or ppid < 0 or pid in rows:
+            raise EvidenceError("diagnostic process PID is invalid or duplicated")
+        argv0 = item.get("argv0")
+        fds = item.get("fds")
+        if not isinstance(argv0, str) or not isinstance(fds, list):
+            raise EvidenceError("diagnostic process record has invalid argv0/fds")
+        if len(fds) > MAX_DIAGNOSTIC_FDS:
+            raise EvidenceError("diagnostic fd set exceeds bound")
+        rows[pid] = {"pid": pid, "ppid": ppid, "argv0": argv0, "text": f"{pid} {ppid} {argv0}"}
+        tables[pid] = []
+        seen_fds: set[int] = set()
+        for fd in fds:
+            if (
+                not isinstance(fd, dict)
+                or type(fd.get("fd")) is not int
+                or not isinstance(fd.get("target"), str)
+            ):
+                raise EvidenceError("diagnostic fd record is malformed")
+            fd_number = fd["fd"]
+            target = fd["target"]
+            if fd_number < 0 or fd_number in seen_fds or not target or len(target) > MAX_DIAGNOSTIC_TARGET_LENGTH:
+                raise EvidenceError("diagnostic fd is invalid, duplicated, or exceeds bound")
+            seen_fds.add(fd_number)
+            tables[pid].append(f"{fd_number} -> {target}")
+    return rows, tables
 
 
 def validate_q3u4_inventory(tuners: Any) -> dict[str, Any]:
@@ -751,6 +829,7 @@ class Harness:
 
     def observe_job(self, label: str) -> dict[str, Any]:
         """Observe an actual configured mirakc-arib job and its exit."""
+        self.trigger_update_schedules(label)
         deadline = time.monotonic() + self.args.job_timeout
         observed: dict[int, dict[str, Any]] = {}
         observed_at: float | None = None
@@ -758,7 +837,7 @@ class Harness:
             rows = self.processes(label + "-start")
             observed = {
                 pid: row for pid, row in rows.items()
-                if any(marker in row["text"] for marker in JOB_MARKERS)
+                if is_collect_eits_process(row)
             }
             if observed:
                 observed_at = time.monotonic()
@@ -766,7 +845,7 @@ class Harness:
             time.sleep(0.25)
         if not observed:
             raise EvidenceError(
-                "no actual scan-services/collect-eits process was observed; "
+                "no actual libmirakc-arib.so collect-eits process was observed; "
                 "HTTP responses cannot substitute for job execution"
             )
         exit_deadline = time.monotonic() + self.args.job_timeout
@@ -811,6 +890,24 @@ class Harness:
             result[pid] = listing.splitlines()
         return result
 
+    def diagnostic_fd_tables(self, label: str) -> tuple[dict[int, dict[str, Any]], dict[int, list[str]]]:
+        result = self.adb_command(
+            f"diagnostic-{label}",
+            "shell", "content", "query", "--uri", DIAGNOSTIC_URI, "--projection", "json",
+        )
+        rows, tables = parse_diagnostic_snapshot(result.stdout)
+        self.write_text(f"process/{label}-diagnostic.json", json.dumps({"rows": rows, "tables": tables}, sort_keys=True) + "\n")
+        return rows, tables
+
+    def trigger_update_schedules(self, label: str) -> None:
+        result = self.adb_command(
+            f"{label}-trigger-update-schedules",
+            "shell", "content", "call", "--uri", DIAGNOSTIC_URI,
+            "--method", DIAGNOSTIC_TRIGGER_METHOD,
+        )
+        if "triggered=true" not in result.stdout.replace(" ", "").lower():
+            raise EvidenceError("diagnostic update-schedules trigger was not accepted")
+
     def check_descriptors(self) -> dict[str, Any]:
         self.ensure_service()
         siano = require_dict(self.plan.get("siano_12seg"), "plan.siano_12seg")
@@ -842,12 +939,11 @@ class Harness:
                 stream_evidence[name] = {"bytes": len(body), "ts": stream_summary}
             # Both HTTP responses remain open while this exact descriptor
             # snapshot is taken; idle process state is not ownership evidence.
-            active_rows = self.tracked_rows()
-            tables = self.fd_tables("active-streams", active_rows)
+            diagnostic_rows, tables = self.diagnostic_fd_tables("active-streams")
         finally:
             for response in reversed(responses):
                 response.close()
-        descriptor_result = validate_descriptor_snapshot(tables, active_rows)
+        descriptor_result = validate_descriptor_snapshot(tables, diagnostic_rows)
         return {
             **descriptor_result,
             "active_streams": stream_evidence,

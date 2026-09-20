@@ -71,8 +71,11 @@ at least ten packet-aligned MPEG-TS packets, valid sync bytes, and clear
 scrambling control. After each USB transition it starts mirakc, verifies
 `/api/version`, retunes, checks TS alignment, and records orphan cleanup.
 
-EPGStation is started through its exported `MainActivity` only when its package
-was not already running; an already-running package is left running and is not
+The diagnostics provider is exported only for this acceptance path, but it
+requires both `android.permission.DUMP` and the actual adb shell UID; a normal
+application (even one holding DUMP) cannot call it. EPGStation is started
+through its exported `MainActivity` only when its package was not already
+running; an already-running package is left running and is not
 force-stopped during cleanup. If the pre-state cannot be observed, the check
 fails closed. A package started by the harness is stopped with `am force-stop`;
 its package is `dev.khronos31.epgstation.server` and its device port is fixed at
@@ -115,10 +118,21 @@ observed mirakc/native process in that active snapshot. It requires
 owner, each with a unique USB/CCID target; the main mirakc/upstream
 `libmirakc.so` process must own none. Main classification uses structured
 `argv0` (exact app package/suffix or `libmirakc.so` basename), not a package
-substring in a child path. Production user-build SELinux may deny
-this read. That is recorded as `proc_fd_unreadable` and is a mandatory failure;
+substring in a child path. Production user-build SELinux may deny the shell
+read. The candidate therefore also exposes an app-internal diagnostics
+provider at the fixed `content://dev.khronos31.mirakc.diagnostics/fds` URI,
+protected by the signature-level `android.permission.DUMP` permission and an
+explicit adb shell-UID check. The upstream marker watcher polls at one-second
+intervals to keep this acceptance-only trigger from adding a 10 Hz wakeup to
+normal operation. It discovers only same-UID descendants of the candidate
+package, with bounded process/fd counts and output, and accepts no
+caller-supplied PID or path. The
+same protected call creates a fixed app-private trigger marker consumed by the
+running upstream mirakc JobManager, so the observed `collect-eits` child is
+the real update-schedules job and can run while listener/stream checks remain
+active. A denied or malformed provider response is still a mandatory failure;
 the harness never treats unreadable descriptors as proof of safe ownership and
-does not add an exported or unauthenticated diagnostic endpoint.
+does not add a public LAN diagnostic endpoint.
 
 The receipt status is `pass` only when every named check passes. The manifest
 contains the candidate APK digest, receipt digest, every evidence-file digest,
