@@ -86,7 +86,7 @@ class MirakcService : Service() {
             context = this,
             tunerDevices = {
                 supportedDevices().filter { usbManager.hasPermission(it) }
-                    .take(2).map { it.deviceName }
+                    .take(MAX_SIANO_TUNERS).map { it.deviceName }
             },
             openTuner = ::openUsbForTuner,
             openReader = ::openReaderForTuner,

@@ -13,6 +13,9 @@ import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
 
+/** One S1UD presents two USB entries (one per tuner); support two devices. */
+internal const val MAX_SIANO_TUNERS = 4
+
 internal data class SianoUsbHandle(val fd: Int, val close: () -> Unit)
 
 /** Android-owned CCID descriptor leased to one Siano session at a time. */
@@ -104,7 +107,7 @@ internal class SianoTunerBroker(
         sessions.values.toList().forEach { it.stop() }
         sessions.clear()
         val token = buildToken()
-        val devices = tunerDevices().take(MAX_TUNERS)
+        val devices = tunerDevices().take(MAX_SIANO_TUNERS)
         generation = SianoGeneration(token, socketName, devices.size, devices)
         return generation
     }
@@ -361,7 +364,6 @@ internal class SianoTunerBroker(
     }
 
     private companion object {
-        const val MAX_TUNERS = 2
         const val MAX_CLIENTS = 4
         const val PROTOCOL = "SIAO/1"
         const val REQUEST_TIMEOUT_MS = 2_000
