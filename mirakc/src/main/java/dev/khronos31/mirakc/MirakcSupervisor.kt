@@ -626,6 +626,7 @@ internal class MirakcSupervisor(
                 repeat(px4.terrestrialReceivers.size) { index ->
                     append("  - name: PX4-GR-${px4.terrestrialReceivers[index]}\n")
                     append("    types: [GR]\n")
+                    append("    decoded: true\n")
                     append("    command: ")
                     append(yamlPath(px4Adapter))
                     append(" --px4-ts=")
@@ -641,6 +642,7 @@ internal class MirakcSupervisor(
                 repeat(px4.satelliteReceivers.size) { index ->
                     append("  - name: PX4-S-${px4.satelliteReceivers[index]}\n")
                     append("    types: [BS, CS]\n")
+                    append("    decoded: true\n")
                     append("    command: ")
                     append(yamlPath(px4Adapter))
                     append(" --px4-ts=")
