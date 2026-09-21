@@ -595,9 +595,11 @@ internal class MirakcSupervisor(
     ): String {
         val arib = File(context.applicationInfo.nativeLibraryDir, "libmirakc-arib.so")
         val adapter = File(context.applicationInfo.nativeLibraryDir, "libmirakc-siano-adapter.so")
+        val b25Filter = File(context.applicationInfo.nativeLibraryDir, "libmirakc-b25-filter.so")
         val px4Adapter = File(context.applicationInfo.nativeLibraryDir, "libmirakc-px4-adapter.so")
         fun yamlPath(file: File): String = file.absolutePath.replace("'", "''")
         val aribPath = yamlPath(arib)
+        val b25FilterPath = yamlPath(b25Filter)
         val tunerConfig = buildString {
             if (generation.tunerCount == 0 && px4Generation == null) {
                 append("tuners: []\n")
@@ -670,6 +672,8 @@ internal class MirakcSupervisor(
             |  addrs:
             |    - http: '0.0.0.0:40772'
             |$terrestrialChannelConfig$satelliteChannelConfig$tunerConfig|filters:
+            |  decode-filter:
+            |    command: '$b25FilterPath --socket=@${generation.socketName} --token=${generation.token}'
             |  service-filter:
             |    command: $aribPath filter-service --sid={{{sid}}}
             |  program-filter:

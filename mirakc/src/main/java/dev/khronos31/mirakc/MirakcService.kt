@@ -334,7 +334,7 @@ class MirakcService : Service() {
             } catch (error: Exception) {
                 throw IOException("Unable to duplicate reader fd", error)
             }
-            return SianoReaderHandle(parcel.fd) {
+            return SianoReaderHandle(parcel.fd, parcel.fileDescriptor) {
                 try {
                     // UsbDeviceConnection.close() normally releases claimed
                     // interfaces, but do it explicitly so every ownership
