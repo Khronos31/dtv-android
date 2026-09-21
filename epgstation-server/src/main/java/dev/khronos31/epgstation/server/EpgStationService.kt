@@ -228,6 +228,8 @@ class EpgStationService : Service() {
                     "clientSocketioPort: $PORT"
                 }
                 line.startsWith("mirakurunPath:") -> "mirakurunPath: $quotedUrl"
+                line.startsWith("ffmpeg:") -> "ffmpeg: '${applicationInfo.nativeLibraryDir}/libffmpeg.so'"
+                line.startsWith("ffprobe:") -> "ffprobe: '${applicationInfo.nativeLibraryDir}/libffprobe.so'"
                 line.trimStart().startsWith("path:") && line.startsWith("      path:") ->
                     "      path: '$recordedPath'"
                 line.startsWith("thumbnail:") ->

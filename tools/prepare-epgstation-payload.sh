@@ -20,6 +20,7 @@ if [[ -z "$ndk_root" || ! -x "$ndk_root/toolchains/llvm/prebuilt/linux-x86_64/bi
 fi
 
 mkdir -p "$work_root"
+bash "$repo_root/tools/build-ffmpeg-lgpl.sh"
 if [[ ! -f "$epg_root/package.json" ]]; then
     git clone --depth 1 --branch v2.10.0 https://github.com/l3tnun/EPGStation.git "$epg_root"
 fi
@@ -133,6 +134,14 @@ stage_jni_libs() {
             exit 4
         fi
         cp -f "$crc_src" "$dest/libcrc32_android.so"
+        local ff="$work_root/ffmpeg-lgpl/$abi"
+        if [[ ! -f "$ff/.complete" || ! -x "$ff/ffmpeg" || ! -x "$ff/ffprobe" ]]; then
+            echo "EPGStation payload: missing ffmpeg-lgpl for $abi (run tools/build-ffmpeg-lgpl.sh)" >&2
+            exit 6
+        fi
+        cp -f "$ff/ffmpeg" "$dest/libffmpeg.so"
+        cp -f "$ff/ffprobe" "$dest/libffprobe.so"
+        cp -f "$ff/libopenh264.so" "$dest/libopenh264.so"
         chmod 0755 "$dest"/lib*.so
         # Android dlopen does not see the main executable's DT_NEEDED
         # symbols. Node addons must themselves NEEDED libnode.so.
@@ -159,34 +168,30 @@ stage_jni_libs() {
 
 stage_jni_libs
 
-if [[ -f "$payload_root/.complete" ]]; then
-    if [[ ! -f "$payload_root/payload.version" ]]; then
-        printf 'EPGStation-v2.10.0-nodejs-mobile-v16.17.0\n' > "$payload_root/payload.version"
-    fi
-    echo "EPGStation payload already prepared: $payload_root"
-    exit 0
+if [[ ! -f "$payload_root/.complete" ]]; then
+    mkdir -p "$payload_root"
+    cp -a "$epg_root/dist" "$payload_root/dist"
+    mkdir -p "$payload_root/client"
+    cp -a "$epg_root/client/dist" "$payload_root/client/dist"
+    cp -a "$epg_root/config" "$payload_root/config"
+    cp -a "$epg_root/node_modules" "$payload_root/node_modules"
+    cp "$epg_root/package.json" "$payload_root/package.json"
+    cp "$epg_root/api.yml" "$payload_root/api.yml"
+    node "$repo_root/tools/patch-crc32-android.mjs" \
+        "$payload_root/node_modules/@node-rs/crc32/index.js"
+    mkdir -p "$payload_root/licenses"
+    # ELF belongs in jniLibs, not assets. Node will dlopen the nativeLibraryDir
+    # copies through symlinks created at runtime.
+    find "$payload_root" \( -name '*.node' -o -name '*.so' \) -type f -delete
+    rm -rf "$payload_root/runtime" "$payload_root/native"
+    rm -rf "$payload_root/node_modules/sqlite3/build"
+    cp "$epg_root/LICENSE" "$payload_root/licenses/EPGStation-LICENSE"
+    cp "$node_mobile_source/LICENSE" "$payload_root/licenses/Node-LICENSE"
+    node "$repo_root/tools/generate-npm-notice.mjs" \
+        "$payload_root/node_modules" "$payload_root/licenses/NOTICE.npm.txt"
+    printf 'EPGStation v2.10.0\nNode.js mobile v16.17.0\n' > "$payload_root/.versions"
+    printf 'EPGStation-v2.10.0-nodejs-mobile-v16.17.0\n' > "$payload_root/payload.version"
+    touch "$payload_root/.complete"
 fi
-mkdir -p "$payload_root"
-cp -a "$epg_root/dist" "$payload_root/dist"
-mkdir -p "$payload_root/client"
-cp -a "$epg_root/client/dist" "$payload_root/client/dist"
-cp -a "$epg_root/config" "$payload_root/config"
-cp -a "$epg_root/node_modules" "$payload_root/node_modules"
-cp "$epg_root/package.json" "$payload_root/package.json"
-cp "$epg_root/api.yml" "$payload_root/api.yml"
-node "$repo_root/tools/patch-crc32-android.mjs" \
-    "$payload_root/node_modules/@node-rs/crc32/index.js"
-mkdir -p "$payload_root/licenses"
-# ELF belongs in jniLibs, not assets. Node will dlopen the nativeLibraryDir
-# copies through symlinks created at runtime.
-find "$payload_root" \( -name '*.node' -o -name '*.so' \) -type f -delete
-rm -rf "$payload_root/runtime" "$payload_root/native"
-rm -rf "$payload_root/node_modules/sqlite3/build"
-cp "$epg_root/LICENSE" "$payload_root/licenses/EPGStation-LICENSE"
-cp "$node_mobile_source/LICENSE" "$payload_root/licenses/Node-LICENSE"
-node "$repo_root/tools/generate-npm-notice.mjs" \
-    "$payload_root/node_modules" "$payload_root/licenses/NOTICE.npm.txt"
-printf 'EPGStation v2.10.0\nNode.js mobile v16.17.0\n' > "$payload_root/.versions"
-printf 'EPGStation-v2.10.0-nodejs-mobile-v16.17.0\n' > "$payload_root/payload.version"
-touch "$payload_root/.complete"
+python3 "$repo_root/tools/patch-epgstation-template.py" "$payload_root"
 echo "Prepared EPGStation payload: $payload_root"
