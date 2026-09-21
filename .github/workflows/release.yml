@@ -37,9 +37,7 @@ jobs:
       candidate_run_id: ${{ steps.prepare.outputs.candidate_run_id }}
       candidate_git_head: ${{ steps.prepare.outputs.candidate_git_head }}
       candidate_apk_sha256: ${{ steps.prepare.outputs.candidate_apk_sha256 }}
-      rescue_apk_sha256: ${{ steps.prepare.outputs.rescue_apk_sha256 }}
       device_receipt_manifest_sha256: ${{ steps.prepare.outputs.device_receipt_manifest_sha256 }}
-      rescue_receipt_manifest_sha256: ${{ steps.prepare.outputs.rescue_receipt_manifest_sha256 }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -78,7 +76,7 @@ jobs:
             jq -e --arg head "$tag_target" '.candidate_git_head == $head' <<<"$parsed" >/dev/null || {
               echo "tag target does not equal candidate_git_head" >&2; exit 1;
             }
-            for field in candidate_run_id candidate_git_head candidate_apk_sha256 rescue_apk_sha256 device_receipt_manifest_sha256 rescue_receipt_manifest_sha256; do
+            for field in candidate_run_id candidate_git_head candidate_apk_sha256 device_receipt_manifest_sha256; do
               jq -e --arg field "$field" '.[$field] | strings | length > 0' <<<"$parsed" >/dev/null
             done
           else
@@ -199,9 +197,7 @@ jobs:
       - name: Verify APKs, source metadata, and annotated acceptance
         env:
           EXPECTED_CANDIDATE_SHA: ${{ needs.prepare.outputs.candidate_apk_sha256 }}
-          EXPECTED_RESCUE_SHA: ${{ needs.prepare.outputs.rescue_apk_sha256 }}
           EXPECTED_DEVICE_MANIFEST: ${{ needs.prepare.outputs.device_receipt_manifest_sha256 }}
-          EXPECTED_RESCUE_MANIFEST: ${{ needs.prepare.outputs.rescue_receipt_manifest_sha256 }}
         run: |
           set -euo pipefail
           sdkroot="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
@@ -213,21 +209,17 @@ jobs:
           test "$candidate_metadata" = "dev.khronos31.mirakc 300 0.3.0"
           candidate_cert="$($apksigner verify --print-certs artifact/mirakc-signed-candidate.apk | awk -F': ' '/certificate SHA-256 digest/ { print $NF; exit }' | tr -d ':' | tr '[:upper:]' '[:lower:]')"
           test "$candidate_cert" = "1fd02c94f29a5756ed1d560ac4ecb6813fa0b2e634473a6f31da210ffd5223c4"
-          python3 tools/mirakc/verify-rescue-apk.py artifact/mirakc-signed-legacy-server-rescue-0.3.1.apk --aapt2 "$aapt2" --apksigner "$apksigner"
           tools/mirakc/audit-apk.sh artifact/mirakc-signed-candidate.apk "$TAG_TARGET"
           python3 tools/mirakc/release-attestation.py acceptance \
             --message "$RUNNER_TEMP/mirakc-attestation.txt" > acceptance.json
-          jq -e --arg c "$EXPECTED_CANDIDATE_SHA" --arg r "$EXPECTED_RESCUE_SHA" \
-            --arg d "$EXPECTED_DEVICE_MANIFEST" --arg s "$EXPECTED_RESCUE_MANIFEST" \
-            '.schema == 1 and .kind == "mirakc-release-acceptance" and .candidate_apk_sha256 == $c and .rescue_apk_sha256 == $r and .device_receipt_manifest_sha256 == $d and .rescue_receipt_manifest_sha256 == $s' \
+          jq -e --arg c "$EXPECTED_CANDIDATE_SHA" --arg d "$EXPECTED_DEVICE_MANIFEST" \
+            '.schema == 1 and .kind == "mirakc-release-acceptance" and .candidate_apk_sha256 == $c and .device_receipt_manifest_sha256 == $d' \
             acceptance.json >/dev/null
           mkdir -p out
           cp artifact/mirakc-signed-candidate.apk out/mirakc-0.3.0.apk
-          cp artifact/mirakc-signed-legacy-server-rescue-0.3.1.apk out/mirakc-0.3.0-legacy-server-rescue.apk
           cp acceptance.json out/mirakc-0.3.0-acceptance.json
-          sha256sum out/mirakc-0.3.0.apk out/mirakc-0.3.0-legacy-server-rescue.apk out/mirakc-0.3.0-acceptance.json > out/SHA256SUMS
+          sha256sum out/mirakc-0.3.0.apk out/mirakc-0.3.0-acceptance.json > out/SHA256SUMS
           test "$(sha256sum out/mirakc-0.3.0.apk | cut -d' ' -f1)" = "$EXPECTED_CANDIDATE_SHA"
-          test "$(sha256sum out/mirakc-0.3.0-legacy-server-rescue.apk | cut -d' ' -f1)" = "$EXPECTED_RESCUE_SHA"
       - uses: actions/upload-artifact@v4
         with:
           name: apk-mirakc
@@ -250,7 +242,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$COMPONENT" == mirakc ]]; then
-            wanted='SHA256SUMS mirakc-0.3.0-acceptance.json mirakc-0.3.0-legacy-server-rescue.apk mirakc-0.3.0.apk'
+            wanted='SHA256SUMS mirakc-0.3.0-acceptance.json mirakc-0.3.0.apk'
           else
             wanted="$(printf '%s\n' "${COMPONENT}-${VERSION}.apk" SHA256SUMS | sort | tr '\n' ' ' | sed 's/ $//')"
           fi
@@ -265,7 +257,7 @@ jobs:
           set -euo pipefail
           if [[ "$COMPONENT" == mirakc ]]; then
             gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "$RELEASE_TAG" \
-              dist/mirakc-0.3.0.apk dist/mirakc-0.3.0-legacy-server-rescue.apk dist/mirakc-0.3.0-acceptance.json dist/SHA256SUMS
+              dist/mirakc-0.3.0.apk dist/mirakc-0.3.0-acceptance.json dist/SHA256SUMS
           else
             gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "$RELEASE_TAG" \
               "dist/${COMPONENT}-${{ needs.prepare.outputs.version }}.apk" dist/SHA256SUMS

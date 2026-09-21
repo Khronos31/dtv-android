@@ -10,9 +10,7 @@ MIRAKC-ATTESTATION-V1
 candidate_run_id=<positive decimal workflow run id>
 candidate_git_head=<40 lowercase hex characters>
 candidate_apk_sha256=<64 lowercase hex characters>
-rescue_apk_sha256=<64 lowercase hex characters>
 device_receipt_manifest_sha256=<64 lowercase hex characters>
-rescue_receipt_manifest_sha256=<64 lowercase hex characters>
 ```
 
 The tag must resolve to `candidate_git_head`. Generate and verify the record
@@ -21,9 +19,8 @@ creates or pushes a Git tag:
 
 ```sh
 tools/mirakc/release-attestation.py generate \
-  --device-receipt DEVICE_RECEIPT --rescue-receipt RESCUE_RECEIPT \
+  --device-receipt DEVICE_RECEIPT \
   --candidate mirakc-signed-candidate.apk \
-  --rescue mirakc-signed-legacy-server-rescue-0.3.1.apk \
   --build-info BUILD_INFO.json --tag-target "$(git rev-parse HEAD)" \
   --message mirakc-attestation.txt \
   --acceptance-output mirakc-acceptance.json
@@ -37,6 +34,7 @@ is three days, so promotion must be performed before that retention window
 expires. Missing, stale, extra, or ambiguous candidate artifacts fail closed.
 
 The published mirakc files are deliberately explicit: `mirakc-0.3.0.apk`,
-`mirakc-0.3.0-legacy-server-rescue.apk`, `mirakc-0.3.0-acceptance.json`, and
-`SHA256SUMS`. The rescue APK is not the normal updater asset name. EPGStation
+`mirakc-0.3.0-acceptance.json`, and `SHA256SUMS`. The legacy rescue helpers
+remain in `tools/mirakc/` as non-required, outside the normal release path and
+are not built, signed, or published by the release workflow. EPGStation
 continues to use its existing tagged build path.

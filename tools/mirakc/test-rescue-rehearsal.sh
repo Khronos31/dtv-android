@@ -42,7 +42,9 @@ assert rehearsal_source.index('legacy_ready = self.start_and_wait("legacy", "3.4
 assert rehearsal_source.index('candidate_ready = self.start_and_wait("candidate", "3.4.86")') < rehearsal_source.index('self.install("rescue", rescue)')
 assert "BUILD_INFO-legacy-server-rescue.txt" in rehearsal_source
 workflow_source = (root / ".github/workflows/signed-candidate.yml").read_text()
-assert "CANDIDATE_BUILD_INFO.txt" in workflow_source and "RESCUE_BUILD_INFO.txt" in workflow_source
+assert "CANDIDATE_BUILD_INFO.txt" in workflow_source
+assert "RESCUE_BUILD_INFO.txt" not in workflow_source
+assert "legacy-server-rescue" not in workflow_source
 assert "BUILD_INFO.json" in workflow_source
 assert "steps.resolve-candidate.outputs.git_head" in workflow_source
 assert "needs.build.outputs.git_head" in workflow_source

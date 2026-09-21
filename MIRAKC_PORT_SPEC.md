@@ -200,19 +200,19 @@ commits without rewriting history.
 
 The released `0.2.0` APK is not an on-device rollback mechanism: Android user
 builds reject a lower `versionCode`, and uninstalling would clear application
-data.  Before any migration release, prove on a staging user-build device that
-a same-key **forward-versioned rescue APK** containing the legacy `0.2.0`
-server can install over the candidate and restore service without clearing
-representative data.  The migration must preserve legacy preferences and keep
-new native state in a separate, disposable namespace; it must not perform an
-irreversible schema conversion.  Record the exact install command, package
-manager result, restored configuration and service behavior.  A failed rescue
-test blocks release.  Temporary native probes under `/data/local/tmp` are
-removed after measurement.  The reserved rescue identity is `0.3.1`/301
-(never a normal 0.3.1 release; future native releases start at 0.3.2 or later),
-built from annotated `mirakc-v0.2.0` peeled commit
-`5a4d647c9e4b46f3f637165fa107f87d34ea22ed` and
-`siano-userland` `v0.1.1` peeled commit
-`1a22a7180abd6c7be1d1dda6b866ec321a4e28ab`.  The executable rehearsal and
-receipt verifier are documented in `tools/mirakc/RESCUE-REHEARSAL.md`; this
-rescue gate is not a substitute for the final candidate matrix.
+data.  After review, the user decided that the migration release does **not**
+require a same-key forward-versioned rescue APK or a rescue rehearsal.
+Returning to `0.2.0` is an operator task: uninstall the candidate and reinstall
+`0.2.0`; configuration retention across that rollback is accepted and is not a
+release blocker.
+
+The previously added rescue helpers (`tools/mirakc/build-legacy-rescue.sh`,
+`tools/mirakc/rescue-rehearsal.py`, `tools/mirakc/verify-rescue-apk.py`,
+`tools/mirakc/verify-rescue-rehearsal.py`, `tools/mirakc/verify-rescue-build-info.py`
+and `tools/mirakc/RESCUE-REHEARSAL.md`) remain in the repository as
+**non-required, outside the normal release path**.  The signed-candidate and
+release workflows do not build, sign, verify, or publish a rescue APK, and the
+annotated-tag attestation no longer carries rescue fields.  The reserved rescue
+identity stays `0.3.1`/301 (never a normal `0.3.1` release; future native
+releases start at `0.3.2` or later) for anyone who chooses to exercise the
+optional helpers.

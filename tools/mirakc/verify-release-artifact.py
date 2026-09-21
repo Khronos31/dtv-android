@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib.util
 import json
 import re
 import stat
@@ -15,9 +14,7 @@ from pathlib import Path, PurePosixPath
 
 EXPECTED = {
     "mirakc-signed-candidate.apk",
-    "mirakc-signed-legacy-server-rescue-0.3.1.apk",
     "CANDIDATE_BUILD_INFO.txt",
-    "RESCUE_BUILD_INFO.txt",
     "BUILD_INFO.json",
     "SHA256SUMS",
 }
@@ -28,17 +25,27 @@ class ArtifactError(RuntimeError):
     pass
 
 
-def load_build_info():
-    path = Path(__file__).with_name("verify-rescue-build-info.py")
-    spec = importlib.util.spec_from_file_location("mirakc_build_info", path)
-    if spec is None or spec.loader is None:
-        raise ArtifactError("cannot load build-info verifier")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def read_info(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        key, separator, value = line.partition("=")
+        if not separator or not key or key in values:
+            raise ArtifactError(f"invalid build-info line in {path.name}")
+        values[key] = value
+    return values
 
 
-build_info_verifier = load_build_info()
+def verify_candidate_info(candidate: dict[str, str]) -> None:
+    if candidate.get("kind") != "candidate" or candidate.get("version") != "0.3.0":
+        raise ArtifactError("candidate build-info identity mismatch")
+    if re.fullmatch(r"[1-9][0-9]*", candidate.get("candidate_run_id", "")) is None:
+        raise ArtifactError("candidate run id is malformed")
+    if not candidate.get("git_ref"):
+        raise ArtifactError("candidate git ref is missing")
+    if re.fullmatch(r"[0-9a-f]{40}", candidate.get("git_head", "")) is None:
+        raise ArtifactError("candidate git_head is malformed")
+    if re.fullmatch(r"[0-9a-f]{64}", candidate.get("unsigned_apk_sha256", "")) is None:
+        raise ArtifactError("candidate unsigned APK digest is malformed")
 
 
 def digest(path: Path) -> str:
@@ -81,7 +88,6 @@ def verify_sums(entries: dict[str, Path]) -> dict[str, str]:
         values[parts[1]] = parts[0]
     expected = {
         "mirakc-signed-candidate.apk",
-        "mirakc-signed-legacy-server-rescue-0.3.1.apk",
     }
     if set(values) != expected:
         raise ArtifactError("SHA256SUMS inventory mismatch")
@@ -98,20 +104,21 @@ def verify(root: Path, expected_head: str, expected_run: str) -> dict[str, objec
         raise ArtifactError("expected run id is malformed")
     entries = files(root)
     hashes = verify_sums(entries)
-    records = build_info_verifier.verify(entries["CANDIDATE_BUILD_INFO.txt"], entries["RESCUE_BUILD_INFO.txt"])
-    candidate = records["candidate"]
+    candidate = read_info(entries["CANDIDATE_BUILD_INFO.txt"])
+    verify_candidate_info(candidate)
     if candidate["candidate_run_id"] != expected_run or candidate["git_head"] != expected_head:
         raise ArtifactError("artifact candidate run/head does not match attestation")
     combined = json.loads(entries["BUILD_INFO.json"].read_text(encoding="utf-8"))
-    if combined.get("schema") != 1 or not isinstance(combined.get("candidate"), dict) or not isinstance(combined.get("rescue"), dict):
+    if combined.get("schema") != 1 or not isinstance(combined.get("candidate"), dict):
         raise ArtifactError("combined BUILD_INFO.json schema mismatch")
-    if combined["candidate"].get("build") != candidate or combined["rescue"].get("build") != records["rescue"]:
-        raise ArtifactError("combined BUILD_INFO.json build records differ from flat build-info")
-    for role, filename in (("candidate", "mirakc-signed-candidate.apk"), ("rescue", "mirakc-signed-legacy-server-rescue-0.3.1.apk")):
-        record = combined[role]
-        if record.get("signed_apk_sha256") != hashes[filename] or record.get("certificate_sha256") != CERT:
-            raise ArtifactError(f"combined BUILD_INFO.json {role} mismatch")
-    return {"candidate_apk_sha256": hashes["mirakc-signed-candidate.apk"], "rescue_apk_sha256": hashes["mirakc-signed-legacy-server-rescue-0.3.1.apk"], "candidate_git_head": expected_head, "candidate_run_id": expected_run}
+    if set(combined) != {"schema", "candidate"}:
+        raise ArtifactError("combined BUILD_INFO.json must contain only schema and candidate")
+    if combined["candidate"].get("build") != candidate:
+        raise ArtifactError("combined BUILD_INFO.json build record differs from flat build-info")
+    record = combined["candidate"]
+    if record.get("signed_apk_sha256") != hashes["mirakc-signed-candidate.apk"] or record.get("certificate_sha256") != CERT:
+        raise ArtifactError("combined BUILD_INFO.json candidate mismatch")
+    return {"candidate_apk_sha256": hashes["mirakc-signed-candidate.apk"], "candidate_git_head": expected_head, "candidate_run_id": expected_run}
 
 
 def main(argv: list[str] | None = None) -> int:

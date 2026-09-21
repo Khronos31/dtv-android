@@ -56,17 +56,6 @@ jobs:
           repository: nns779/px4_drv
           ref: ${{ env.PX4_DRV_REF }}
           path: px4_drv
-      - uses: actions/checkout@v5
-        with:
-          ref: mirakc-v0.2.0
-          fetch-depth: 0
-          path: legacy-dtv
-      - uses: actions/checkout@v5
-        with:
-          repository: Khronos31/siano-userland
-          ref: v0.1.1
-          fetch-depth: 0
-          path: legacy-siano-userland
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -81,8 +70,6 @@ jobs:
           python-version: "3.13"
       - name: Device evidence host self-test
         run: tools/mirakc/test-device-evidence.sh
-      - name: Rescue rehearsal host self-test
-        run: tools/mirakc/test-rescue-rehearsal.sh
       - name: Install the pinned NDK
         run: |
           set -euo pipefail
@@ -119,7 +106,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(cat mirakc/VERSION)" = "0.3.0" \
-            || { echo "rescue pair requires a 0.3.0 candidate checkout" >&2; exit 1; }
+            || { echo "candidate build requires a 0.3.0 checkout" >&2; exit 1; }
           ./gradlew --no-daemon \
             -PsianoUserlandDir="$GITHUB_WORKSPACE/siano-userland" \
             -Ppx4UserlandDir="$GITHUB_WORKSPACE/px4-userland" \
@@ -137,19 +124,6 @@ jobs:
             echo "version=$(cat mirakc/VERSION)"
             echo "unsigned_apk_sha256=$(sha256sum "$apk" | awk '{ print $1 }')"
           } > out/CANDIDATE_BUILD_INFO.txt
-      - name: Build and audit unsigned legacy server rescue
-        run: |
-          set -euo pipefail
-          tools/mirakc/build-legacy-rescue.sh \
-            --legacy-root "$GITHUB_WORKSPACE/legacy-dtv" \
-            --siano-root "$GITHUB_WORKSPACE/legacy-siano-userland" \
-            --out "$GITHUB_WORKSPACE/out"
-          aapt2="$(find "$ANDROID_SDK_ROOT/build-tools" -mindepth 2 -maxdepth 2 -type f -name aapt2 -print | sort -V | tail -n 1)"
-          test -x "$aapt2"
-          python3 tools/mirakc/verify-rescue-apk.py \
-            out/mirakc-legacy-server-rescue-0.3.1-unsigned.apk --aapt2 "$aapt2"
-          python3 tools/mirakc/verify-rescue-build-info.py \
-            out/CANDIDATE_BUILD_INFO.txt out/RESCUE_BUILD_INFO.txt
       - uses: actions/upload-artifact@v4
         with:
           name: mirakc-unsigned-candidate
@@ -204,8 +178,6 @@ jobs:
           [[ -x "$apksigner" && -x "$aapt2" ]] || { echo "Android build tools not found" >&2; exit 1; }
           test "$(git rev-parse HEAD)" = "$(sed -n 's/^git_head=//p' candidate/CANDIDATE_BUILD_INFO.txt)" \
             || { echo "resolved candidate checkout does not match downloaded build-info" >&2; exit 1; }
-          python3 tools/mirakc/verify-rescue-build-info.py \
-            candidate/CANDIDATE_BUILD_INFO.txt candidate/RESCUE_BUILD_INFO.txt
           EXPECTED_CERT_SHA256=1fd02c94f29a5756ed1d560ac4ecb6813fa0b2e634473a6f31da210ffd5223c4
           sign_apk() {
             unsigned=$1
@@ -231,22 +203,15 @@ jobs:
             printf '%s' "$cert_sha256"
           }
           candidate_cert="$(sign_apk candidate/mirakc-unsigned.apk "$RUNNER_TEMP/mirakc-signed-candidate.apk" 0.3.0 300)"
-          rescue_cert="$(sign_apk candidate/mirakc-legacy-server-rescue-0.3.1-unsigned.apk "$RUNNER_TEMP/mirakc-signed-legacy-server-rescue-0.3.1.apk" 0.3.1 301)"
-          python3 tools/mirakc/verify-rescue-apk.py \
-            "$RUNNER_TEMP/mirakc-signed-legacy-server-rescue-0.3.1.apk" \
-            --aapt2 "$aapt2" --apksigner "$apksigner"
           mkdir -p out
           cp "$RUNNER_TEMP/mirakc-signed-candidate.apk" out/mirakc-signed-candidate.apk
-          cp "$RUNNER_TEMP/mirakc-signed-legacy-server-rescue-0.3.1.apk" out/mirakc-signed-legacy-server-rescue-0.3.1.apk
-          (cd out && sha256sum mirakc-signed-candidate.apk mirakc-signed-legacy-server-rescue-0.3.1.apk > SHA256SUMS)
+          (cd out && sha256sum mirakc-signed-candidate.apk > SHA256SUMS)
           {
             cp candidate/CANDIDATE_BUILD_INFO.txt out/CANDIDATE_BUILD_INFO.txt
-            cp candidate/RESCUE_BUILD_INFO.txt out/RESCUE_BUILD_INFO.txt
             python3 - \
-              candidate/CANDIDATE_BUILD_INFO.txt candidate/RESCUE_BUILD_INFO.txt \
-              "$candidate_cert" "$rescue_cert" \
+              candidate/CANDIDATE_BUILD_INFO.txt \
+              "$candidate_cert" \
               "$(sha256sum "$RUNNER_TEMP/mirakc-signed-candidate.apk" | awk '{ print $1 }')" \
-              "$(sha256sum "$RUNNER_TEMP/mirakc-signed-legacy-server-rescue-0.3.1.apk" | awk '{ print $1 }')" \
               > out/BUILD_INFO.json <<'PY'
           import json
           import sys
@@ -261,28 +226,20 @@ jobs:
               return values
 
           candidate = read_info(sys.argv[1])
-          rescue = read_info(sys.argv[2])
           expected_cert = "1fd02c94f29a5756ed1d560ac4ecb6813fa0b2e634473a6f31da210ffd5223c4"
-          if candidate.get("version") != "0.3.0" or candidate.get("kind") != "candidate":
-              raise SystemExit("candidate build-info changed during combined generation")
-          if rescue.get("kind") != "legacy-server-rescue" or rescue.get("version_name") != "0.3.1" or rescue.get("version_code") != "301":
-              raise SystemExit("rescue build-info changed during combined generation")
-          if sys.argv[3] != expected_cert or sys.argv[4] != expected_cert:
+          if candidate.get("kind") != "candidate" or candidate.get("version") != "0.3.0":
+              raise SystemExit("candidate build-info changed during signing")
+          if sys.argv[2] != expected_cert:
               raise SystemExit("signed certificate is not the production certificate")
-          for value in (sys.argv[5], sys.argv[6]):
-              if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
-                  raise SystemExit("signed APK digest is not a lowercase SHA-256")
+          digest = sys.argv[3]
+          if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+              raise SystemExit("signed APK digest is not a lowercase SHA-256")
           json.dump({
               "schema": 1,
               "candidate": {
                   "build": candidate,
-                  "signed_apk_sha256": sys.argv[5],
-                  "certificate_sha256": sys.argv[3],
-              },
-              "rescue": {
-                  "build": rescue,
-                  "signed_apk_sha256": sys.argv[6],
-                  "certificate_sha256": sys.argv[4],
+                  "signed_apk_sha256": digest,
+                  "certificate_sha256": sys.argv[2],
               },
           }, sys.stdout, sort_keys=True, indent=2)
           sys.stdout.write("\n")

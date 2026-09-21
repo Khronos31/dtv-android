@@ -20,9 +20,7 @@ FIELDS = (
     "candidate_run_id",
     "candidate_git_head",
     "candidate_apk_sha256",
-    "rescue_apk_sha256",
     "device_receipt_manifest_sha256",
-    "rescue_receipt_manifest_sha256",
 )
 
 
@@ -40,7 +38,6 @@ def load(name: str, filename: str):
 
 
 device_verifier = load("mirakc_device_verifier", "verify-device-evidence.py")
-rescue_verifier = load("mirakc_rescue_verifier", "verify-rescue-rehearsal.py")
 
 
 def digest(path: Path) -> str:
@@ -64,6 +61,8 @@ def parse_info(path: Path) -> dict[str, object]:
         raise AttestationError(f"BUILD_INFO.json is invalid: {error}") from error
     if not isinstance(value, dict) or value.get("schema") != 1:
         raise AttestationError("BUILD_INFO.json schema mismatch")
+    if set(value) != {"schema", "candidate"}:
+        raise AttestationError("BUILD_INFO.json must contain only schema and candidate")
     return value
 
 
@@ -98,23 +97,18 @@ def format_message(values: dict[str, str]) -> str:
 
 def verify_inputs(
     device_receipt: Path,
-    rescue_receipt: Path,
     candidate: Path,
-    rescue: Path,
     build_info: Path,
     expected_tag_target: str | None = None,
 ) -> dict[str, object]:
-    for path, label in ((candidate, "candidate APK"), (rescue, "rescue APK")):
-        require_regular(path, label)
+    require_regular(candidate, "candidate APK")
     build = parse_info(build_info)
     candidate_build = build.get("candidate")
-    rescue_build = build.get("rescue")
-    if not isinstance(candidate_build, dict) or not isinstance(rescue_build, dict):
-        raise AttestationError("BUILD_INFO.json candidate/rescue records are missing")
+    if not isinstance(candidate_build, dict):
+        raise AttestationError("BUILD_INFO.json candidate record is missing")
     candidate_record = candidate_build.get("build")
-    rescue_record = rescue_build.get("build")
-    if not isinstance(candidate_record, dict) or not isinstance(rescue_record, dict):
-        raise AttestationError("BUILD_INFO.json nested build records are missing")
+    if not isinstance(candidate_record, dict):
+        raise AttestationError("BUILD_INFO.json nested candidate build record is missing")
     if candidate_record.get("kind") != "candidate" or candidate_record.get("version") != "0.3.0":
         raise AttestationError("candidate build-info identity mismatch")
     candidate_head = candidate_record.get("git_head")
@@ -123,39 +117,25 @@ def verify_inputs(
     run_id = candidate_record.get("candidate_run_id")
     if not isinstance(run_id, str) or re.fullmatch(r"[1-9][0-9]*", run_id) is None:
         raise AttestationError("candidate run id is malformed")
-    expected_rescue = {
-        "kind": "legacy-server-rescue", "version_name": "0.3.1", "version_code": "301",
-        "legacy_dtv_ref": "mirakc-v0.2.0", "legacy_dtv_commit": "5a4d647c9e4b46f3f637165fa107f87d34ea22ed",
-        "legacy_siano_ref": "v0.1.1", "legacy_siano_commit": "1a22a7180abd6c7be1d1dda6b866ec321a4e28ab",
-    }
-    if any(rescue_record.get(key) != value for key, value in expected_rescue.items()):
-        raise AttestationError("rescue build-info provenance mismatch")
     candidate_hash = digest(candidate)
-    rescue_hash = digest(rescue)
-    if candidate_build.get("signed_apk_sha256") != candidate_hash or rescue_build.get("signed_apk_sha256") != rescue_hash:
+    if candidate_build.get("signed_apk_sha256") != candidate_hash:
         raise AttestationError("signed APK hash differs from BUILD_INFO.json")
-    if candidate_build.get("certificate_sha256") != CERT or rescue_build.get("certificate_sha256") != CERT:
+    if candidate_build.get("certificate_sha256") != CERT:
         raise AttestationError("BUILD_INFO.json certificate mismatch")
     try:
         device_result = device_verifier.verify(device_receipt, candidate)
-        rescue_result = rescue_verifier.verify(rescue_receipt, candidate, rescue)
-    except (OSError, ValueError, KeyError, TypeError, device_verifier.VerificationError, rescue_verifier.VerificationError) as error:
+    except (OSError, ValueError, KeyError, TypeError, device_verifier.VerificationError) as error:
         raise AttestationError(f"receipt verification failed: {error}") from error
-    if device_result["candidate_apk_sha256"] != candidate_hash or rescue_result["candidate_apk_sha256"] != candidate_hash:
-        raise AttestationError("device/rescue candidate APK hashes do not agree")
-    if rescue_result["rescue_apk_sha256"] != rescue_hash:
-        raise AttestationError("rescue receipt APK hash does not agree")
+    if device_result["candidate_apk_sha256"] != candidate_hash:
+        raise AttestationError("device receipt candidate APK hash does not agree")
     device_manifest = digest(device_receipt / "receipt-manifest.json")
-    rescue_manifest = digest(rescue_receipt / "receipt-manifest.json")
     if expected_tag_target is not None and expected_tag_target != candidate_head:
         raise AttestationError("annotated tag target does not equal candidate git head")
     values = {
         "candidate_run_id": run_id,
         "candidate_git_head": candidate_head,
         "candidate_apk_sha256": candidate_hash,
-        "rescue_apk_sha256": rescue_hash,
         "device_receipt_manifest_sha256": device_manifest,
-        "rescue_receipt_manifest_sha256": rescue_manifest,
     }
     message = format_message(values)
     acceptance = {"schema": 1, "kind": "mirakc-release-acceptance", **values}
@@ -166,9 +146,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("generate", "verify", "parse", "acceptance"))
     parser.add_argument("--device-receipt")
-    parser.add_argument("--rescue-receipt")
     parser.add_argument("--candidate")
-    parser.add_argument("--rescue")
     parser.add_argument("--build-info")
     parser.add_argument("--tag-target")
     parser.add_argument("--message", help="attestation text for verify, or output file for generate")
@@ -185,16 +163,14 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         required = {
             "--device-receipt": args.device_receipt,
-            "--rescue-receipt": args.rescue_receipt,
             "--candidate": args.candidate,
-            "--rescue": args.rescue,
             "--build-info": args.build_info,
         }
         missing = [name for name, value in required.items() if not value]
         if missing:
             raise AttestationError("missing required arguments: " + ", ".join(missing))
         if args.command == "generate":
-            result = verify_inputs(Path(args.device_receipt), Path(args.rescue_receipt), Path(args.candidate), Path(args.rescue), Path(args.build_info), args.tag_target)
+            result = verify_inputs(Path(args.device_receipt), Path(args.candidate), Path(args.build_info), args.tag_target)
             if args.message:
                 Path(args.message).write_text(result["message"], encoding="utf-8")
             else:
@@ -206,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise AttestationError("--message is required for verify")
             message = Path(args.message).read_text(encoding="utf-8")
             parsed = parse_message(message)
-            result = verify_inputs(Path(args.device_receipt), Path(args.rescue_receipt), Path(args.candidate), Path(args.rescue), Path(args.build_info), args.tag_target)
+            result = verify_inputs(Path(args.device_receipt), Path(args.candidate), Path(args.build_info), args.tag_target)
             if parsed != result["values"]:
                 raise AttestationError("attestation fields do not match verified evidence")
             print(json.dumps(result["acceptance"], sort_keys=True))

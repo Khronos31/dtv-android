@@ -1,8 +1,15 @@
 # Legacy server rescue rehearsal
 
-This is a staging-only rollback rehearsal and is separate from the final
-`device-evidence.py` candidate matrix. It must be completed before installing a
-0.3.0 candidate on the production device.
+**Non-required / outside the normal release path** (2026-09-21 decision).
+The user decided that the migration release does not require a same-key
+forward-versioned rescue APK or a rescue rehearsal. Returning to 0.2.0 is an
+operator task (uninstall the candidate and reinstall 0.2.0); configuration
+retention across that rollback is accepted and is not a release blocker.
+
+The signed-candidate and release workflows do not build, sign, verify, or
+publish a rescue APK, and the annotated-tag attestation no longer carries
+rescue fields. The helpers below are kept in the repository as optional
+staging-only tools.
 
 The rescue uses the same package and production signing certificate as the
 candidate, but its identity is deliberately reserved: versionName `0.3.1`,
@@ -14,11 +21,11 @@ versionCode `301`, and artifact/asset names containing
 `1a22a7180abd6c7be1d1dda6b866ec321a4e28ab`. It is not a normal 0.3.1 release;
 future native releases must start at 0.3.2 or later.
 
-The signed-candidate workflow refuses to create this pair unless the selected
-candidate checkout reads `mirakc/VERSION` as `0.3.0`. It builds the legacy
-checkout in a temporary archive, adds the explicit
-`BUILD_INFO-legacy-server-rescue.txt` asset, signs candidate and rescue with
-the same keystore, and verifies package/version/code/certificate for both.
+To exercise the optional helpers, build the legacy checkout with
+`tools/mirakc/build-legacy-rescue.sh` from the pinned `mirakc-v0.2.0` and
+`siano-userland` `v0.1.1` checkouts, then sign and verify it with the
+production keystore. The normal signed-candidate workflow no longer performs
+these steps.
 
 ## Staging command
 
@@ -77,11 +84,11 @@ rerun only after the operator has restored the staging condition.
 The receipt verifier rechecks package states, firstInstallTime continuity,
 candidate version readiness, complete before/candidate/after snapshots, clear
 188-byte-aligned TS summaries, lowercase APK digests, and pinned rescue
-provenance. `CANDIDATE_BUILD_INFO.txt` and `RESCUE_BUILD_INFO.txt` remain
-separate in the signed artifact; `BUILD_INFO.json` is the namespaced combined
-record.
+provenance. The normal signed artifact contains only `CANDIDATE_BUILD_INFO.txt`
+and a candidate-only `BUILD_INFO.json`; `RESCUE_BUILD_INFO.txt` is produced
+only by the optional standalone helper.
 
 If an install fails after the candidate was accepted, the receipt is fail
 closed and records the reached package state. The device is not automatically
-uninstalled or data-reset; the operator must use the same-key rescue APK or
-rerun the rehearsal before proceeding.
+uninstalled or data-reset; the operator may rerun the rehearsal or fall back
+to uninstalling and reinstalling 0.2.0.
