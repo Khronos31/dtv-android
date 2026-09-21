@@ -13,6 +13,8 @@ import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
+import android.widget.EditText
+import android.text.InputType
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -22,9 +24,17 @@ class MainActivity : Activity() {
     private val updater by lazy { GitHubReleaseUpdater(this, "mirakc", "dev.khronos31.mirakc") }
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var status: TextView
+    private lateinit var terrestrialInput: EditText
+    private lateinit var terrestrialInfo: TextView
+    private val terrestrialSettings by lazy {
+        TerrestrialChannelSettingsStore(
+            AndroidStringSettings(getSharedPreferences("terrestrial-channel-settings", MODE_PRIVATE))
+        )
+    }
     private val refresh = object : Runnable {
         override fun run() {
             status.text = MirakcService.statusText
+            updateTerrestrialStatus()
             handler.postDelayed(this, 1000)
         }
     }
@@ -94,17 +104,73 @@ class MainActivity : Activity() {
         val checkUpdate = tvButton("CHECK UPDATE") {
             checkForUpdate(it as Button)
         }
+        val terrestrialLabel = TextView(this).apply {
+            text = "地デジ物理チャンネル（リモコン番号ではなく送信所の物理チャンネル）"
+            textSize = 16f
+            setTextColor(Color.WHITE)
+            setPadding(0, dp(12), 0, dp(4))
+        }
+        terrestrialInput = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_TEXT
+            setSingleLine(true)
+            hint = "例: 13,16,21-27（空欄で地デジ無効）"
+            setText(TerrestrialChannelSettings.inputText(terrestrialSettings.inputState().channels))
+            setTextColor(Color.WHITE)
+            setHintTextColor(Color.GRAY)
+        }
+        terrestrialInfo = TextView(this).apply {
+            textSize = 14f
+            setTextColor(Color.LTGRAY)
+        }
+        val saveTerrestrial = tvButton("地デジ設定を保存（次回適用待ち）") {
+            saveTerrestrialSettings()
+        }
+        val applyTerrestrial = tvButton("保存してmirakcを再起動") {
+            if (saveTerrestrialSettings()) sendServiceAction(MirakcService.ACTION_APPLY_TERRESTRIAL)
+        }
         val buttonParams = {
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) }
         }
         root.addView(title, LinearLayout.LayoutParams(-1, -2))
         root.addView(status, LinearLayout.LayoutParams(-1, 0, 1f))
+        root.addView(terrestrialLabel, LinearLayout.LayoutParams(-1, -2))
+        root.addView(terrestrialInput, LinearLayout.LayoutParams(-1, -2))
+        root.addView(terrestrialInfo, LinearLayout.LayoutParams(-1, -2))
+        root.addView(saveTerrestrial, buttonParams())
+        root.addView(applyTerrestrial, buttonParams())
         root.addView(request, buttonParams())
         root.addView(stop, buttonParams())
         root.addView(start, buttonParams())
         root.addView(checkUpdate, buttonParams())
         setContentView(root)
         request.requestFocus()
+    }
+
+    private fun saveTerrestrialSettings(): Boolean {
+        return try {
+            terrestrialSettings.savePending(terrestrialInput.text.toString())
+            Toast.makeText(this, "地デジ設定を保存しました。適用には再起動操作が必要です。", Toast.LENGTH_LONG).show()
+            updateTerrestrialStatus()
+            true
+        } catch (error: IllegalArgumentException) {
+            terrestrialInfo.text = "入力エラー: ${error.message ?: "物理チャンネルを確認してください"}"
+            Toast.makeText(this, terrestrialInfo.text, Toast.LENGTH_LONG).show()
+            false
+        }
+    }
+
+    private fun updateTerrestrialStatus() {
+        if (!::terrestrialInfo.isInitialized) return
+        val snapshot = terrestrialSettings.snapshot()
+        val pendingError = snapshot.pending?.error
+        terrestrialInfo.text = when {
+            snapshot.active.error != null -> "⚠ ${snapshot.active.error}"
+            pendingError != null -> "⚠ $pendingError"
+            snapshot.pending != null -> "保存待ち: ${TerrestrialChannelSettings.inputText(snapshot.pending.channels)}"
+            snapshot.active.source == TerrestrialSettingsSource.EXPLICIT_EMPTY -> "適用中: 地デジ無効（衛星専用）"
+            snapshot.active.source == TerrestrialSettingsSource.UNSET -> "未設定: 現行の関東チャンネルを使用中"
+            else -> "適用中: ${TerrestrialChannelSettings.inputText(snapshot.active.channels)}"
+        }
     }
 
     private fun startMirakcService() {

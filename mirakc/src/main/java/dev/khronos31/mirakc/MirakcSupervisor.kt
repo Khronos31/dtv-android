@@ -32,11 +32,13 @@ internal class MirakcSupervisor(
     private val tunerDevices: () -> List<String>,
     private val openTuner: (Int, String) -> SianoUsbHandle,
     private val openReader: () -> SianoReaderHandle?,
+    private val terrestrialChannels: () -> List<TerrestrialChannel>,
     private val firmware: () -> File,
     private val px4Devices: () -> List<Px4DeviceIdentity>,
     private val openPx4: (Px4DeviceIdentity) -> Px4UsbHandle,
     private val px4Firmware: () -> File,
-    private val onStateChanged: () -> Unit
+    private val onStateChanged: () -> Unit,
+    private val onStartupResult: (Boolean) -> Boolean
 ) {
     private val lock = Any()
     private val runtimeDir = File(context.filesDir, "mirakc-runtime")
@@ -141,6 +143,34 @@ internal class MirakcSupervisor(
             setStateLocked("restarting for USB change")
             Log.i(TAG, "breadcrumb reconfigure scheduled")
             restart = Thread({ restartOnWorker() }, "mirakc-supervisor-restart").also {
+                it.isDaemon = true
+                it.start()
+            }
+        }
+    }
+
+    /** Restart (or start) after an explicit configuration transaction. */
+    fun restartForConfiguration() {
+        synchronized(lock) {
+            if (stopping) return
+            if (process == null) {
+                if (startup?.isAlive != true) {
+                    setStateLocked("starting")
+                    startup = Thread({ startOnWorker() }, "mirakc-supervisor-start").also {
+                        it.isDaemon = true
+                        it.start()
+                    }
+                } else {
+                    reconfigurePending = true
+                }
+                return
+            }
+            if (restart?.isAlive == true || startup?.isAlive == true) {
+                reconfigurePending = true
+                return
+            }
+            setStateLocked("restarting for terrestrial configuration")
+            restart = Thread({ restartOnWorker() }, "mirakc-supervisor-config-restart").also {
                 it.isDaemon = true
                 it.start()
             }
@@ -256,6 +286,7 @@ internal class MirakcSupervisor(
                 // which clears its marker before scheduling the follow-up.
                 pending && !restartActive
             }
+            if (!rerun) onStartupResult(true)
             // A restart worker cannot recursively schedule itself while its
             // marker is alive; its finally block handles that coalesced event.
             if (rerun && synchronized(lock) { restart?.isAlive != true }) reconfigure()
@@ -277,8 +308,12 @@ internal class MirakcSupervisor(
                 if (process?.pid == started?.pid) process = null
                 startup = null
                 setStateLocked("error (startup): ${error.message ?: error.javaClass.simpleName}")
-                // A failed initial start has no monitor to trigger retries.
-                if (crashRestart == null) launchRetryLocked()
+            }
+            val rollbackHandled = onStartupResult(false)
+            if (!rollbackHandled) {
+                synchronized(lock) {
+                    if (!stopping && crashRestart == null) launchRetryLocked()
+                }
             }
         }
     }
@@ -623,6 +658,10 @@ internal class MirakcSupervisor(
         } else {
             renderPx4SatelliteChannelConfig()
         }
+        val terrestrialChannelConfig = renderTerrestrialChannelConfig(
+            terrestrialChannels(),
+            appendListHeaderWhenEmpty = px4Generation != null
+        )
         val jobsConfig = renderMirakcJobCommands(aribPath)
         return """
             |epg:
@@ -630,41 +669,7 @@ internal class MirakcSupervisor(
             |server:
             |  addrs:
             |    - http: '0.0.0.0:40772'
-            |channels:
-            |  - name: TOKYO MX
-            |    type: GR
-            |    channel: '16'
-            |  - name: フジテレビジョン
-            |    type: GR
-            |    channel: '21'
-            |  - name: TBS
-            |    type: GR
-            |    channel: '22'
-            |  - name: テレビ東京
-            |    type: GR
-            |    channel: '23'
-            |  - name: テレビ朝日
-            |    type: GR
-            |    channel: '24'
-            |  - name: 日本テレビ
-            |    type: GR
-            |    channel: '25'
-            |  - name: NHK Eテレ東京
-            |    type: GR
-            |    channel: '26'
-            |  - name: NHK総合・東京
-            |    type: GR
-            |    channel: '27'
-            |  - name: チバテレビ
-            |    type: GR
-            |    channel: '30'
-            |  - name: tvk
-            |    type: GR
-            |    channel: '31'
-            |  - name: テレ玉
-            |    type: GR
-            |    channel: '32'
-            |$satelliteChannelConfig$tunerConfig|filters:
+            |$terrestrialChannelConfig$satelliteChannelConfig$tunerConfig|filters:
             |  service-filter:
             |    command: $aribPath filter-service --sid={{{sid}}}
             |  program-filter:

@@ -19,9 +19,16 @@ import android.os.PowerManager
 import android.content.pm.ServiceInfo
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicBoolean
 
 class MirakcService : Service() {
     private val usbManager by lazy { getSystemService(USB_SERVICE) as UsbManager }
+    private val terrestrialSettings by lazy {
+        TerrestrialChannelSettingsStore(
+            AndroidStringSettings(getSharedPreferences(TERRESTRIAL_SETTINGS, MODE_PRIVATE))
+        )
+    }
+    private val configurationApplyPending = AtomicBoolean(false)
     @Volatile private var mirakcSupervisor: MirakcSupervisor? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var receiverRegistered = false
@@ -66,6 +73,11 @@ class MirakcService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        try {
+            terrestrialSettings.recoverIncompleteApply()
+        } catch (error: Exception) {
+            lastError = "Terrestrial settings recovery failed: ${error.message ?: error.javaClass.simpleName}"
+        }
         registerUsbReceiver()
         acquireWakeLock()
         createNotificationChannel()
@@ -78,11 +90,13 @@ class MirakcService : Service() {
             },
             openTuner = ::openUsbForTuner,
             openReader = ::openReaderForTuner,
+            terrestrialChannels = { terrestrialSettings.active().channels },
             firmware = ::firmwareFile,
             px4Devices = ::permittedPx4Identities,
             openPx4 = ::openPx4ForDaemon,
             px4Firmware = ::ensurePx4Firmware,
-            onStateChanged = ::publishStatus
+            onStateChanged = ::publishStatus,
+            onStartupResult = ::onSupervisorStartupResult
         )
         MirakcDiagnostics.triggerUpdateSchedules = {
             mirakcSupervisor?.triggerUpdateSchedules() == true
@@ -101,6 +115,7 @@ class MirakcService : Service() {
         if (!initialized) onCreate()
         when (intent?.action) {
             ACTION_REQUEST_USB -> requestUsbPermissionIfNeeded()
+            ACTION_APPLY_TERRESTRIAL -> applyTerrestrialSettings()
         }
         publishStatus()
         return START_STICKY
@@ -202,6 +217,48 @@ class MirakcService : Service() {
         }
         lastError = "none"
         publishStatus()
+    }
+
+    private fun applyTerrestrialSettings() {
+        var activated = false
+        try {
+            terrestrialSettings.activatePending()
+            activated = true
+            configurationApplyPending.set(true)
+            val supervisor = mirakcSupervisor ?: throw IllegalStateException("mirakc supervisor is unavailable")
+            supervisor.restartForConfiguration()
+            lastError = "none"
+        } catch (error: Exception) {
+            configurationApplyPending.set(false)
+            if (activated) {
+                try {
+                    terrestrialSettings.restoreLastKnownGood()
+                } catch (rollbackError: Exception) {
+                    lastError = "Terrestrial settings failed and rollback failed: ${rollbackError.message ?: rollbackError.javaClass.simpleName}"
+                    publishStatus()
+                    return
+                }
+            }
+            lastError = "Terrestrial settings were not applied: ${error.message ?: error.javaClass.simpleName}"
+        }
+        publishStatus()
+    }
+
+    private fun onSupervisorStartupResult(success: Boolean): Boolean {
+        if (!configurationApplyPending.compareAndSet(true, false)) return false
+        if (success) {
+            terrestrialSettings.commitApply()
+            return true
+        }
+        try {
+            terrestrialSettings.restoreLastKnownGood()
+            lastError = "Terrestrial settings failed; restored the last-known-good configuration"
+            mirakcSupervisor?.restartForConfiguration()
+        } catch (error: Exception) {
+            lastError = "Terrestrial settings failed and rollback failed: ${error.message ?: error.javaClass.simpleName}"
+        }
+        publishStatus()
+        return true
     }
 
     private fun supportedDevices(): List<UsbDevice> = usbManager.deviceList.values.filter {
@@ -356,6 +413,8 @@ class MirakcService : Service() {
 
     companion object {
         const val ACTION_REQUEST_USB = "dev.khronos31.mirakc.REQUEST_USB"
+        const val ACTION_APPLY_TERRESTRIAL = "dev.khronos31.mirakc.APPLY_TERRESTRIAL"
+        private const val TERRESTRIAL_SETTINGS = "terrestrial-channel-settings"
         private const val USB_PERMISSION_ACTION = "dev.khronos31.mirakc.USB_PERMISSION"
         private const val NOTIFICATION_CHANNEL = "mirakc-service"
         private const val NOTIFICATION_ID = 40772
