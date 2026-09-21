@@ -13,16 +13,11 @@ from pathlib import Path
 root = Path(__import__("sys").argv[1])
 release_workflow = (root / ".github/workflows/release.yml").read_text(encoding="utf-8")
 assert "mirakc-device-evidence" not in release_workflow
-assert "mirakc-rescue-rehearsal" not in release_workflow
-assert "rescue_apk_sha256" not in release_workflow
-assert "rescue_receipt_manifest_sha256" not in release_workflow
-assert "legacy-server-rescue" not in release_workflow
 path = root / "tools/mirakc/release-attestation.py"
 spec = importlib.util.spec_from_file_location("release_attestation", path)
 assert spec and spec.loader
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
-assert not hasattr(module, "rescue_verifier")
 artifact_spec = importlib.util.spec_from_file_location(
     "release_artifact", root / "tools/mirakc/verify-release-artifact.py"
 )
@@ -52,13 +47,6 @@ for malformed in (
         pass
     else:
         raise AssertionError("malformed attestation was accepted")
-# rescue fields are no longer part of the v1 attestation record.
-try:
-    module.parse_message(valid + "rescue_apk_sha256=" + "c" * 64 + "\n")
-except module.AttestationError:
-    pass
-else:
-    raise AssertionError("rescue attestation field was accepted")
 
 with tempfile.TemporaryDirectory(prefix="mirakc-release-attestation-") as temporary:
     directory = Path(temporary)
@@ -87,14 +75,14 @@ with tempfile.TemporaryDirectory(prefix="mirakc-release-attestation-") as tempor
     stale_build_info.write_text(json.dumps({
         "schema": 1,
         "candidate": {"build": {"kind": "candidate", "candidate_run_id": "123", "git_ref": "main", "git_head": "a" * 40, "version": "0.3.0", "unsigned_apk_sha256": "f" * 64}, "signed_apk_sha256": candidate_hash, "certificate_sha256": module.CERT},
-        "rescue": {"build": {"kind": "legacy-server-rescue", "version_name": "0.3.1", "version_code": "301", "legacy_dtv_ref": "mirakc-v0.2.0", "legacy_dtv_commit": "5a4d647c9e4b46f3f637165fa107f87d34ea22ed", "legacy_siano_ref": "v0.1.1", "legacy_siano_commit": "1a22a7180abd6c7be1d1dda6b866ec321a4e28ab", "unsigned_apk_sha256": "f" * 64}, "signed_apk_sha256": "c" * 64, "certificate_sha256": module.CERT},
+        "unknown": {"build": {"kind": "unknown", "version": "0.3.0"}, "signed_apk_sha256": "c" * 64, "certificate_sha256": module.CERT},
     }))
     try:
         module.verify_inputs(device, candidate, stale_build_info, "a" * 40)
     except module.AttestationError:
         pass
     else:
-        raise AssertionError("combined BUILD_INFO.json with rescue record was accepted")
+        raise AssertionError("BUILD_INFO.json with an unknown record was accepted")
     artifact = directory / "artifact"
     artifact.mkdir()
     for source, name in ((candidate, "mirakc-signed-candidate.apk"), (directory / "candidate-info.txt", "CANDIDATE_BUILD_INFO.txt"), (build_info, "BUILD_INFO.json")):

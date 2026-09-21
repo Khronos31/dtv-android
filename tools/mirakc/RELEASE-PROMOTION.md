@@ -34,7 +34,5 @@ is three days, so promotion must be performed before that retention window
 expires. Missing, stale, extra, or ambiguous candidate artifacts fail closed.
 
 The published mirakc files are deliberately explicit: `mirakc-0.3.0.apk`,
-`mirakc-0.3.0-acceptance.json`, and `SHA256SUMS`. The legacy rescue helpers
-remain in `tools/mirakc/` as non-required, outside the normal release path and
-are not built, signed, or published by the release workflow. EPGStation
-continues to use its existing tagged build path.
+`mirakc-0.3.0-acceptance.json`, and `SHA256SUMS`. EPGStation continues to
+use its existing tagged build path.

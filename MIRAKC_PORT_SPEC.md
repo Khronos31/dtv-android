@@ -200,19 +200,6 @@ commits without rewriting history.
 
 The released `0.2.0` APK is not an on-device rollback mechanism: Android user
 builds reject a lower `versionCode`, and uninstalling would clear application
-data.  After review, the user decided that the migration release does **not**
-require a same-key forward-versioned rescue APK or a rescue rehearsal.
-Returning to `0.2.0` is an operator task: uninstall the candidate and reinstall
-`0.2.0`; configuration retention across that rollback is accepted and is not a
-release blocker.
-
-The previously added rescue helpers (`tools/mirakc/build-legacy-rescue.sh`,
-`tools/mirakc/rescue-rehearsal.py`, `tools/mirakc/verify-rescue-apk.py`,
-`tools/mirakc/verify-rescue-rehearsal.py`, `tools/mirakc/verify-rescue-build-info.py`
-and `tools/mirakc/RESCUE-REHEARSAL.md`) remain in the repository as
-**non-required, outside the normal release path**.  The signed-candidate and
-release workflows do not build, sign, verify, or publish a rescue APK, and the
-annotated-tag attestation no longer carries rescue fields.  The reserved rescue
-identity stays `0.3.1`/301 (never a normal `0.3.1` release; future native
-releases start at `0.3.2` or later) for anyone who chooses to exercise the
-optional helpers.
+data.  Returning to `0.2.0` is an operator task: uninstall the candidate and
+reinstall `0.2.0`; configuration retention across that rollback is accepted
+and is not a release blocker.
