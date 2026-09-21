@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Patch the EPGStation payload templates for the bundled LGPL ffmpeg.
+"""Patch the EPGStation payload for the Android build.
 
 The APK ships a minimal LGPL ffmpeg + libopenh264 (see
 tools/build-ffmpeg-lgpl.sh).  The upstream config uses libx264 (GPL) and
@@ -14,8 +14,11 @@ yadif-based live profiles.  This script rewrites:
     entries for faster devices
 - config/enc.js.template (recorded encode)
   * libx264 -> libopenh264, CRF -> bitrate-based, drop -preset
+- dist/*.js entrypoints
+  * install a global fetch polyfill (nodejs-mobile v16.17.0 has no
+    native fetch; EPGStation's EPG updater calls fetch())
 
-The patch is idempotent: running it twice on the same template is safe.
+The patch is idempotent: running it twice on the same tree is safe.
 """
 import re
 import sys
@@ -91,6 +94,124 @@ def patch_enc_js(text: str) -> str:
     return text
 
 
+FETCH_POLYFILL = """'use strict';
+// Minimal WHATWG fetch polyfill for nodejs-mobile v16.17.0, which predates
+// Node 18's native global fetch. EPGStation's EPG updater uses
+// fetch(url).then((response) => response.json()) against local mirakurun.
+if (typeof globalThis.fetch !== 'function') {
+    const http = require('http');
+    const https = require('https');
+
+    globalThis.fetch = function fetch(input, init) {
+        init = init || {};
+        const url = new URL(String(input));
+        const lib = url.protocol === 'https:' ? https : http;
+        return new Promise((resolve, reject) => {
+            const request = lib.request(
+                url,
+                { method: init.method || 'GET', headers: init.headers || {} },
+                (response) => {
+                    const chunks = [];
+                    response.on('data', (chunk) => chunks.push(chunk));
+                    response.on('end', () => {
+                        const body = Buffer.concat(chunks);
+                        const headers = {};
+                        for (const [name, value] of Object.entries(response.headers)) {
+                            headers[String(name).toLowerCase()] =
+                                Array.isArray(value) ? value.join(', ') : String(value);
+                        }
+                        resolve({
+                            ok: response.statusCode >= 200 && response.statusCode < 300,
+                            status: response.statusCode,
+                            statusText: response.statusMessage || '',
+                            headers: {
+                                get: (name) => headers[String(name).toLowerCase()] || null,
+                            },
+                            json: () => Promise.resolve(JSON.parse(body.toString('utf8'))),
+                            text: () => Promise.resolve(body.toString('utf8')),
+                            arrayBuffer: () => Promise.resolve(
+                                body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength)
+                            ),
+                        });
+                    });
+                }
+            );
+            request.on('error', reject);
+            if (init.body != null) request.write(init.body);
+            request.end();
+        });
+    };
+}
+"""
+
+
+def prepend_after_use_strict(path: Path, require_line: str) -> None:
+    text = path.read_text()
+    if require_line in text:
+        return
+    if '"use strict";' in text:
+        text = text.replace('"use strict";', '"use strict";\n' + require_line, 1)
+    else:
+        text = require_line + text
+    path.write_text(text)
+
+
+def apply_fetch_polyfill(root: Path) -> None:
+    polyfill = root / "dist/fetch-polyfill.js"
+    polyfill.write_text(FETCH_POLYFILL)
+    prepend_after_use_strict(root / "dist/index.js", "require('./fetch-polyfill');\n")
+    prepend_after_use_strict(
+        root / "dist/model/service/ServiceExecutor.js",
+        "require('../../fetch-polyfill');\n",
+    )
+    prepend_after_use_strict(
+        root / "dist/model/epgUpdater/EPGUpdateExecutor.js",
+        "require('../../fetch-polyfill');\n",
+    )
+
+
+def patch_epg_updater(root: Path) -> None:
+    """Avoid a startup double-updateAll race.
+
+    EPGUpdater.start() leaves lastUpdatedTime at 0 until the event-stream
+    startup updateAll completes. On slow devices that updateAll can exceed the
+    10s interval tick, so the tick sees lastUpdatedTime=0 and starts a second
+    concurrent updateAll; the two SQLite write transactions then collide and
+    one fails with InsertError. Initializing the timestamps before the first
+    updateAll keeps the tick from scheduling a duplicate.
+    """
+    updater = root / "dist/model/epgUpdater/EPGUpdater.js"
+    text = updater.read_text()
+    marker = "this.log.system.info('start EPG update');"
+    init = (
+        marker
+        + "\n"
+        + "        this.lastUpdatedTime = new Date().getTime();\n"
+        + "        this.lastDeletedTime = this.lastUpdatedTime;"
+    )
+    if "this.lastUpdatedTime = new Date().getTime();" not in text:
+        if marker not in text:
+            print(f"warning: EPGUpdater start marker not found in {updater}", file=sys.stderr)
+            return
+        text = text.replace(marker, init, 1)
+        updater.write_text(text)
+
+
+def bump_payload_version(root: Path) -> None:
+    """Force the app to re-extract the payload after every patch change.
+
+    EpgStationService only re-extracts when assets/payload.version differs
+    from the installed copy. The upstream prepare script writes a static
+    version, so patched payloads would never be picked up by install -r.
+    Append a marker that must be bumped when the patches change.
+    """
+    marker = "-android-patched-v2"
+    version_file = root / "payload.version"
+    text = version_file.read_text().strip()
+    if marker not in text:
+        version_file.write_text(text + marker + "\n")
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         print("usage: patch-epgstation-template.py <payload-root>", file=sys.stderr)
@@ -104,7 +225,10 @@ def main() -> int:
     config_template.write_text(patch_config_template(config_template.read_text()))
     if enc_template.is_file():
         enc_template.write_text(patch_enc_js(enc_template.read_text()))
-    print("patched EPGStation templates for bundled LGPL ffmpeg")
+    apply_fetch_polyfill(root)
+    patch_epg_updater(root)
+    bump_payload_version(root)
+    print("patched EPGStation payload for the Android build")
     return 0
 
 
