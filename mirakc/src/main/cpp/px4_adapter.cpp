@@ -284,12 +284,24 @@ int main(int argc, char** argv) {
     child_storage.push_back(runtime_dir);
     child_storage.emplace_back("--output");
     child_storage.emplace_back("-");
-    std::vector<char*> child_argv;
-    child_argv.reserve(child_storage.size() + 1);
-    for (std::string& argument : child_storage) {
-        child_argv.push_back(argument.data());
+
+    // Retries rotate through the other receivers of the same broadcast
+    // system.  The previous mirakc session can leave the originally selected
+    // receiver in a state where the first re-tune yields no TS, while the
+    // sibling receivers are idle and tune immediately.
+    std::vector<int> receiver_pool;
+    if (tune_plan.system == px4_adapter::BroadcastSystem::kIsdbT) {
+        receiver_pool = {2, 3, 6, 7};
+    } else {
+        receiver_pool = {0, 1, 4, 5};
     }
-    child_argv.push_back(nullptr);
+    std::size_t receiver_slot = 0;
+    for (std::size_t index = 0; index < receiver_pool.size(); ++index) {
+        if (receiver_pool[index] == receiver) {
+            receiver_slot = index;
+            break;
+        }
+    }
 
     px4::userland::pcsc::PosixIfdCardClientFactory factory;
     px4::userland::pcsc::IfdEndpoint endpoint;
@@ -308,6 +320,16 @@ int main(int argc, char** argv) {
     // lease drains, the first tune attempt can race the receiver reset and
     // end with a clean but empty stream, so retry both cases.
     for (int attempt = 0; attempt < 50; ++attempt) {
+        const int attempt_receiver =
+            receiver_pool[(receiver_slot + attempt) % receiver_pool.size()];
+        child_storage[4] = std::to_string(attempt_receiver);
+        std::vector<char*> child_argv;
+        child_argv.reserve(child_storage.size() + 1);
+        for (std::string& argument : child_storage) {
+            child_argv.push_back(argument.data());
+        }
+        child_argv.push_back(nullptr);
+
         int output_pipe[2] = {-1, -1};
         if (pipe2(output_pipe, O_CLOEXEC) != 0) return fail("cannot create TS pipe");
         const pid_t child = fork();
@@ -406,7 +428,8 @@ int main(int argc, char** argv) {
 
         close(STDOUT_FILENO);
         copier.join();
-        diag("attempt=%d exit_code=%d forwarded=%llu\n", attempt, exit_code,
+        diag("attempt=%d receiver=%d exit_code=%d forwarded=%llu\n", attempt,
+             attempt_receiver, exit_code,
              static_cast<unsigned long long>(forwarded));
 
         const bool tune_failed = exit_code == 0 && forwarded == 0;
