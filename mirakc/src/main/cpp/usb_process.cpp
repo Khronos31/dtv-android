@@ -334,7 +334,6 @@ Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStartMirakc(
                 _exit(127);
             }
         }
-        setenv("RUST_LOG", "mirakc_core=debug", 1);
         execl(executablePath.c_str(), executablePath.c_str(), "--config", configPath.c_str(), nullptr);
         dprintf(STDERR_FILENO, "mirakc: exec %s: %s\n", executablePath.c_str(), strerror(errno));
         _exit(127);

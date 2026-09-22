@@ -1,5 +1,4 @@
 #include <cerrno>
-#include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -24,18 +23,6 @@
 
 extern "C" int b25_stdio_filter_with_card(B_CAS_CARD* bcas);
 namespace {
-
-FILE* g_diag = nullptr;
-
-void diag(const char* format, ...) {
-    va_list args;
-    va_start(args, format);
-    if (g_diag != nullptr) {
-        vfprintf(g_diag, format, args);
-        fflush(g_diag);
-    }
-    va_end(args);
-}
 
 bool consume_option(int argc, char** argv, int* index, const char* option, std::string* value) {
     const std::string argument(argv[*index]);
@@ -236,10 +223,6 @@ int main(int argc, char** argv) {
         px4_ts.empty() || base_serial.empty() || runtime_dir.empty()) {
         return fail("--px4-ts, --device, --receiver, --runtime-dir and --channel are required");
     }
-    const std::string diag_path = runtime_dir + "/../px4-adapter-diag.log";
-    g_diag = std::fopen(diag_path.c_str(), "a");
-    diag("adapter start receiver=%s channel=%s\n", receiver_text.c_str(), channel_text.c_str());
-    if (g_diag != nullptr) dup2(fileno(g_diag), STDERR_FILENO);
     int receiver = 0;
     if (!parse_int(receiver_text, &receiver) || receiver_text != std::to_string(receiver)) {
         return fail("--receiver must be a PX-Q3U4 receiver ID");
@@ -390,16 +373,13 @@ int main(int argc, char** argv) {
         int exit_code = 1;
         auto client = factory.connect(endpoint);
         if (!client) {
-            diag("card connect failed, pass through\n");
             const int result = pass_through(output_pipe[0]);
             close(output_pipe[0]);
             int child_status = 0;
             const int reap_result = reap_child(child, &child_status);
-            diag("pass-through done result=%d child_status=%d\n", result, child_status);
             if (reap_result < 0) return 1;
             exit_code = result != 0 ? result : child_result(child_status);
         } else {
-            diag("card connected\n");
             Px4CardContext card;
             card.client = std::move(client.value());
             const B_CAS_TRANSPORT transport{
@@ -421,7 +401,6 @@ int main(int argc, char** argv) {
                 close(output_pipe[0]);
             }
             const int result = b25_stdio_filter_with_card(bcas);
-            diag("b25 result=%d card_failed=%d\n", result, card.failed ? 1 : 0);
             if (bcas == nullptr) card_close(&card);
             // Closing the duplicated read end is required before waiting:
             // otherwise a failed downstream write can leave px4-ts blocked on
@@ -429,7 +408,6 @@ int main(int argc, char** argv) {
             close(STDIN_FILENO);
             int child_status = 0;
             const int reap_result = reap_child(child, &child_status);
-            diag("child_status=%d reap=%d\n", child_status, reap_result);
             if (reap_result < 0) return 1;
             exit_code = result != 0 ? result : (card.failed ? 1 : child_result(child_status));
         }
@@ -444,14 +422,9 @@ int main(int argc, char** argv) {
             if (null_fd != STDOUT_FILENO) dup2(null_fd, STDOUT_FILENO);
             if (null_fd > STDOUT_FILENO) close(null_fd);
         }
-        diag("attempt=%d receiver=%d exit_code=%d forwarded=%llu\n", attempt,
-             attempt_receiver, exit_code,
-             static_cast<unsigned long long>(forwarded));
 
         const bool tune_failed = exit_code == 0 && forwarded == 0;
         if ((exit_code != 4 && !tune_failed) || attempt == 49) return exit_code;
-        diag("px4-ts %s, retry attempt=%d\n", tune_failed ? "empty stream" : "BUSY",
-             attempt + 1);
         usleep(500 * 1000);
     }
     return 1;
