@@ -9,6 +9,7 @@
 #include <optional>
 #include <signal.h>
 #include <string>
+#include <thread>
 #include <vector>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -295,10 +296,17 @@ int main(int argc, char** argv) {
     endpoint.runtime_directory = runtime_dir;
     endpoint.device_instance = base_serial;
 
+    // Keep the real downstream (mirakc) endpoint separate: each attempt wraps
+    // STDOUT with a counting forwarder so a tune that produces no TS can be
+    // detected and retried.
+    const int real_stdout = dup(STDOUT_FILENO);
+    if (real_stdout < 0) return fail("cannot dup stdout");
+
     // The previous mirakc tuner session on the same receiver can still hold
     // the px4d lease for a short while after mirakc stops it.  px4-ts then
-    // exits with BUSY (exit code 4) before producing any TS.  Retrying with a
-    // short delay lets the stale lease drain instead of failing the scan.
+    // exits with BUSY (exit code 4) before producing any TS.  Even after the
+    // lease drains, the first tune attempt can race the receiver reset and
+    // end with a clean but empty stream, so retry both cases.
     for (int attempt = 0; attempt < 50; ++attempt) {
         int output_pipe[2] = {-1, -1};
         if (pipe2(output_pipe, O_CLOEXEC) != 0) return fail("cannot create TS pipe");
@@ -318,6 +326,42 @@ int main(int argc, char** argv) {
             _exit(127);
         }
         close(output_pipe[1]);
+
+        int count_pipe[2] = {-1, -1};
+        if (pipe2(count_pipe, O_CLOEXEC) != 0) {
+            close(output_pipe[0]);
+            reap_child(child, nullptr);
+            return fail("cannot create count pipe");
+        }
+        std::uint64_t forwarded = 0;
+        std::thread copier([&]() {
+            std::uint8_t buffer[64 * 1024];
+            while (true) {
+                const ssize_t count = read(count_pipe[0], buffer, sizeof(buffer));
+                if (count <= 0) break;
+                std::size_t offset = 0;
+                while (offset < static_cast<std::size_t>(count)) {
+                    const ssize_t written = write(real_stdout, buffer + offset,
+                                                  static_cast<std::size_t>(count) - offset);
+                    if (written <= 0) {
+                        close(count_pipe[0]);
+                        return;
+                    }
+                    offset += static_cast<std::size_t>(written);
+                    forwarded += static_cast<std::uint64_t>(written);
+                }
+            }
+            close(count_pipe[0]);
+        });
+        if (dup2(count_pipe[1], STDOUT_FILENO) < 0) {
+            close(count_pipe[0]);
+            close(count_pipe[1]);
+            close(output_pipe[0]);
+            copier.join();
+            reap_child(child, nullptr);
+            return 1;
+        }
+        close(count_pipe[1]);
 
         int exit_code = 1;
         auto client = factory.connect(endpoint);
@@ -360,9 +404,16 @@ int main(int argc, char** argv) {
             exit_code = result != 0 ? result : (card.failed ? 1 : child_result(child_status));
         }
 
-        if (exit_code != 4 || attempt == 49) return exit_code;
-        diag("px4-ts BUSY, retry attempt=%d\n", attempt + 1);
-        usleep(200 * 1000);
+        close(STDOUT_FILENO);
+        copier.join();
+        diag("attempt=%d exit_code=%d forwarded=%llu\n", attempt, exit_code,
+             static_cast<unsigned long long>(forwarded));
+
+        const bool tune_failed = exit_code == 0 && forwarded == 0;
+        if ((exit_code != 4 && !tune_failed) || attempt == 49) return exit_code;
+        diag("px4-ts %s, retry attempt=%d\n", tune_failed ? "empty stream" : "BUSY",
+             attempt + 1);
+        usleep(500 * 1000);
     }
     return 1;
 }
