@@ -340,9 +340,11 @@ int main(int argc, char** argv) {
         }
 
         if (child == 0) {
-            close(output_pipe[0]);
-            if (dup2(output_pipe[1], STDOUT_FILENO) < 0) _exit(127);
-            close(output_pipe[1]);
+            if (output_pipe[0] != STDIN_FILENO) close(output_pipe[0]);
+            if (output_pipe[1] != STDOUT_FILENO) {
+                if (dup2(output_pipe[1], STDOUT_FILENO) < 0) _exit(127);
+                close(output_pipe[1]);
+            }
             execv(px4_ts.c_str(), child_argv.data());
             std::fprintf(stderr, "px4 adapter: exec failed: %s\n", std::strerror(errno));
             _exit(127);
@@ -403,15 +405,21 @@ int main(int argc, char** argv) {
             const B_CAS_TRANSPORT transport{
                 &card, card_power_on, card_transmit, card_close};
             B_CAS_CARD* bcas = create_b_cas_card_with_transport(&transport);
-            if (dup2(output_pipe[0], STDIN_FILENO) < 0) {
-                if (bcas != nullptr) bcas->release(bcas);
-                else card_close(&card);
+            // After the first attempt, fds 0 and 1 are closed, so pipe2 can
+            // return STDIN_FILENO as the pipe read end.  dup2 would be a
+            // no-op in that case and closing output_pipe[0] would close the
+            // b25 input itself, so skip both when they are the same fd.
+            if (output_pipe[0] != STDIN_FILENO) {
+                if (dup2(output_pipe[0], STDIN_FILENO) < 0) {
+                    if (bcas != nullptr) bcas->release(bcas);
+                    else card_close(&card);
+                    close(output_pipe[0]);
+                    int child_status = 0;
+                    reap_child(child, &child_status);
+                    return 1;
+                }
                 close(output_pipe[0]);
-                int child_status = 0;
-                reap_child(child, &child_status);
-                return 1;
             }
-            close(output_pipe[0]);
             const int result = b25_stdio_filter_with_card(bcas);
             diag("b25 result=%d card_failed=%d\n", result, card.failed ? 1 : 0);
             if (bcas == nullptr) card_close(&card);
@@ -428,6 +436,14 @@ int main(int argc, char** argv) {
 
         close(STDOUT_FILENO);
         copier.join();
+        // Keep fds 0 and 1 valid so the next attempt's pipe2 never returns
+        // STDIN or STDOUT as a pipe endpoint.
+        const int null_fd = open("/dev/null", O_RDWR);
+        if (null_fd >= 0) {
+            if (null_fd != STDIN_FILENO) dup2(null_fd, STDIN_FILENO);
+            if (null_fd != STDOUT_FILENO) dup2(null_fd, STDOUT_FILENO);
+            if (null_fd > STDOUT_FILENO) close(null_fd);
+        }
         diag("attempt=%d receiver=%d exit_code=%d forwarded=%llu\n", attempt,
              attempt_receiver, exit_code,
              static_cast<unsigned long long>(forwarded));
