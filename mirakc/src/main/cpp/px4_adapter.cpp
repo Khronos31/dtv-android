@@ -238,6 +238,7 @@ int main(int argc, char** argv) {
     const std::string diag_path = runtime_dir + "/../px4-adapter-diag.log";
     g_diag = std::fopen(diag_path.c_str(), "a");
     diag("adapter start receiver=%s channel=%s\n", receiver_text.c_str(), channel_text.c_str());
+    if (g_diag != nullptr) dup2(fileno(g_diag), STDERR_FILENO);
     int receiver = 0;
     if (!parse_int(receiver_text, &receiver) || receiver_text != std::to_string(receiver)) {
         return fail("--receiver must be a PX-Q3U4 receiver ID");
@@ -347,6 +348,7 @@ int main(int argc, char** argv) {
     close(STDIN_FILENO);
     int child_status = 0;
     const int reap_result = reap_child(child, &child_status);
+    diag("child_status=%d reap=%d\n", child_status, reap_result);
     if (reap_result < 0) return 1;
     if (result != 0 || card.failed) return result != 0 ? result : 1;
     return child_result(child_status);
