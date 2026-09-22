@@ -1,4 +1,5 @@
 #include <cerrno>
+#include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -22,6 +23,18 @@
 
 extern "C" int b25_stdio_filter_with_card(B_CAS_CARD* bcas);
 namespace {
+
+FILE* g_diag = nullptr;
+
+void diag(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    if (g_diag != nullptr) {
+        vfprintf(g_diag, format, args);
+        fflush(g_diag);
+    }
+    va_end(args);
+}
 
 bool consume_option(int argc, char** argv, int* index, const char* option, std::string* value) {
     const std::string argument(argv[*index]);
@@ -222,6 +235,9 @@ int main(int argc, char** argv) {
         px4_ts.empty() || base_serial.empty() || runtime_dir.empty()) {
         return fail("--px4-ts, --device, --receiver, --runtime-dir and --channel are required");
     }
+    const std::string diag_path = runtime_dir + "/../px4-adapter-diag.log";
+    g_diag = std::fopen(diag_path.c_str(), "a");
+    diag("adapter start receiver=%s channel=%s\n", receiver_text.c_str(), channel_text.c_str());
     int receiver = 0;
     if (!parse_int(receiver_text, &receiver) || receiver_text != std::to_string(receiver)) {
         return fail("--receiver must be a PX-Q3U4 receiver ID");
@@ -298,17 +314,16 @@ int main(int argc, char** argv) {
     endpoint.device_instance = base_serial;
     auto client = factory.connect(endpoint);
     if (!client) {
-        std::fprintf(stderr, "px4 adapter: card connect failed, pass through\n");
+        diag("card connect failed, pass through\n");
         const int result = pass_through(output_pipe[0]);
         close(output_pipe[0]);
         int child_status = 0;
         const int reap_result = reap_child(child, &child_status);
-        std::fprintf(stderr, "px4 adapter: pass-through done result=%d child_status=%d\n",
-                     result, child_status);
+        diag("pass-through done result=%d child_status=%d\n", result, child_status);
         if (reap_result < 0) return 1;
         return result != 0 ? result : child_result(child_status);
     }
-    std::fprintf(stderr, "px4 adapter: card connected\n");
+    diag("card connected\n");
 
     Px4CardContext card;
     card.client = std::move(client.value());
@@ -325,8 +340,7 @@ int main(int argc, char** argv) {
     }
     close(output_pipe[0]);
     const int result = b25_stdio_filter_with_card(bcas);
-    std::fprintf(stderr, "px4 adapter: b25 result=%d card_failed=%d\n", result,
-                 card.failed ? 1 : 0);
+    diag("b25 result=%d card_failed=%d\n", result, card.failed ? 1 : 0);
     if (bcas == nullptr) card_close(&card);
     // Closing the duplicated read end is required before waiting: otherwise
     // a failed downstream write can leave px4-ts blocked on a full pipe.
