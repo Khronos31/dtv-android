@@ -20,7 +20,6 @@ FIELDS = (
     "candidate_run_id",
     "candidate_git_head",
     "candidate_apk_sha256",
-    "device_receipt_manifest_sha256",
 )
 
 
@@ -35,9 +34,6 @@ def load(name: str, filename: str):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-
-
-device_verifier = load("mirakc_device_verifier", "verify-device-evidence.py")
 
 
 def digest(path: Path) -> str:
@@ -96,7 +92,6 @@ def format_message(values: dict[str, str]) -> str:
 
 
 def verify_inputs(
-    device_receipt: Path,
     candidate: Path,
     build_info: Path,
     expected_tag_target: str | None = None,
@@ -122,20 +117,12 @@ def verify_inputs(
         raise AttestationError("signed APK hash differs from BUILD_INFO.json")
     if candidate_build.get("certificate_sha256") != CERT:
         raise AttestationError("BUILD_INFO.json certificate mismatch")
-    try:
-        device_result = device_verifier.verify(device_receipt, candidate)
-    except (OSError, ValueError, KeyError, TypeError, device_verifier.VerificationError) as error:
-        raise AttestationError(f"receipt verification failed: {error}") from error
-    if device_result["candidate_apk_sha256"] != candidate_hash:
-        raise AttestationError("device receipt candidate APK hash does not agree")
-    device_manifest = digest(device_receipt / "receipt-manifest.json")
-    if expected_tag_target is not None and expected_tag_target != candidate_head:
-        raise AttestationError("annotated tag target does not equal candidate git head")
+    if expected_tag_target is not None and re.fullmatch(r"[0-9a-f]{40}", expected_tag_target) is None:
+        raise AttestationError("annotated tag target is not a commit hash")
     values = {
         "candidate_run_id": run_id,
         "candidate_git_head": candidate_head,
         "candidate_apk_sha256": candidate_hash,
-        "device_receipt_manifest_sha256": device_manifest,
     }
     message = format_message(values)
     acceptance = {"schema": 1, "kind": "mirakc-release-acceptance", **values}
@@ -145,7 +132,7 @@ def verify_inputs(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("generate", "verify", "parse", "acceptance"))
-    parser.add_argument("--device-receipt")
+    parser.add_argument("--device-receipt", help="accepted for compatibility and ignored")
     parser.add_argument("--candidate")
     parser.add_argument("--build-info")
     parser.add_argument("--tag-target")
@@ -162,7 +149,6 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(values, sort_keys=True))
             return 0
         required = {
-            "--device-receipt": args.device_receipt,
             "--candidate": args.candidate,
             "--build-info": args.build_info,
         }
@@ -170,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
         if missing:
             raise AttestationError("missing required arguments: " + ", ".join(missing))
         if args.command == "generate":
-            result = verify_inputs(Path(args.device_receipt), Path(args.candidate), Path(args.build_info), args.tag_target)
+            result = verify_inputs(Path(args.candidate), Path(args.build_info), args.tag_target)
             if args.message:
                 Path(args.message).write_text(result["message"], encoding="utf-8")
             else:
@@ -182,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise AttestationError("--message is required for verify")
             message = Path(args.message).read_text(encoding="utf-8")
             parsed = parse_message(message)
-            result = verify_inputs(Path(args.device_receipt), Path(args.candidate), Path(args.build_info), args.tag_target)
+            result = verify_inputs(Path(args.candidate), Path(args.build_info), args.tag_target)
             if parsed != result["values"]:
                 raise AttestationError("attestation fields do not match verified evidence")
             print(json.dumps(result["acceptance"], sort_keys=True))

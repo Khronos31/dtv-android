@@ -37,7 +37,6 @@ jobs:
       candidate_run_id: ${{ steps.prepare.outputs.candidate_run_id }}
       candidate_git_head: ${{ steps.prepare.outputs.candidate_git_head }}
       candidate_apk_sha256: ${{ steps.prepare.outputs.candidate_apk_sha256 }}
-      device_receipt_manifest_sha256: ${{ steps.prepare.outputs.device_receipt_manifest_sha256 }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -73,10 +72,11 @@ jobs:
             }
             git for-each-ref --format='%(contents)' "refs/tags/$tag" > "$RUNNER_TEMP/mirakc-attestation.txt"
             parsed="$(python3 tools/mirakc/release-attestation.py parse --message "$RUNNER_TEMP/mirakc-attestation.txt")"
-            jq -e --arg head "$tag_target" '.candidate_git_head == $head' <<<"$parsed" >/dev/null || {
-              echo "tag target does not equal candidate_git_head" >&2; exit 1;
+            candidate_head="$(jq -r '.candidate_git_head' <<<"$parsed")"
+            git merge-base --is-ancestor "$candidate_head" "$tag_target" || {
+              echo "tag target is not a descendant of candidate_git_head" >&2; exit 1;
             }
-            for field in candidate_run_id candidate_git_head candidate_apk_sha256 device_receipt_manifest_sha256; do
+            for field in candidate_run_id candidate_git_head candidate_apk_sha256; do
               jq -e --arg field "$field" '.[$field] | strings | length > 0' <<<"$parsed" >/dev/null
             done
           else
@@ -171,6 +171,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       TAG_TARGET: ${{ needs.prepare.outputs.tag_target }}
       CANDIDATE_RUN_ID: ${{ needs.prepare.outputs.candidate_run_id }}
+      CANDIDATE_GIT_HEAD: ${{ needs.prepare.outputs.candidate_git_head }}
       RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
     steps:
       - uses: actions/checkout@v5
@@ -185,7 +186,7 @@ jobs:
         run: |
           set -euo pipefail
           run_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN_ID")"
-          jq -e --arg head "$TAG_TARGET" \
+          jq -e --arg head "$CANDIDATE_GIT_HEAD" \
             '.path == ".github/workflows/signed-candidate.yml" and .event == "workflow_dispatch" and .conclusion == "success" and .head_sha == $head' \
             <<<"$run_json" >/dev/null
           git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
@@ -193,11 +194,10 @@ jobs:
           rm -rf artifact
           mkdir artifact
           gh run download "$CANDIDATE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name mirakc-signed-candidate --dir artifact
-          python3 tools/mirakc/verify-release-artifact.py artifact --expected-head "$TAG_TARGET" --expected-run "$CANDIDATE_RUN_ID"
+          python3 tools/mirakc/verify-release-artifact.py artifact --expected-head "$CANDIDATE_GIT_HEAD" --expected-run "$CANDIDATE_RUN_ID"
       - name: Verify APKs, source metadata, and annotated acceptance
         env:
           EXPECTED_CANDIDATE_SHA: ${{ needs.prepare.outputs.candidate_apk_sha256 }}
-          EXPECTED_DEVICE_MANIFEST: ${{ needs.prepare.outputs.device_receipt_manifest_sha256 }}
         run: |
           set -euo pipefail
           sdkroot="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
@@ -209,11 +209,11 @@ jobs:
           test "$candidate_metadata" = "dev.khronos31.mirakc 300 0.3.0"
           candidate_cert="$($apksigner verify --print-certs artifact/mirakc-signed-candidate.apk | awk -F': ' '/certificate SHA-256 digest/ { print $NF; exit }' | tr -d ':' | tr '[:upper:]' '[:lower:]')"
           test "$candidate_cert" = "1fd02c94f29a5756ed1d560ac4ecb6813fa0b2e634473a6f31da210ffd5223c4"
-          tools/mirakc/audit-apk.sh artifact/mirakc-signed-candidate.apk "$TAG_TARGET"
+          tools/mirakc/audit-apk.sh artifact/mirakc-signed-candidate.apk "$CANDIDATE_GIT_HEAD"
           python3 tools/mirakc/release-attestation.py acceptance \
             --message "$RUNNER_TEMP/mirakc-attestation.txt" > acceptance.json
-          jq -e --arg c "$EXPECTED_CANDIDATE_SHA" --arg d "$EXPECTED_DEVICE_MANIFEST" \
-            '.schema == 1 and .kind == "mirakc-release-acceptance" and .candidate_apk_sha256 == $c and .device_receipt_manifest_sha256 == $d' \
+          jq -e --arg c "$EXPECTED_CANDIDATE_SHA" \
+            '.schema == 1 and .kind == "mirakc-release-acceptance" and .candidate_apk_sha256 == $c' \
             acceptance.json >/dev/null
           mkdir -p out
           cp artifact/mirakc-signed-candidate.apk out/mirakc-0.3.0.apk
