@@ -298,13 +298,17 @@ int main(int argc, char** argv) {
     endpoint.device_instance = base_serial;
     auto client = factory.connect(endpoint);
     if (!client) {
+        std::fprintf(stderr, "px4 adapter: card connect failed, pass through\n");
         const int result = pass_through(output_pipe[0]);
         close(output_pipe[0]);
         int child_status = 0;
         const int reap_result = reap_child(child, &child_status);
+        std::fprintf(stderr, "px4 adapter: pass-through done result=%d child_status=%d\n",
+                     result, child_status);
         if (reap_result < 0) return 1;
         return result != 0 ? result : child_result(child_status);
     }
+    std::fprintf(stderr, "px4 adapter: card connected\n");
 
     Px4CardContext card;
     card.client = std::move(client.value());
@@ -321,6 +325,8 @@ int main(int argc, char** argv) {
     }
     close(output_pipe[0]);
     const int result = b25_stdio_filter_with_card(bcas);
+    std::fprintf(stderr, "px4 adapter: b25 result=%d card_failed=%d\n", result,
+                 card.failed ? 1 : 0);
     if (bcas == nullptr) card_close(&card);
     // Closing the duplicated read end is required before waiting: otherwise
     // a failed downstream write can leave px4-ts blocked on a full pipe.
