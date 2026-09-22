@@ -290,66 +290,79 @@ int main(int argc, char** argv) {
     }
     child_argv.push_back(nullptr);
 
-    int output_pipe[2] = {-1, -1};
-    if (pipe2(output_pipe, O_CLOEXEC) != 0) return fail("cannot create TS pipe");
-    const pid_t child = fork();
-    if (child < 0) {
-        close(output_pipe[0]);
-        close(output_pipe[1]);
-        return fail("cannot fork px4-ts");
-    }
-
-    if (child == 0) {
-        close(output_pipe[0]);
-        if (dup2(output_pipe[1], STDOUT_FILENO) < 0) _exit(127);
-        close(output_pipe[1]);
-        execv(px4_ts.c_str(), child_argv.data());
-        std::fprintf(stderr, "px4 adapter: exec failed: %s\n", std::strerror(errno));
-        _exit(127);
-    }
-    close(output_pipe[1]);
-
     px4::userland::pcsc::PosixIfdCardClientFactory factory;
     px4::userland::pcsc::IfdEndpoint endpoint;
     endpoint.runtime_directory = runtime_dir;
     endpoint.device_instance = base_serial;
-    auto client = factory.connect(endpoint);
-    if (!client) {
-        diag("card connect failed, pass through\n");
-        const int result = pass_through(output_pipe[0]);
-        close(output_pipe[0]);
-        int child_status = 0;
-        const int reap_result = reap_child(child, &child_status);
-        diag("pass-through done result=%d child_status=%d\n", result, child_status);
-        if (reap_result < 0) return 1;
-        return result != 0 ? result : child_result(child_status);
-    }
-    diag("card connected\n");
 
-    Px4CardContext card;
-    card.client = std::move(client.value());
-    const B_CAS_TRANSPORT transport{
-        &card, card_power_on, card_transmit, card_close};
-    B_CAS_CARD* bcas = create_b_cas_card_with_transport(&transport);
-    if (dup2(output_pipe[0], STDIN_FILENO) < 0) {
-        if (bcas != nullptr) bcas->release(bcas);
-        else card_close(&card);
-        close(output_pipe[0]);
-        int child_status = 0;
-        reap_child(child, &child_status);
-        return 1;
+    // The previous mirakc tuner session on the same receiver can still hold
+    // the px4d lease for a short while after mirakc stops it.  px4-ts then
+    // exits with BUSY (exit code 4) before producing any TS.  Retrying with a
+    // short delay lets the stale lease drain instead of failing the scan.
+    for (int attempt = 0; attempt < 50; ++attempt) {
+        int output_pipe[2] = {-1, -1};
+        if (pipe2(output_pipe, O_CLOEXEC) != 0) return fail("cannot create TS pipe");
+        const pid_t child = fork();
+        if (child < 0) {
+            close(output_pipe[0]);
+            close(output_pipe[1]);
+            return fail("cannot fork px4-ts");
+        }
+
+        if (child == 0) {
+            close(output_pipe[0]);
+            if (dup2(output_pipe[1], STDOUT_FILENO) < 0) _exit(127);
+            close(output_pipe[1]);
+            execv(px4_ts.c_str(), child_argv.data());
+            std::fprintf(stderr, "px4 adapter: exec failed: %s\n", std::strerror(errno));
+            _exit(127);
+        }
+        close(output_pipe[1]);
+
+        int exit_code = 1;
+        auto client = factory.connect(endpoint);
+        if (!client) {
+            diag("card connect failed, pass through\n");
+            const int result = pass_through(output_pipe[0]);
+            close(output_pipe[0]);
+            int child_status = 0;
+            const int reap_result = reap_child(child, &child_status);
+            diag("pass-through done result=%d child_status=%d\n", result, child_status);
+            if (reap_result < 0) return 1;
+            exit_code = result != 0 ? result : child_result(child_status);
+        } else {
+            diag("card connected\n");
+            Px4CardContext card;
+            card.client = std::move(client.value());
+            const B_CAS_TRANSPORT transport{
+                &card, card_power_on, card_transmit, card_close};
+            B_CAS_CARD* bcas = create_b_cas_card_with_transport(&transport);
+            if (dup2(output_pipe[0], STDIN_FILENO) < 0) {
+                if (bcas != nullptr) bcas->release(bcas);
+                else card_close(&card);
+                close(output_pipe[0]);
+                int child_status = 0;
+                reap_child(child, &child_status);
+                return 1;
+            }
+            close(output_pipe[0]);
+            const int result = b25_stdio_filter_with_card(bcas);
+            diag("b25 result=%d card_failed=%d\n", result, card.failed ? 1 : 0);
+            if (bcas == nullptr) card_close(&card);
+            // Closing the duplicated read end is required before waiting:
+            // otherwise a failed downstream write can leave px4-ts blocked on
+            // a full pipe.
+            close(STDIN_FILENO);
+            int child_status = 0;
+            const int reap_result = reap_child(child, &child_status);
+            diag("child_status=%d reap=%d\n", child_status, reap_result);
+            if (reap_result < 0) return 1;
+            exit_code = result != 0 ? result : (card.failed ? 1 : child_result(child_status));
+        }
+
+        if (exit_code != 4 || attempt == 49) return exit_code;
+        diag("px4-ts BUSY, retry attempt=%d\n", attempt + 1);
+        usleep(200 * 1000);
     }
-    close(output_pipe[0]);
-    const int result = b25_stdio_filter_with_card(bcas);
-    diag("b25 result=%d card_failed=%d\n", result, card.failed ? 1 : 0);
-    if (bcas == nullptr) card_close(&card);
-    // Closing the duplicated read end is required before waiting: otherwise
-    // a failed downstream write can leave px4-ts blocked on a full pipe.
-    close(STDIN_FILENO);
-    int child_status = 0;
-    const int reap_result = reap_child(child, &child_status);
-    diag("child_status=%d reap=%d\n", child_status, reap_result);
-    if (reap_result < 0) return 1;
-    if (result != 0 || card.failed) return result != 0 ? result : 1;
-    return child_result(child_status);
+    return 1;
 }
