@@ -18,6 +18,11 @@ enum class SatelliteSelector {
     kStreamId,
 };
 
+enum class ReceiverMap {
+    kPxQ3u4,
+    kPxMlt5,
+};
+
 struct TunePlan {
     int receiver = -1;
     BroadcastSystem system = BroadcastSystem::kIsdbT;
@@ -34,6 +39,7 @@ bool create_tune_plan(
     std::string_view channel,
     std::optional<std::string_view> tsid,
     TunePlan* plan,
-    std::string* error);
+    std::string* error,
+    ReceiverMap receiver_map = ReceiverMap::kPxQ3u4);
 
 }  // namespace px4_adapter

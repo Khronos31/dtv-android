@@ -9,7 +9,7 @@ Replace the Kotlin Mirakurun-compatible server in the `mirakc` APK with an
 Android port of upstream mirakc, while keeping Android-specific lifecycle and
 USB-permission handling in a thin Kotlin/JNI supervisor.  Package the latest
 stable releases of both tuner backends so one APK can operate either Siano RIO
-devices or a PLEX PX-Q3U4 without a kernel driver.
+devices, a PLEX PX-Q3U4, or one PX-MLT5PE / DTV02A-5TS-P without a kernel driver.
 
 The pinned inputs for the first port are:
 

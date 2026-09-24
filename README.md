@@ -255,7 +255,7 @@ JDK 17 と Android NDK r26 以降が要ります。Gradle タスクは SDK の `
 `tools/mirakc/build-android.sh`、mirakc-arib には `tools/mirakc-arib/build-android.sh`
 を使います。
 
-PX-Q3U4 の `px4d` は pinned な
+PX-Q3U4（`0511:084a`、2 デバイス）と、PX-MLT5PE（`0511:024e`）および DTV02A-5TS-P（`0511:924e`、いずれも 1 デバイス）の `px4d` は pinned な
 [px4-userland](https://github.com/Khronos31/px4-userland) v0.1.4
 （commit `7ec828578db47db4ed2a1b247d4c24fb722aedde`）を使います。PX4 firmware
 生成器のビルドには [nns779/px4_drv](https://github.com/nns779/px4_drv) v0.2.1

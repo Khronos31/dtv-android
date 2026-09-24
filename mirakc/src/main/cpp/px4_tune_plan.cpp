@@ -9,12 +9,16 @@ namespace {
 constexpr int kFirstGrChannel = 13;
 constexpr int kLastGrChannel = 62;
 
-bool is_terrestrial_receiver(int receiver) {
+bool is_q3u4_terrestrial_receiver(int receiver) {
     return receiver == 2 || receiver == 3 || receiver == 6 || receiver == 7;
 }
 
-bool is_satellite_receiver(int receiver) {
+bool is_q3u4_satellite_receiver(int receiver) {
     return receiver == 0 || receiver == 1 || receiver == 4 || receiver == 5;
+}
+
+bool is_mlt5_receiver(int receiver) {
+    return receiver >= 0 && receiver <= 4;
 }
 
 bool parse_decimal(std::string_view text, std::uint32_t maximum, std::uint32_t* value) {
@@ -52,13 +56,22 @@ bool create_tune_plan(
     std::string_view channel,
     std::optional<std::string_view> tsid,
     TunePlan* plan,
-    std::string* error) {
+    std::string* error,
+    ReceiverMap receiver_map) {
     if (plan == nullptr) {
         set_error(error, "missing tune plan output");
         return false;
     }
-    if (!is_terrestrial_receiver(receiver) && !is_satellite_receiver(receiver)) {
-        set_error(error, "receiver is outside the PX-Q3U4 receiver map");
+    const bool terrestrial = receiver_map == ReceiverMap::kPxMlt5
+        ? is_mlt5_receiver(receiver)
+        : is_q3u4_terrestrial_receiver(receiver);
+    const bool satellite = receiver_map == ReceiverMap::kPxMlt5
+        ? is_mlt5_receiver(receiver)
+        : is_q3u4_satellite_receiver(receiver);
+    if (!terrestrial && !satellite) {
+        set_error(error, receiver_map == ReceiverMap::kPxMlt5
+            ? "receiver is outside the PX-MLT5 receiver map"
+            : "receiver is outside the PX-Q3U4 receiver map");
         return false;
     }
     if (tsid.has_value() && tsid->empty()) {
@@ -72,7 +85,7 @@ bool create_tune_plan(
     std::uint32_t numeric_channel = 0;
     if (parse_decimal(channel, kLastGrChannel, &numeric_channel) &&
         numeric_channel >= kFirstGrChannel) {
-        if (!is_terrestrial_receiver(receiver) || tsid.has_value()) {
+        if (!terrestrial || tsid.has_value()) {
             set_error(error, "GR channel/TSID does not match receiver");
             return false;
         }
@@ -98,7 +111,7 @@ bool create_tune_plan(
             set_error(error, "BS channel is outside the physical map");
             return false;
         }
-        if (!is_satellite_receiver(receiver)) {
+        if (!satellite) {
             set_error(error, "BS channel requires a satellite receiver");
             return false;
         }
@@ -127,7 +140,7 @@ bool create_tune_plan(
             set_error(error, "CS channel is outside the physical map");
             return false;
         }
-        if (!is_satellite_receiver(receiver) || tsid.has_value()) {
+        if (!satellite || tsid.has_value()) {
             set_error(error, "CS channel/TSID does not match receiver");
             return false;
         }

@@ -225,8 +225,18 @@ int main(int argc, char** argv) {
     }
     int receiver = 0;
     if (!parse_int(receiver_text, &receiver) || receiver_text != std::to_string(receiver)) {
-        return fail("--receiver must be a PX-Q3U4 receiver ID");
+        return fail("--receiver must be a receiver ID");
     }
+    const bool q3u4_serial = base_serial.size() == 14 &&
+        base_serial.find_first_not_of("0123456789") == std::string::npos;
+    const bool mlt5_serial = base_serial.size() == 15 &&
+        base_serial.find_first_not_of("0123456789") == std::string::npos;
+    if (!q3u4_serial && !mlt5_serial) {
+        return fail("--device must be a 14-digit PX-Q3U4 base serial or a 15-digit MLT5 serial");
+    }
+    const px4_adapter::ReceiverMap receiver_map = q3u4_serial
+        ? px4_adapter::ReceiverMap::kPxQ3u4
+        : px4_adapter::ReceiverMap::kPxMlt5;
 
     px4_adapter::TunePlan tune_plan;
     std::string tune_error;
@@ -234,7 +244,7 @@ int main(int argc, char** argv) {
         ? std::optional<std::string_view>(tsid_text)
         : std::nullopt;
     if (!px4_adapter::create_tune_plan(
-            receiver, channel_text, tsid, &tune_plan, &tune_error)) {
+            receiver, channel_text, tsid, &tune_plan, &tune_error, receiver_map)) {
         return fail(tune_error.c_str());
     }
     const std::string frequency = std::to_string(tune_plan.frequency_khz);

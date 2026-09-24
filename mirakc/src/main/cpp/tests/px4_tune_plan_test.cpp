@@ -25,10 +25,12 @@ void expect_plan(
     BroadcastSystem system,
     std::uint32_t frequency,
     SatelliteSelector selector,
-    std::uint16_t value) {
+    std::uint16_t value,
+    px4_adapter::ReceiverMap receiver_map = px4_adapter::ReceiverMap::kPxQ3u4) {
     TunePlan plan;
     std::string error;
-    if (!px4_adapter::create_tune_plan(receiver, channel, tsid, &plan, &error) ||
+    if (!px4_adapter::create_tune_plan(
+            receiver, channel, tsid, &plan, &error, receiver_map) ||
         plan.system != system || plan.frequency_khz != frequency ||
         plan.satellite_selector != selector || plan.satellite_value != value) {
         fail(case_name);
@@ -36,10 +38,12 @@ void expect_plan(
 }
 
 void expect_rejected(const char* case_name, int receiver, std::string_view channel,
-                     std::optional<std::string_view> tsid = std::nullopt) {
+                     std::optional<std::string_view> tsid = std::nullopt,
+                     px4_adapter::ReceiverMap receiver_map = px4_adapter::ReceiverMap::kPxQ3u4) {
     TunePlan plan;
     std::string error;
-    if (px4_adapter::create_tune_plan(receiver, channel, tsid, &plan, &error)) {
+    if (px4_adapter::create_tune_plan(
+            receiver, channel, tsid, &plan, &error, receiver_map)) {
         fail(case_name);
     }
 }
@@ -102,6 +106,18 @@ int main() {
     if (px4_adapter::create_tune_plan(2, "13", std::nullopt, nullptr, &null_plan_error)) {
         fail("null TunePlan output");
     }
+
+    for (int receiver : {0, 1, 2, 3, 4}) {
+        expect_plan("MLT GR", receiver, "27", std::nullopt,
+                    BroadcastSystem::kIsdbT, 557142, SatelliteSelector::kNone, 0,
+                    px4_adapter::ReceiverMap::kPxMlt5);
+        expect_plan("MLT BS", receiver, "BS15_0", std::nullopt,
+                    BroadcastSystem::kIsdbS, 1318000, SatelliteSelector::kSlot, 0,
+                    px4_adapter::ReceiverMap::kPxMlt5);
+    }
+    expect_rejected("MLT receiver 5", 5, "13", std::nullopt,
+                    px4_adapter::ReceiverMap::kPxMlt5);
+    expect_rejected("Q3U4 map rejects MLT-only overlap", 8, "BS01_0");
 
     std::cout << "px4 tune-plan tests: PASS\n";
     return EXIT_SUCCESS;
