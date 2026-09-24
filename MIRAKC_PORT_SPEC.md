@@ -16,7 +16,7 @@ The pinned inputs for the first port are:
 - mirakc `3.4.86` (`fc9610f51f8621aa8db508ddd36c7f1e2785d7be`);
 - mirakc-arib `0.24.38` (`e85e1f991aa91ba0e6c6e02d14a17d159901e181`);
 - siano-userland `v0.1.5` (`d4f8930ab56d13c479037f2e242461062d96c127`);
-- px4-userland `v0.1.3` (`639e65feee7c9f503d44023edd9ab9bba12d5d74`).
+- px4-userland `v0.1.4` (`7ec828578db47db4ed2a1b247d4c24fb722aedde`).
 
 `latest` means the newest non-prerelease release/tag observed on 2026-09-13.
 Builds remain reproducible by pinning these exact refs rather than following a
