@@ -6,7 +6,7 @@ hardware gates in `MIRAKC_PORT_SPEC.md`. It never installs or uninstalls an
 APK and does not delete application data. The APK must already be installed by
 the operator; the harness proves that the installed base APK has the exact
 SHA-256 of the candidate file. The release binding is package
-`dev.khronos31.mirakc`, versionName `0.3.0`, versionCode `300`, and signing
+`dev.khronos31.mirakc`, versionName `0.3.1`, versionCode `301`, and signing
 certificate SHA-256
 `1fd02c94f29a5756ed1d560ac4ecb6813fa0b2e634473a6f31da210ffd5223c4`.
 
