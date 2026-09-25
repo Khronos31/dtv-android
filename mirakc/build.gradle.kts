@@ -36,7 +36,7 @@ val mirakcAribBinaries = listOf(
 val sianoUserlandDir = providers.gradleProperty("sianoUserlandDir")
     .orElse("/config/GitHub/siano-userland")
 val sianoBuildScript = sianoUserlandDir.map { file(it).resolve("scripts/build-android.sh") }
-val sianoPinnedRef = "d4f8930ab56d13c479037f2e242461062d96c127"
+val sianoPinnedRef = "ad9bc7361288e9c188a1d8235ab946ac8b7bd6ac"
 
 val mirakcAribSourceDir = providers.gradleProperty("mirakcAribSourceDir")
     .orElse(layout.projectDirectory.dir("../.work/mirakc-arib-0.24.38").asFile.absolutePath)
@@ -546,7 +546,7 @@ val px4Binaries = listOf(
     nativeOutputDir.file("armeabi-v7a/libpx4-ts.so"),
     nativeOutputDir.file("armeabi-v7a/libpx4ctl.so")
 )
-val px4PinnedRef = "7ec828578db47db4ed2a1b247d4c24fb722aedde"
+val px4PinnedRef = "3477301c09578d6c0d85f381c1448a5c53157a68"
 val px4BuildScript = px4UserlandDir.map { file(it).resolve("scripts/build-android.sh") }
 
 fun gitOutput(directory: java.io.File, vararg args: String): Pair<Int, String> {
