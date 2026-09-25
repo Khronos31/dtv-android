@@ -255,9 +255,9 @@ JDK 17 と Android NDK r26 以降が要ります。Gradle タスクは SDK の `
 `tools/mirakc/build-android.sh`、mirakc-arib には `tools/mirakc-arib/build-android.sh`
 を使います。
 
-PX-Q3U4 の `px4d` は pinned な
-[px4-userland](https://github.com/Khronos31/px4-userland) v0.1.3
-（commit `639e65feee7c9f503d44023edd9ab9bba12d5d74`）を使います。PX4 firmware
+PX-Q3U4（`0511:084a`、2 デバイス）と、PX-MLT5PE（`0511:024e`）および DTV02A-5TS-P（`0511:924e`、いずれも 1 デバイス）の `px4d` は pinned な
+[px4-userland](https://github.com/Khronos31/px4-userland) v0.1.4
+（commit `7ec828578db47db4ed2a1b247d4c24fb722aedde`）を使います。PX4 firmware
 生成器のビルドには [nns779/px4_drv](https://github.com/nns779/px4_drv) v0.2.1
 （commit `2b3f79b5bc5db56e8556bb28397f7d8f74b2adeb`）の detached checkout も必要です。
 それぞれ `-Ppx4UserlandDir` と `-Ppx4DrvDir` で渡せます（既定値は作者の環境の
@@ -268,7 +268,7 @@ commit の clean checkout にしてください。
 export JAVA_HOME=/path/to/jdk17
 export ANDROID_NDK_HOME=/path/to/android-sdk/ndk/27.0.12077973
 ./gradlew -PsianoUserlandDir=/path/to/siano-userland \
-    -Ppx4UserlandDir=/path/to/px4-userland-v0.1.3 \
+    -Ppx4UserlandDir=/path/to/px4-userland-v0.1.4 \
     -Ppx4DrvDir=/path/to/px4_drv-v0.2.1 \
     :mirakc:assembleDebug :epgstation-server:assembleDebug
 ```

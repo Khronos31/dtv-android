@@ -58,9 +58,9 @@ with tempfile.TemporaryDirectory(prefix="mirakc-release-attestation-") as tempor
     build_info = directory / "BUILD_INFO.json"
     build_info.write_text(json.dumps({
         "schema": 1,
-        "candidate": {"build": {"kind": "candidate", "candidate_run_id": "123", "git_ref": "main", "git_head": "a" * 40, "version": "0.3.0", "unsigned_apk_sha256": "f" * 64}, "signed_apk_sha256": candidate_hash, "certificate_sha256": module.CERT},
+        "candidate": {"build": {"kind": "candidate", "candidate_run_id": "123", "git_ref": "main", "git_head": "a" * 40, "version": "0.3.1", "unsigned_apk_sha256": "f" * 64}, "signed_apk_sha256": candidate_hash, "certificate_sha256": module.CERT},
     }))
-    (directory / "candidate-info.txt").write_text("kind=candidate\ncandidate_run_id=123\ngit_ref=main\ngit_head=" + "a" * 40 + "\nversion=0.3.0\nunsigned_apk_sha256=" + "f" * 64 + "\n")
+    (directory / "candidate-info.txt").write_text("kind=candidate\ncandidate_run_id=123\ngit_ref=main\ngit_head=" + "a" * 40 + "\nversion=0.3.1\nunsigned_apk_sha256=" + "f" * 64 + "\n")
     result = module.verify_inputs(candidate, build_info, "a" * 40)
     assert module.parse_message(result["message"]) == result["values"]
     result = module.verify_inputs(candidate, build_info, "b" * 40)
@@ -68,8 +68,8 @@ with tempfile.TemporaryDirectory(prefix="mirakc-release-attestation-") as tempor
     stale_build_info = directory / "stale-BUILD_INFO.json"
     stale_build_info.write_text(json.dumps({
         "schema": 1,
-        "candidate": {"build": {"kind": "candidate", "candidate_run_id": "123", "git_ref": "main", "git_head": "a" * 40, "version": "0.3.0", "unsigned_apk_sha256": "f" * 64}, "signed_apk_sha256": candidate_hash, "certificate_sha256": module.CERT},
-        "unknown": {"build": {"kind": "unknown", "version": "0.3.0"}, "signed_apk_sha256": "c" * 64, "certificate_sha256": module.CERT},
+        "candidate": {"build": {"kind": "candidate", "candidate_run_id": "123", "git_ref": "main", "git_head": "a" * 40, "version": "0.3.1", "unsigned_apk_sha256": "f" * 64}, "signed_apk_sha256": candidate_hash, "certificate_sha256": module.CERT},
+        "unknown": {"build": {"kind": "unknown", "version": "0.3.1"}, "signed_apk_sha256": "c" * 64, "certificate_sha256": module.CERT},
     }))
     try:
         module.verify_inputs(candidate, stale_build_info, "a" * 40)

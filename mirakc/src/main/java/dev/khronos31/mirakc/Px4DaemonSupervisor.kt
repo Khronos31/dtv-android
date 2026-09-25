@@ -35,7 +35,8 @@ internal data class Px4Generation(
     val baseSerial: String,
     val runtimeDir: File,
     val terrestrialReceivers: List<Int>,
-    val satelliteReceivers: List<Int>
+    val satelliteReceivers: List<Int>,
+    val dualReceivers: List<Int> = emptyList()
 )
 
 /** Starts px4d only after pairing and validating the two Android USB owners. */
@@ -117,9 +118,9 @@ internal class Px4DaemonSupervisor(
     fun status(): String = state
 
     private fun startGeneration(): Px4Generation? {
-        val pair = pairDevices()
-        if (pair == null) {
-            setState("waiting (PX4 pair 1/2 not permitted)")
+        val selected = selectEnclosure()
+        if (selected == null) {
+            setState(waitingReason())
             return null
         }
         val firmwareFile = try {
@@ -142,17 +143,14 @@ internal class Px4DaemonSupervisor(
             return null
         }
 
-        val first: Px4UsbHandle
-        val second: Px4UsbHandle
+        val handles = mutableListOf<Px4UsbHandle>()
         try {
-            first = openDevice(pair.first)
-            second = try {
-                openDevice(pair.second)
-            } catch (error: Exception) {
-                first.close()
-                throw error
+            handles += openDevice(selected.first)
+            if (selected.second != null) {
+                handles += openDevice(selected.second)
             }
         } catch (error: Exception) {
+            handles.forEach { it.close() }
             setState("disabled (USB open failed: ${error.message ?: error.javaClass.simpleName})")
             return null
         }
@@ -161,38 +159,47 @@ internal class Px4DaemonSupervisor(
             NativeUsbProcess.startPx4d(
                 executable = binary.absolutePath,
                 firmware = firmwareFile.absolutePath,
-                baseSerial = pair.base,
+                baseSerial = selected.serial,
                 runtimeDir = runtimeDir.absolutePath,
-                firstUsbFd = first.fd,
-                secondUsbFd = second.fd
+                firstUsbFd = handles[0].fd,
+                secondUsbFd = handles.getOrNull(1)?.fd ?: -1
             )
         } catch (error: Exception) {
-            first.close()
-            second.close()
+            handles.forEach { it.close() }
             setState("disabled (px4d start failed: ${error.message ?: error.javaClass.simpleName})")
             return null
         }
         startDiagnostics(started)
 
         val ready = try {
-            awaitReady(started.pid, pair.base)
+            awaitReady(started.pid, selected.serial)
             true
         } catch (error: Exception) {
             Log.e(TAG, "PX4 readiness failed: ${error.message ?: error.javaClass.simpleName}")
             false
         }
         if (!ready) {
-            stopStarted(started, listOf(first, second), "readiness-failure")
+            stopStarted(started, handles, "readiness-failure")
             setState("disabled (px4d readiness failed)")
             return null
         }
 
-        val result = Px4Generation(
-            pair.base,
-            runtimeDir,
-            terrestrialReceivers = listOf(2, 3, 6, 7),
-            satelliteReceivers = listOf(0, 1, 4, 5)
-        )
+        val result = if (selected.second == null) {
+            Px4Generation(
+                selected.serial,
+                runtimeDir,
+                terrestrialReceivers = emptyList(),
+                satelliteReceivers = emptyList(),
+                dualReceivers = listOf(0, 1, 2, 3, 4)
+            )
+        } else {
+            Px4Generation(
+                selected.serial,
+                runtimeDir,
+                terrestrialReceivers = listOf(2, 3, 6, 7),
+                satelliteReceivers = listOf(0, 1, 4, 5)
+            )
+        }
         return synchronized(lock) {
             if (closed) {
                 // Service teardown raced startup; do not publish a generation
@@ -200,34 +207,51 @@ internal class Px4DaemonSupervisor(
                 null
             } else {
                 process = started
-                owners = listOf(first, second)
+                owners = handles.toList()
                 generation = result
                 setStateLocked("running (pid ${started.pid})")
-                monitor = Thread({ monitorLoop(started, listOf(first, second)) }, "px4d-monitor-${started.pid}").also {
+                monitor = Thread({ monitorLoop(started, handles.toList()) }, "px4d-monitor-${started.pid}").also {
                     it.isDaemon = true
                     it.start()
                 }
                 result
             }
         } ?: run {
-            stopStarted(started, listOf(first, second), "stop-during-startup")
+            stopStarted(started, handles, "stop-during-startup")
             null
         }
     }
 
-    private fun pairDevices(): PairMatch? {
-        val parsed = identities().mapNotNull { identity ->
-            val match = SERIAL_PATTERN.matchEntire(identity.serial) ?: return@mapNotNull null
+    private fun selectEnclosure(): Enclosure? {
+        val present = identities()
+        val mlt = present.filter { MLT_SERIAL.matches(it.serial) }
+        val parsed = present.mapNotNull { identity ->
+            val match = Q3U4_SERIAL.matchEntire(identity.serial) ?: return@mapNotNull null
             ParsedIdentity(identity, match.groupValues[1], match.groupValues[2].single())
         }
-        val matches = parsed.groupBy { it.base }.values.filter { group ->
+        val pairs = parsed.groupBy { it.base }.values.filter { group ->
             group.size == 2 && group.map { it.suffix }.toSet() == setOf('1', '2')
         }
-        if (matches.size != 1) return null
-        val group = matches.single()
+        if (mlt.isNotEmpty() && parsed.isNotEmpty()) return null
+        if (mlt.size == 1 && parsed.isEmpty()) {
+            return Enclosure(mlt.single().serial, mlt.single(), null)
+        }
+        if (mlt.isNotEmpty() || pairs.size != 1) return null
+        val group = pairs.single()
         val first = group.single { it.suffix == '1' }
         val second = group.single { it.suffix == '2' }
-        return PairMatch(first.base, first.identity, second.identity)
+        return Enclosure(first.base, first.identity, second.identity)
+    }
+
+    private fun waitingReason(): String {
+        val present = identities()
+        val mlt = present.count { MLT_SERIAL.matches(it.serial) }
+        val q3u4 = present.count { Q3U4_SERIAL.matches(it.serial) }
+        return if ((mlt > 0 && q3u4 > 0) || mlt > 1 || q3u4 > 2) {
+            "waiting (multiple PX4 devices)"
+        } else {
+            "waiting (PX4 pair 1/2 not permitted)"
+        }
     }
 
     private fun validatedFirmware(): File {
@@ -395,14 +419,15 @@ internal class Px4DaemonSupervisor(
         val suffix: Char
     )
 
-    private data class PairMatch(
-        val base: String,
+    private data class Enclosure(
+        val serial: String,
         val first: Px4DeviceIdentity,
-        val second: Px4DeviceIdentity
+        val second: Px4DeviceIdentity?
     )
 
     private companion object {
-        val SERIAL_PATTERN = Regex("^(\\d{14})([12])$")
+        val Q3U4_SERIAL = Regex("^(\\d{14})([12])$")
+        val MLT_SERIAL = Regex("^\\d{15}$")
         const val FIRMWARE_SIZE = 2169L
         const val FIRMWARE_SHA256 = "5213a5a38872661277a2cc1b2dfdfe88faf06f41205f460f3b51857f0568b484"
         const val READY_TIMEOUT_NS = 30_000_000_000L

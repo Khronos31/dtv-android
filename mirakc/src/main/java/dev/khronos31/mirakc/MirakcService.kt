@@ -267,7 +267,7 @@ class MirakcService : Service() {
     }.sortedBy { it.deviceName }
 
     private fun px4Devices(): List<UsbDevice> = usbManager.deviceList.values.filter {
-        it.vendorId == 0x0511 && it.productId == 0x084a
+        it.vendorId == 0x0511 && it.productId in PX4_PRODUCT_IDS
     }.sortedBy { it.deviceName }
 
     private fun permittedPx4Identities(): List<Px4DeviceIdentity> =
@@ -282,7 +282,7 @@ class MirakcService : Service() {
 
     private fun isSmartCardReader(device: UsbDevice): Boolean {
         if (device.vendorId == 0x3275 || device.vendorId == 0x187f ||
-            (device.vendorId == 0x0511 && device.productId == 0x084a)) return false
+            (device.vendorId == 0x0511 && device.productId in PX4_PRODUCT_IDS)) return false
         if (device.vendorId == 0x04E6) return true
         if (device.deviceClass == 0x0B) return true
         for (index in 0 until device.interfaceCount) {
@@ -418,6 +418,7 @@ class MirakcService : Service() {
         private const val USB_PERMISSION_ACTION = "dev.khronos31.mirakc.USB_PERMISSION"
         private const val NOTIFICATION_CHANNEL = "mirakc-service"
         private const val NOTIFICATION_ID = 40772
+        private val PX4_PRODUCT_IDS = setOf(0x084a, 0x024e, 0x924e)
 
         @Volatile
         var statusText: String = "Starting mirakc service..."

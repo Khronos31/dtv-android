@@ -655,6 +655,22 @@ internal class MirakcSupervisor(
                     append(yamlPath(px4.runtimeDir))
                     append(" --channel={{{channel}}} {{{extra_args}}}\n")
                 }
+                repeat(px4.dualReceivers.size) { index ->
+                    append("  - name: PX4-${px4.dualReceivers[index]}\n")
+                    append("    types: [GR, BS, CS]\n")
+                    append("    decoded: true\n")
+                    append("    command: ")
+                    append(yamlPath(px4Adapter))
+                    append(" --px4-ts=")
+                    append(px4Ts)
+                    append(" --device=")
+                    append(px4.baseSerial)
+                    append(" --receiver=")
+                    append(px4.dualReceivers[index])
+                    append(" --runtime-dir=")
+                    append(yamlPath(px4.runtimeDir))
+                    append(" --channel={{{channel}}} {{{extra_args}}}\n")
+                }
             }
         }
         val satelliteChannelConfig = if (px4Generation == null) {

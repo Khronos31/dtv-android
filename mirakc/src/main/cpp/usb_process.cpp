@@ -370,9 +370,10 @@ Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStartPx4d(
     const std::string firmwarePath = stringFromJni(env, firmware);
     const std::string baseSerialValue = stringFromJni(env, baseSerial);
     const std::string runtimeDirPath = stringFromJni(env, runtimeDir);
+    const bool single = secondUsbFd < 0;
     if (executablePath.empty() || firmwarePath.empty() || baseSerialValue.empty() ||
-        runtimeDirPath.empty() || firstUsbFd < 0 || secondUsbFd < 0 ||
-        firstUsbFd == secondUsbFd) {
+        runtimeDirPath.empty() || firstUsbFd < 0 ||
+        (!single && (secondUsbFd < 0 || firstUsbFd == secondUsbFd))) {
         return nullptr;
     }
 
@@ -394,10 +395,10 @@ Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStartPx4d(
         // the log pipe can occupy those numbers too. Duplicate every source
         // first so no dup2() target can overwrite a source still needed.
         const int first = duplicate_for_exec(firstUsbFd);
-        const int second = duplicate_for_exec(secondUsbFd);
+        const int second = single ? -1 : duplicate_for_exec(secondUsbFd);
         const int log = duplicate_for_exec(logPipe[1]);
-        if (first < 0 || second < 0 || log < 0 || dup2(first, 3) < 0 ||
-            dup2(second, 4) < 0 || dup2(log, STDOUT_FILENO) < 0 ||
+        if (first < 0 || (!single && second < 0) || log < 0 || dup2(first, 3) < 0 ||
+            (!single && dup2(second, 4) < 0) || dup2(log, STDOUT_FILENO) < 0 ||
             dup2(log, STDERR_FILENO) < 0) {
             dprintf(log >= 0 ? log : logPipe[1],
                     "px4d: unable to prepare USB descriptors: %s\n", strerror(errno));
@@ -407,30 +408,32 @@ Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStartPx4d(
         if (logPipe[1] > STDERR_FILENO) close(logPipe[1]);
         if (log > STDERR_FILENO) close(log);
         if (first > STDERR_FILENO) close(first);
-        if (second > STDERR_FILENO && second != first) close(second);
+        if (!single && second > STDERR_FILENO && second != first) close(second);
         const int nullFd = open("/dev/null", O_RDONLY);
         if (nullFd >= 0) {
             dup2(nullFd, STDIN_FILENO);
             if (nullFd > STDERR_FILENO) close(nullFd);
         }
-        // Keep only stdio and px4d's two documented USB descriptors. This
-        // also closes the original Android-owned descriptors in the child.
-        close_inherited_descriptors(3, 4);
+        // Keep only stdio and the USB descriptors px4d was given.
+        close_inherited_descriptors(3, single ? -1 : 4);
 
-        char* const argv[] = {
-            const_cast<char*>(executablePath.c_str()),
-            const_cast<char*>("--fd"),
-            const_cast<char*>("3"),
-            const_cast<char*>("--fd"),
-            const_cast<char*>("4"),
-            const_cast<char*>("--device"),
-            const_cast<char*>(baseSerialValue.c_str()),
-            const_cast<char*>("--firmware"),
-            const_cast<char*>(firmwarePath.c_str()),
-            const_cast<char*>("--runtime-dir"),
-            const_cast<char*>(runtimeDirPath.c_str()),
-            nullptr,
-        };
+        char* argv_storage[12];
+        int argc = 0;
+        argv_storage[argc++] = const_cast<char*>(executablePath.c_str());
+        argv_storage[argc++] = const_cast<char*>("--fd");
+        argv_storage[argc++] = const_cast<char*>("3");
+        if (!single) {
+            argv_storage[argc++] = const_cast<char*>("--fd");
+            argv_storage[argc++] = const_cast<char*>("4");
+        }
+        argv_storage[argc++] = const_cast<char*>("--device");
+        argv_storage[argc++] = const_cast<char*>(baseSerialValue.c_str());
+        argv_storage[argc++] = const_cast<char*>("--firmware");
+        argv_storage[argc++] = const_cast<char*>(firmwarePath.c_str());
+        argv_storage[argc++] = const_cast<char*>("--runtime-dir");
+        argv_storage[argc++] = const_cast<char*>(runtimeDirPath.c_str());
+        argv_storage[argc] = nullptr;
+        char* const* argv = argv_storage;
         dprintf(STDERR_FILENO, "px4d: exec starting\n");
         execv(executablePath.c_str(), argv);
         const int error = errno;

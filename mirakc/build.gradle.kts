@@ -546,7 +546,7 @@ val px4Binaries = listOf(
     nativeOutputDir.file("armeabi-v7a/libpx4-ts.so"),
     nativeOutputDir.file("armeabi-v7a/libpx4ctl.so")
 )
-val px4PinnedRef = "639e65feee7c9f503d44023edd9ab9bba12d5d74"
+val px4PinnedRef = "7ec828578db47db4ed2a1b247d4c24fb722aedde"
 val px4BuildScript = px4UserlandDir.map { file(it).resolve("scripts/build-android.sh") }
 
 fun gitOutput(directory: java.io.File, vararg args: String): Pair<Int, String> {

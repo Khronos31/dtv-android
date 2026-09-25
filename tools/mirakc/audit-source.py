@@ -152,8 +152,8 @@ EXPECTED = {
         "prefix": "sources/siano-userland/",
     },
     "px4-userland": {
-        "version": "0.1.3",
-        "commit": "639e65feee7c9f503d44023edd9ab9bba12d5d74",
+        "version": "0.1.4",
+        "commit": "7ec828578db47db4ed2a1b247d4c24fb722aedde",
         "url": "https://github.com/Khronos31/px4-userland.git",
         "spdx": "GPL-2.0-only",
         "prefix": "sources/px4-userland/",
