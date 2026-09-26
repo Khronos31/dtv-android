@@ -38,7 +38,7 @@ class GitHubReleaseUpdater(
     fun downloadAndInstall(update: AvailableUpdate, activity: Activity, callback: (DownloadResult) -> Unit) {
         executor.execute {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-                !context.packageManager.canRequestPackageInstalls()
+                !runCatching { context.packageManager.canRequestPackageInstalls() }.getOrDefault(false)
             ) {
                 mainHandler.post { callback(DownloadResult.NeedUnknownSourcesPermission) }
                 return@execute
@@ -193,7 +193,7 @@ class GitHubReleaseUpdater(
         )
         activity.startActivity(
             Intent(Intent.ACTION_INSTALL_PACKAGE).apply {
-                data = uri
+                setDataAndType(uri, "application/vnd.android.package-archive")
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             },
         )
