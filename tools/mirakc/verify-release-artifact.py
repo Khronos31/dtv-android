@@ -36,7 +36,7 @@ def read_info(path: Path) -> dict[str, str]:
 
 
 def verify_candidate_info(candidate: dict[str, str]) -> None:
-    if candidate.get("kind") != "candidate" or candidate.get("version") != "0.3.1":
+    if candidate.get("kind") != "candidate" or candidate.get("version") != "0.3.2":
         raise ArtifactError("candidate build-info identity mismatch")
     if re.fullmatch(r"[1-9][0-9]*", candidate.get("candidate_run_id", "")) is None:
         raise ArtifactError("candidate run id is malformed")

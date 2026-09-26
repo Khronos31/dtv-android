@@ -24,8 +24,8 @@ spec = importlib.util.spec_from_file_location("device_evidence", path)
 assert spec and spec.loader
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
-assert module.EXPECTED_PACKAGE_VERSION == "0.3.1"
-assert module.EXPECTED_PACKAGE_VERSION_CODE == "301"
+assert module.EXPECTED_PACKAGE_VERSION == "0.3.2"
+assert module.EXPECTED_PACKAGE_VERSION_CODE == "302"
 assert module.EXPECTED_CERT_SHA256.startswith("1fd02c")
 assert module.EPGSTATION_DEVICE_PORT == 8888
 assert module.EPGSTATION_PACKAGE == "dev.khronos31.epgstation.server"
@@ -76,8 +76,8 @@ assert "job_thread.join(2 * self.args.job_timeout + self.args.timeout + 1)" in s
 assert "thread.join()" not in source
 
 assert module.parse_package_badging(
-    "package: name='dev.khronos31.mirakc' versionCode='301' versionName='0.3.1'"
-) == {"package": "dev.khronos31.mirakc", "version_code": "301", "version_name": "0.3.1"}
+    "package: name='dev.khronos31.mirakc' versionCode='302' versionName='0.3.2'"
+) == {"package": "dev.khronos31.mirakc", "version_code": "302", "version_name": "0.3.2"}
 assert module.parse_cert_digest("Signer #1 certificate SHA-256 digest: AA:bb:00") == "aabb00"
 try:
     module.parse_int(True)
@@ -342,8 +342,8 @@ with tempfile.TemporaryDirectory(prefix="device-evidence-manifest-test-") as tem
         "candidate": {
             "apk_sha256": "a" * 64,
             "package": "dev.khronos31.mirakc",
-            "version_name": "0.3.1",
-            "version_code": "301",
+            "version_name": "0.3.2",
+            "version_code": "302",
             "certificate_sha256": "1fd02c94f29a5756ed1d560ac4ecb6813fa0b2e634473a6f31da210ffd5223c4",
         },
         "evidence_files": ["commands/output.txt"],

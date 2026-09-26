@@ -105,8 +105,8 @@ jobs:
           CANDIDATE_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          test "$(cat mirakc/VERSION)" = "0.3.1" \
-            || { echo "candidate build requires a 0.3.1 checkout" >&2; exit 1; }
+          test "$(cat mirakc/VERSION)" = "0.3.2" \
+            || { echo "candidate build requires a 0.3.2 checkout" >&2; exit 1; }
           ./gradlew --no-daemon \
             -PsianoUserlandDir="$GITHUB_WORKSPACE/siano-userland" \
             -Ppx4UserlandDir="$GITHUB_WORKSPACE/px4-userland" \
@@ -202,7 +202,7 @@ jobs:
               || { echo "Signed APK metadata changed: $signed_metadata" >&2; exit 1; }
             printf '%s' "$cert_sha256"
           }
-          candidate_cert="$(sign_apk candidate/mirakc-unsigned.apk "$RUNNER_TEMP/mirakc-signed-candidate.apk" 0.3.1 301)"
+          candidate_cert="$(sign_apk candidate/mirakc-unsigned.apk "$RUNNER_TEMP/mirakc-signed-candidate.apk" 0.3.2 302)"
           mkdir -p out
           cp "$RUNNER_TEMP/mirakc-signed-candidate.apk" out/mirakc-signed-candidate.apk
           (cd out && sha256sum mirakc-signed-candidate.apk > SHA256SUMS)
@@ -227,7 +227,7 @@ jobs:
 
           candidate = read_info(sys.argv[1])
           expected_cert = "1fd02c94f29a5756ed1d560ac4ecb6813fa0b2e634473a6f31da210ffd5223c4"
-          if candidate.get("kind") != "candidate" or candidate.get("version") != "0.3.1":
+          if candidate.get("kind") != "candidate" or candidate.get("version") != "0.3.2":
               raise SystemExit("candidate build-info changed during signing")
           if sys.argv[2] != expected_cert:
               raise SystemExit("signed certificate is not the production certificate")

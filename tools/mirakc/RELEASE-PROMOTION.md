@@ -1,6 +1,6 @@
 # mirakc release promotion
 
-`mirakc-v0.3.1` is promoted only from an annotated tag and the exact, successful
+`mirakc-v0.3.2` is promoted only from an annotated tag and the exact, successful
 `signed-candidate.yml` artifact. The release workflow does not rebuild mirakc.
 
 The annotation body must contain exactly this UTF-8 record (one key per line):
@@ -31,6 +31,6 @@ only the exact signed-candidate artifact. GitHub artifact retention is three
 days, so promotion must be performed before that retention window expires.
 Missing, stale, extra, or ambiguous candidate artifacts fail closed.
 
-The published mirakc files are deliberately explicit: `mirakc-0.3.1.apk`,
-`mirakc-0.3.1-acceptance.json`, and `SHA256SUMS`. EPGStation continues to
+The published mirakc files are deliberately explicit: `mirakc-0.3.2.apk`,
+`mirakc-0.3.2-acceptance.json`, and `SHA256SUMS`. EPGStation continues to
 use its existing tagged build path.

@@ -104,7 +104,7 @@ def verify_inputs(
     candidate_record = candidate_build.get("build")
     if not isinstance(candidate_record, dict):
         raise AttestationError("BUILD_INFO.json nested candidate build record is missing")
-    if candidate_record.get("kind") != "candidate" or candidate_record.get("version") != "0.3.1":
+    if candidate_record.get("kind") != "candidate" or candidate_record.get("version") != "0.3.2":
         raise AttestationError("candidate build-info identity mismatch")
     candidate_head = candidate_record.get("git_head")
     if not isinstance(candidate_head, str) or re.fullmatch(r"[0-9a-f]{40}", candidate_head) is None:
