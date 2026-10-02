@@ -29,6 +29,7 @@
 /* dwFeatures exchange level (CCID 1.1 section 5.1) */
 #define CCID_LEVEL_MASK 0x00070000u
 #define CCID_LEVEL_TPDU 0x00010000u
+#define CCID_TRANSFER_METADATA_LOG_LIMIT 32u
 
 #define T1_MAX_INF 254
 
@@ -38,6 +39,20 @@ static int g_tpdu = 1;    /* 1 = wrap APDUs in T=1 blocks ourselves */
 static uint8_t g_ns;      /* our T=1 send sequence number */
 static uint8_t g_nr;      /* next T=1 receive sequence number expected */
 static int g_ifsc = 32;   /* max INF the card accepts, from GetParameters */
+static unsigned int g_transfer_metadata_log_count;
+static int g_transfer_metadata_log_limit_notice;
+
+static int should_log_transfer_metadata(void) {
+    if (g_transfer_metadata_log_count < CCID_TRANSFER_METADATA_LOG_LIMIT) {
+        ++g_transfer_metadata_log_count;
+        return 1;
+    }
+    if (!g_transfer_metadata_log_limit_notice) {
+        g_transfer_metadata_log_limit_notice = 1;
+        LOGI("CCID transfer metadata log limit reached; suppressing further per-transfer logs");
+    }
+    return 0;
+}
 
 static void put_le32(uint8_t *p, uint32_t v) {
     p[0] = (uint8_t)v;
@@ -78,7 +93,9 @@ static int send_ccid(uint8_t type, const uint8_t *data, uint32_t len, uint8_t sp
     buf[8] = spec1;
     buf[9] = spec2;
     if (len > 0 && data != NULL) memcpy(buf + 10, data, len);
-    LOGI("OUT type=0x%02x len=%u seq=%u", type, len, seq);
+    if (should_log_transfer_metadata()) {
+        LOGI("OUT type=0x%02x len=%u seq=%u", type, len, seq);
+    }
     if (bulk(CCID_OUT, buf, (int)(10 + len)) != (int)(10 + len)) return -1;
     return seq;
 }
@@ -101,8 +118,10 @@ static int recv_ccid(uint8_t expect_type, int seq, uint8_t *data, int max, uint8
         uint8_t error = buf[8];
         uint8_t icc = status & 0x03;
         uint8_t cmd = (status >> 6) & 0x03;
-        LOGI("IN  type=0x%02x len=%u slot=%u seq=%u status=0x%02x(icc=%u cmd=%u) err=0x%02x chain=0x%02x n=%d",
-             buf[0], dlen, buf[5], buf[6], status, icc, cmd, error, buf[9], n);
+        if (should_log_transfer_metadata()) {
+            LOGI("IN  type=0x%02x len=%u slot=%u seq=%u status=0x%02x(icc=%u cmd=%u) err=0x%02x chain=0x%02x n=%d",
+                 buf[0], dlen, buf[5], buf[6], status, icc, cmd, error, buf[9], n);
+        }
         if (seq >= 0 && buf[6] != (uint8_t)seq) {
             LOGE("bSeq mismatch got=%u want=%d, discarding", buf[6], seq);
             continue;
@@ -171,6 +190,8 @@ int ccid_open(int usb_fd) {
     g_nr = 0;
     g_tpdu = 1;
     g_ifsc = 32;
+    g_transfer_metadata_log_count = 0;
+    g_transfer_metadata_log_limit_notice = 0;
     /*
      * The Android service claims every CCID interface before duplicating this
      * USBFS fd for the filter child.  Do not issue CLAIMINTERFACE again here:
