@@ -99,4 +99,6 @@ dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.24")
     implementation("com.google.zxing:core:3.5.3")
     implementation(project(":updater"))
+
+    testImplementation("junit:junit:4.13.2")
 }

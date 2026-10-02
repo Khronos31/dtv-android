@@ -178,7 +178,7 @@ class MainActivity : Activity() {
                 if (!volume.available) return@tvButton
                 RecordingStorage.save(this, volume.id)
                 refreshStorageList()
-                startServerService()
+                startServerService(restart = true)
             }
             button.isAllCaps = false
             button.isEnabled = enabled
@@ -199,11 +199,12 @@ class MainActivity : Activity() {
         val normalized = if (value.endsWith('/')) value else "$value/"
         preferences.edit().putString(KEY_MIRAKURUN_URL, normalized).apply()
         urlInput.setText(normalized)
-        startServerService()
+        startServerService(restart = true)
     }
 
-    private fun startServerService() {
+    private fun startServerService(restart: Boolean = false) {
         val intent = Intent(this, EpgStationService::class.java)
+        if (restart) intent.action = EpgStationService.ACTION_RESTART
         if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
     }
 

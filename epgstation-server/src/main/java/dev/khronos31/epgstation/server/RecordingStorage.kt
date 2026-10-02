@@ -21,7 +21,8 @@ internal object RecordingStorage {
 
     fun list(context: Context): List<RecordingVolume> {
         val volumes = mutableListOf<RecordingVolume>()
-        val internalRoot = File(context.filesDir, "epgstation")
+        // This root is persistent: the EPGStation payload lives in its own child directory.
+        val internalRoot = EpgStationLayout.persistentRoot(context.filesDir)
         volumes += volume(
             id = INTERNAL_ID,
             title = "Internal storage",

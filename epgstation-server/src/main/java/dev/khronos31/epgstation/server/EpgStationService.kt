@@ -35,8 +35,9 @@ class EpgStationService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // A saved Mirakurun URL is applied by the next supervised process.
-        stopNode()
+        // Ordinary starts (including Activity recreation) leave the running
+        // server alone. Settings changes carry an explicit restart action.
+        EpgStationStartPolicy.handle(intent?.action) { stopNode() }
         return START_STICKY
     }
 
@@ -97,7 +98,9 @@ class EpgStationService : Service() {
         var backoffMs = 1_000L
         while (!stopping.get()) {
             try {
-                val root = prepareFiles()
+                val directories = prepareFiles()
+                val root = directories.root
+                val payload = directories.payload
                 val nativeDir = File(applicationInfo.nativeLibraryDir)
                 val node = File(nativeDir, "libepgstation-node.so")
                 if (!node.isFile) {
@@ -105,16 +108,16 @@ class EpgStationService : Service() {
                 }
                 val sqlite = File(nativeDir, "libnode_sqlite3.so")
                 val crc32 = File(nativeDir, "libcrc32_android.so")
-                installNativeLoaders(root, sqlite, crc32)
+                installNativeLoaders(payload, sqlite, crc32)
                 // A previous supervisor round, or a crash, can leave the old
                 // family behind; index.js cannot bind or talk to IPC until it is gone.
                 killStrayNodeProcesses()
-                val process = ProcessBuilder(node.absolutePath, "dist/index.js")
+                val process = ProcessBuilder(node.absolutePath, File(payload, "dist/index.js").absolutePath)
                     .directory(root)
                     .redirectErrorStream(true)
                     .apply {
                         environment()["HOME"] = root.absolutePath
-                        environment()["NODE_PATH"] = File(root, "node_modules").absolutePath
+                        environment()["NODE_PATH"] = File(payload, "node_modules").absolutePath
                         environment()["LD_LIBRARY_PATH"] = nativeDir.absolutePath
                         environment()["PATH"] = "${nativeDir.absolutePath}:${environment()["PATH"] ?: ""}"
                         environment()["EPGSTATION_SQLITE3"] = sqlite.absolutePath
@@ -181,32 +184,48 @@ class EpgStationService : Service() {
         }
     }
 
-    private fun prepareFiles(): File {
-        val root = File(filesDir, PAYLOAD_DIR)
+    private fun prepareFiles(): EpgStationDirectories {
         val version = assets.open("payload.version").bufferedReader().use { it.readText().trim() }
-        val installedVersion = File(root, "payload.version")
-            .takeIf { it.isFile }
-            ?.readText()
-            ?.trim()
-        if (installedVersion != version || !File(root, "dist/index.js").isFile) {
-            deleteTree(root)
-            root.mkdirs()
-            copyAssetTree("", root)
+        val createSymbolicLink: (File, File) -> Unit = { target, link ->
+            try {
+                Os.symlink(target.absolutePath, link.absolutePath)
+            } catch (error: ErrnoException) {
+                throw IOException("Could not link EPGStation data to persistent storage", error)
+            }
         }
-        File(root, "data").mkdirs()
-        File(root, "drop").mkdirs()
-        File(root, "config").mkdirs()
-        File(root, "logs/Operator").mkdirs()
-        File(root, "logs/Service").mkdirs()
-        File(root, "logs/EPGUpdater").mkdirs()
-        deleteTree(File(root, "runtime"))
-        deleteTree(File(root, "native"))
-        writeRuntimeConfig(root)
-        return root
+        val readSymbolicLink: (File) -> String? = { link ->
+            try {
+                Os.readlink(link.absolutePath)
+            } catch (_: ErrnoException) {
+                null
+            }
+        }
+        val directories = EpgStationLayout.prepare(
+            filesDir = filesDir,
+            version = version,
+            installPayload = { target -> copyAssetTree("", target) },
+            createSymbolicLink = createSymbolicLink,
+            readSymbolicLink = readSymbolicLink
+        )
+        val root = directories.root
+        val payload = directories.payload
+        for (path in listOf(
+            "drop",
+            "config",
+            "logs/Operator",
+            "logs/Service",
+            "logs/EPGUpdater"
+        )) {
+            File(root, path).mkdirs()
+        }
+        EpgStationLayout.deleteTree(File(payload, "runtime"), readSymbolicLink)
+        EpgStationLayout.deleteTree(File(payload, "native"), readSymbolicLink)
+        writeRuntimeConfig(payload, root)
+        return directories
     }
 
-    private fun writeRuntimeConfig(root: File) {
-        val template = File(root, "config/config.yml.template")
+    private fun writeRuntimeConfig(payload: File, root: File) {
+        val template = File(payload, "config/config.yml.template")
         check(template.isFile) { "upstream config.yml.template is missing" }
         val url = getSharedPreferences(MainActivity.PREFERENCES, MODE_PRIVATE)
             .getString(MainActivity.KEY_MIRAKURUN_URL, MainActivity.DEFAULT_MIRAKURUN_URL)
@@ -313,11 +332,6 @@ class EpgStationService : Service() {
         }
     }
 
-    private fun deleteTree(file: File) {
-        if (file.isDirectory) file.listFiles()?.forEach { deleteTree(it) }
-        file.delete()
-    }
-
     private fun acquireWakeLock() {
         val power = getSystemService(POWER_SERVICE) as PowerManager
         wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "epgstation-server:resident").apply {
@@ -358,9 +372,9 @@ class EpgStationService : Service() {
     companion object {
         private const val TAG = "EPGStationServer"
         private const val NODE_LAUNCHER = "libepgstation-node.so"
-        private const val PAYLOAD_DIR = "epgstation"
         private const val CHANNEL = "epgstation-server-service"
         private const val ID = 40773
         internal const val PORT = 8888
+        internal const val ACTION_RESTART = EpgStationStartPolicy.ACTION_RESTART
     }
 }
