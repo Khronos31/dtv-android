@@ -103,6 +103,8 @@ jobs:
             -Ppx4UserlandDir="$GITHUB_WORKSPACE/px4-userland" \
             -Ppx4DrvDir="$GITHUB_WORKSPACE/px4_drv" \
             test :mirakc:lintDebug
+      - name: Test CCID log redaction
+        run: bash tools/mirakc/test-ccid-log-redaction.sh
       - name: Assemble debug
         env:
           MIRAKC_ARIB_AUTOTOOLS_ROOT: ${{ runner.temp }}/mirakc-arib-tools

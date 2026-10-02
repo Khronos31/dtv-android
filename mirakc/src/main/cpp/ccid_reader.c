@@ -38,7 +38,6 @@ static int g_tpdu = 1;    /* 1 = wrap APDUs in T=1 blocks ourselves */
 static uint8_t g_ns;      /* our T=1 send sequence number */
 static uint8_t g_nr;      /* next T=1 receive sequence number expected */
 static int g_ifsc = 32;   /* max INF the card accepts, from GetParameters */
-static int g_verbose;     /* full hex tracing budget, spent during init */
 
 static void put_le32(uint8_t *p, uint32_t v) {
     p[0] = (uint8_t)v;
@@ -49,25 +48,6 @@ static void put_le32(uint8_t *p, uint32_t v) {
 
 static uint32_t get_le32(const uint8_t *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
-}
-
-static void hexlog(const char *what, const uint8_t *p, int n) {
-    static const char digits[] = "0123456789abcdef";
-    if (n <= 0) {
-        LOGI("%s (empty)", what);
-        return;
-    }
-    for (int off = 0; off < n; off += 32) {
-        char line[32 * 3 + 1];
-        int m = n - off > 32 ? 32 : n - off;
-        for (int i = 0; i < m; i++) {
-            line[i * 3] = digits[p[off + i] >> 4];
-            line[i * 3 + 1] = digits[p[off + i] & 0x0f];
-            line[i * 3 + 2] = ' ';
-        }
-        line[m * 3] = '\0';
-        LOGI("%s +%03d %s", what, off, line);
-    }
 }
 
 static int bulk(uint8_t ep, void *data, int len) {
@@ -98,10 +78,7 @@ static int send_ccid(uint8_t type, const uint8_t *data, uint32_t len, uint8_t sp
     buf[8] = spec1;
     buf[9] = spec2;
     if (len > 0 && data != NULL) memcpy(buf + 10, data, len);
-    if (g_verbose > 0) {
-        LOGI("OUT type=0x%02x len=%u seq=%u spec=%02x %02x %02x", type, len, seq, spec0, spec1, spec2);
-        hexlog("OUT", buf, (int)(10 + len));
-    }
+    LOGI("OUT type=0x%02x len=%u seq=%u", type, len, seq);
     if (bulk(CCID_OUT, buf, (int)(10 + len)) != (int)(10 + len)) return -1;
     return seq;
 }
@@ -124,12 +101,8 @@ static int recv_ccid(uint8_t expect_type, int seq, uint8_t *data, int max, uint8
         uint8_t error = buf[8];
         uint8_t icc = status & 0x03;
         uint8_t cmd = (status >> 6) & 0x03;
-        if (g_verbose > 0) {
-            g_verbose--;
-            LOGI("IN  type=0x%02x len=%u slot=%u seq=%u status=0x%02x(icc=%u cmd=%u) err=0x%02x chain=0x%02x n=%d",
-                 buf[0], dlen, buf[5], buf[6], status, icc, cmd, error, buf[9], n);
-            hexlog("IN ", buf, n);
-        }
+        LOGI("IN  type=0x%02x len=%u slot=%u seq=%u status=0x%02x(icc=%u cmd=%u) err=0x%02x chain=0x%02x n=%d",
+             buf[0], dlen, buf[5], buf[6], status, icc, cmd, error, buf[9], n);
         if (seq >= 0 && buf[6] != (uint8_t)seq) {
             LOGE("bSeq mismatch got=%u want=%d, discarding", buf[6], seq);
             continue;
@@ -170,7 +143,6 @@ static void read_descriptors(void) {
         LOGE("descriptor pread failed n=%zd errno=%d; assuming TPDU level", n, errno);
         return;
     }
-    hexlog("desc", d, (int)n);
     for (ssize_t i = 0; i + 1 < n;) {
         int len = d[i];
         if (len < 2 || i + len > n) break;
@@ -199,7 +171,6 @@ int ccid_open(int usb_fd) {
     g_nr = 0;
     g_tpdu = 1;
     g_ifsc = 32;
-    g_verbose = 60;
     /*
      * The Android service claims every CCID interface before duplicating this
      * USBFS fd for the filter child.  Do not issue CLAIMINTERFACE again here:
@@ -312,7 +283,6 @@ int ccid_power_on(void) {
         return -1;
     }
     LOGI("ATR %d bytes", n);
-    hexlog("ATR", atr, n);
 
     g_ns = 0;
     g_nr = 0;
