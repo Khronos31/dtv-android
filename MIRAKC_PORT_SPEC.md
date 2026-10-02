@@ -1,7 +1,7 @@
 # mirakc Android port specification
 
 Status: Draft; Phase 0 feasibility is complete; remaining acceptance evidence is open
-Date: 2026-09-13
+Date: 2026-10-02
 
 ## Objective
 
@@ -15,10 +15,11 @@ The pinned inputs for the first port are:
 
 - mirakc `3.4.86` (`fc9610f51f8621aa8db508ddd36c7f1e2785d7be`);
 - mirakc-arib `0.24.38` (`e85e1f991aa91ba0e6c6e02d14a17d159901e181`);
-- siano-userland `v0.1.6` (`ad9bc7361288e9c188a1d8235ab946ac8b7bd6ac`);
-- px4-userland `v0.1.6` (`3477301c09578d6c0d85f381c1448a5c53157a68`).
+- siano-userland `v0.1.9` (`d1f4e42810d5a2023ff4a6c31f798cb381026693`);
+- px4-userland `v0.1.9` (`cf38742618bb02db41a95def619fbff50e9eb0f3`).
 
-`latest` means the newest non-prerelease release/tag observed on 2026-09-13.
+`latest` means the newest non-prerelease release/tag observed when these inputs
+were pinned on 2026-10-02.
 Builds remain reproducible by pinning these exact refs rather than following a
 moving branch.
 

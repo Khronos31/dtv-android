@@ -11,8 +11,8 @@ env:
   JAVA_VERSION: "17"
   JAVA_RUNTIME_VERSION: "17.0.20.1+1"
   RUST_VERSION: "1.98.1"
-  SIANO_USERLAND_REF: ad9bc7361288e9c188a1d8235ab946ac8b7bd6ac
-  PX4_USERLAND_REF: 3477301c09578d6c0d85f381c1448a5c53157a68
+  SIANO_USERLAND_REF: d1f4e42810d5a2023ff4a6c31f798cb381026693
+  PX4_USERLAND_REF: cf38742618bb02db41a95def619fbff50e9eb0f3
   PX4_DRV_REF: 2b3f79b5bc5db56e8556bb28397f7d8f74b2adeb
 
 jobs:
@@ -186,7 +186,7 @@ jobs:
             | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" >/dev/null
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
       - name: Build
-        run: ./gradlew --no-daemon :epgstation-server:assembleDebug
+        run: ./gradlew --no-daemon :epgstation-server:testDebugUnitTest :epgstation-server:assembleDebug
       - name: Verify the APK carries its module version
         run: |
           python3 tools/scripts/release_version.py check --component epgstation-server \

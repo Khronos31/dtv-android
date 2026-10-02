@@ -226,7 +226,8 @@ recisdb は入っていません。
 同梱している外部コンポーネントはそれぞれのライセンスに従います。特に mirakc
 APKに別プロセスとして同梱する `siano-userland` の `siano-ts` は
 GPL-2.0-or-later であり、対応するソースとライセンスは
-[siano-userland](https://github.com/Khronos31/siano-userland) にあります。
+[siano-userland](https://github.com/Khronos31/siano-userland) v0.1.9
+（commit `d1f4e42810d5a2023ff4a6c31f798cb381026693`）にあります。
 PX4 firmware生成器`fwtool`は`nns779/px4_drv` v0.2.1
 (commit `2b3f79b5bc5db56e8556bb28397f7d8f74b2adeb`)由来のGPL-2.0-onlyです。
 対応するLICENSEとsource provenanceはAPKの`px4-fwtool/`に含まれます。
@@ -244,7 +245,8 @@ JDK 17 と Android NDK r26 以降が要ります。Gradle タスクは SDK の `
 `ANDROID_NDK_HOME` を指定します。
 
 `siano-ts` は別リポジトリ
-[siano-userland](https://github.com/Khronos31/siano-userland) からビルドします。
+[siano-userland](https://github.com/Khronos31/siano-userland) v0.1.9
+（commit `d1f4e42810d5a2023ff4a6c31f798cb381026693`）からビルドします。
 その場所は `-PsianoUserlandDir` で渡します（既定値は作者の環境の
 `/config/GitHub/siano-userland`）。ビルドは両 ABI について
 `scripts/build-android.sh` を呼び、検証済みの実行ファイルを mirakc の APK に
@@ -256,8 +258,8 @@ JDK 17 と Android NDK r26 以降が要ります。Gradle タスクは SDK の `
 を使います。
 
 PX-Q3U4（`0511:084a`、2 デバイス）と、PX-MLT5PE（`0511:024e`）および DTV02A-5TS-P（`0511:924e`、いずれも 1 デバイス）の `px4d` は pinned な
-[px4-userland](https://github.com/Khronos31/px4-userland) v0.1.6
-（commit `3477301c09578d6c0d85f381c1448a5c53157a68`）を使います。PX4 firmware
+[px4-userland](https://github.com/Khronos31/px4-userland) v0.1.9
+（commit `cf38742618bb02db41a95def619fbff50e9eb0f3`）を使います。PX4 firmware
 生成器のビルドには [nns779/px4_drv](https://github.com/nns779/px4_drv) v0.2.1
 （commit `2b3f79b5bc5db56e8556bb28397f7d8f74b2adeb`）の detached checkout も必要です。
 それぞれ `-Ppx4UserlandDir` と `-Ppx4DrvDir` で渡せます（既定値は作者の環境の
@@ -268,7 +270,7 @@ commit の clean checkout にしてください。
 export JAVA_HOME=/path/to/jdk17
 export ANDROID_NDK_HOME=/path/to/android-sdk/ndk/27.0.12077973
 ./gradlew -PsianoUserlandDir=/path/to/siano-userland \
-    -Ppx4UserlandDir=/path/to/px4-userland-v0.1.6 \
+    -Ppx4UserlandDir=/path/to/px4-userland-v0.1.9 \
     -Ppx4DrvDir=/path/to/px4_drv-v0.2.1 \
     :mirakc:assembleDebug :epgstation-server:assembleDebug
 ```
