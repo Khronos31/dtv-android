@@ -55,6 +55,8 @@ val px4AdapterSource = layout.projectDirectory.file("src/main/cpp/px4_adapter.cp
 val px4TunePlanSource = layout.projectDirectory.file("src/main/cpp/px4_tune_plan.cpp")
 val px4TunePlanHeader = layout.projectDirectory.file("src/main/cpp/px4_tune_plan.h")
 val px4TunePlanTests = layout.projectDirectory.file("src/main/cpp/tests/px4_tune_plan_test.cpp")
+val px4ReceiverRetryHeader = layout.projectDirectory.file("src/main/cpp/px4_receiver_retry.h")
+val px4ReceiverRetryTests = layout.projectDirectory.file("src/main/cpp/tests/px4_receiver_retry_test.cpp")
 val px4CardRetryHeader = layout.projectDirectory.file("src/main/cpp/px4_card_retry.h")
 val px4CardRetryTests = layout.projectDirectory.file("src/main/cpp/tests/px4_card_retry_test.cpp")
 val px4TunePlanTestScript = layout.projectDirectory.file("../tools/mirakc/test-px4-tune-plan.sh")
@@ -86,6 +88,8 @@ val runPx4TunePlanHostTests = tasks.register<Exec>("runPx4TunePlanHostTests") {
         px4TunePlanSource,
         px4TunePlanHeader,
         px4TunePlanTests,
+        px4ReceiverRetryHeader,
+        px4ReceiverRetryTests,
         px4CardRetryHeader,
         px4CardRetryTests,
         px4TunePlanTestScript
@@ -267,6 +271,7 @@ val preparePx4AdapterBinaries = tasks.register("preparePx4AdapterBinaries") {
     inputs.property("px4UserlandDir", px4UserlandDir)
     inputs.files(
         px4AdapterSource,
+        px4ReceiverRetryHeader,
         px4TunePlanSource,
         px4TunePlanHeader,
         px4TunePlanTests,

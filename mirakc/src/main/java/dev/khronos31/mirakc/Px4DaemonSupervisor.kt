@@ -11,9 +11,7 @@ import java.io.IOException
 import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicBoolean
 
-internal data class Px4DeviceIdentity(val deviceName: String, val serial: String)
-
-/** Owns one permitted PX-Q3U4 pair for the lifetime of a px4d generation. */
+/** Owns the USB device or permitted USB pair for one px4d generation. */
 internal class Px4UsbHandle(
     val fd: Int,
     private val parcel: ParcelFileDescriptor,
@@ -33,11 +31,18 @@ internal class Px4UsbHandle(
 
 internal data class Px4Generation(
     val baseSerial: String,
+    val model: Px4DeviceModel,
     val runtimeDir: File,
     val terrestrialReceivers: List<Int>,
     val satelliteReceivers: List<Int>,
     val dualReceivers: List<Int> = emptyList()
-)
+) {
+    fun adapterArguments(receiver: Int): List<String> = listOf(
+        "--device=$baseSerial",
+        "--model=${model.adapterArgument}",
+        "--receiver=$receiver"
+    )
+}
 
 /** Starts px4d only after pairing and validating the two Android USB owners. */
 internal class Px4DaemonSupervisor(
@@ -184,9 +189,10 @@ internal class Px4DaemonSupervisor(
             return null
         }
 
-        val result = if (selected.second == null) {
+        val result = if (selected.model == Px4DeviceModel.MLT5) {
             Px4Generation(
                 selected.serial,
+                selected.model,
                 runtimeDir,
                 terrestrialReceivers = emptyList(),
                 satelliteReceivers = emptyList(),
@@ -195,6 +201,7 @@ internal class Px4DaemonSupervisor(
         } else {
             Px4Generation(
                 selected.serial,
+                selected.model,
                 runtimeDir,
                 terrestrialReceivers = listOf(2, 3, 6, 7),
                 satelliteReceivers = listOf(0, 1, 4, 5)
@@ -222,36 +229,12 @@ internal class Px4DaemonSupervisor(
         }
     }
 
-    private fun selectEnclosure(): Enclosure? {
-        val present = identities()
-        val mlt = present.filter { MLT_SERIAL.matches(it.serial) }
-        val parsed = present.mapNotNull { identity ->
-            val match = Q3U4_SERIAL.matchEntire(identity.serial) ?: return@mapNotNull null
-            ParsedIdentity(identity, match.groupValues[1], match.groupValues[2].single())
-        }
-        val pairs = parsed.groupBy { it.base }.values.filter { group ->
-            group.size == 2 && group.map { it.suffix }.toSet() == setOf('1', '2')
-        }
-        if (mlt.isNotEmpty() && parsed.isNotEmpty()) return null
-        if (mlt.size == 1 && parsed.isEmpty()) {
-            return Enclosure(mlt.single().serial, mlt.single(), null)
-        }
-        if (mlt.isNotEmpty() || pairs.size != 1) return null
-        val group = pairs.single()
-        val first = group.single { it.suffix == '1' }
-        val second = group.single { it.suffix == '2' }
-        return Enclosure(first.base, first.identity, second.identity)
+    private fun selectEnclosure(): Px4Enclosure? {
+        return Px4DeviceSelector.select(identities())
     }
 
     private fun waitingReason(): String {
-        val present = identities()
-        val mlt = present.count { MLT_SERIAL.matches(it.serial) }
-        val q3u4 = present.count { Q3U4_SERIAL.matches(it.serial) }
-        return if ((mlt > 0 && q3u4 > 0) || mlt > 1 || q3u4 > 2) {
-            "waiting (multiple PX4 devices)"
-        } else {
-            "waiting (PX4 pair 1/2 not permitted)"
-        }
+        return Px4DeviceSelector.waitingReason(identities())
     }
 
     private fun validatedFirmware(): File {
@@ -413,21 +396,7 @@ internal class Px4DaemonSupervisor(
         onStateChanged()
     }
 
-    private data class ParsedIdentity(
-        val identity: Px4DeviceIdentity,
-        val base: String,
-        val suffix: Char
-    )
-
-    private data class Enclosure(
-        val serial: String,
-        val first: Px4DeviceIdentity,
-        val second: Px4DeviceIdentity?
-    )
-
     private companion object {
-        val Q3U4_SERIAL = Regex("^(\\d{14})([12])$")
-        val MLT_SERIAL = Regex("^\\d{15}$")
         const val FIRMWARE_SIZE = 2169L
         const val FIRMWARE_SHA256 = "5213a5a38872661277a2cc1b2dfdfe88faf06f41205f460f3b51857f0568b484"
         const val READY_TIMEOUT_NS = 30_000_000_000L

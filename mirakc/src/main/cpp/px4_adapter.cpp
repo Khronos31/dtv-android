@@ -17,6 +17,7 @@
 #include "b_cas_card.h"
 #include "px4_card_retry.h"
 #include "px4_tune_plan.h"
+#include "px4_receiver_retry.h"
 
 #include <px4/error.h>
 #include <px4/pcsc_ifd_adapter.h>
@@ -177,12 +178,14 @@ int child_result(int status) {
 int main(int argc, char** argv) {
     std::string px4_ts;
     std::string base_serial;
+    std::string model_text;
     std::string receiver_text;
     std::string runtime_dir;
     std::string channel_text;
     std::string tsid_text;
     bool have_px4_ts = false;
     bool have_base_serial = false;
+    bool have_model = false;
     bool have_receiver = false;
     bool have_runtime_dir = false;
     bool have_channel = false;
@@ -198,6 +201,10 @@ int main(int argc, char** argv) {
             if (have_base_serial) return fail("duplicate --device");
             base_serial = value;
             have_base_serial = true;
+        } else if (consume_option(argc, argv, &index, "--model", &value)) {
+            if (have_model) return fail("duplicate --model");
+            model_text = value;
+            have_model = true;
         } else if (consume_option(argc, argv, &index, "--receiver", &value)) {
             if (have_receiver) return fail("duplicate --receiver");
             receiver_text = value;
@@ -219,24 +226,21 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (!have_px4_ts || !have_base_serial || !have_receiver || !have_runtime_dir || !have_channel ||
+    if (!have_px4_ts || !have_base_serial || !have_model || !have_receiver || !have_runtime_dir || !have_channel ||
         px4_ts.empty() || base_serial.empty() || runtime_dir.empty()) {
-        return fail("--px4-ts, --device, --receiver, --runtime-dir and --channel are required");
+        return fail("--px4-ts, --device, --model, --receiver, --runtime-dir and --channel are required");
     }
     int receiver = 0;
     if (!parse_int(receiver_text, &receiver) || receiver_text != std::to_string(receiver)) {
         return fail("--receiver must be a receiver ID");
     }
-    const bool q3u4_serial = base_serial.size() == 14 &&
-        base_serial.find_first_not_of("0123456789") == std::string::npos;
-    const bool mlt5_serial = base_serial.size() == 15 &&
-        base_serial.find_first_not_of("0123456789") == std::string::npos;
-    if (!q3u4_serial && !mlt5_serial) {
-        return fail("--device must be a 14-digit PX-Q3U4 base serial or a 15-digit MLT5 serial");
+    const std::optional<px4_adapter::ReceiverMap> parsed_receiver_map =
+        px4_adapter::receiver_map_for_model(model_text);
+    if (!parsed_receiver_map.has_value()) return fail("--model must be q3u4 or mlt5");
+    const px4_adapter::ReceiverMap receiver_map = *parsed_receiver_map;
+    if (!px4_adapter::base_serial_matches_model(receiver_map, base_serial)) {
+        return fail("--device serial length does not match --model");
     }
-    const px4_adapter::ReceiverMap receiver_map = q3u4_serial
-        ? px4_adapter::ReceiverMap::kPxQ3u4
-        : px4_adapter::ReceiverMap::kPxMlt5;
 
     px4_adapter::TunePlan tune_plan;
     std::string tune_error;
@@ -278,24 +282,6 @@ int main(int argc, char** argv) {
     child_storage.emplace_back("--output");
     child_storage.emplace_back("-");
 
-    // Retries rotate through the other receivers of the same broadcast
-    // system.  The previous mirakc session can leave the originally selected
-    // receiver in a state where the first re-tune yields no TS, while the
-    // sibling receivers are idle and tune immediately.
-    std::vector<int> receiver_pool;
-    if (tune_plan.system == px4_adapter::BroadcastSystem::kIsdbT) {
-        receiver_pool = {2, 3, 6, 7};
-    } else {
-        receiver_pool = {0, 1, 4, 5};
-    }
-    std::size_t receiver_slot = 0;
-    for (std::size_t index = 0; index < receiver_pool.size(); ++index) {
-        if (receiver_pool[index] == receiver) {
-            receiver_slot = index;
-            break;
-        }
-    }
-
     px4::userland::pcsc::PosixIfdCardClientFactory factory;
     px4::userland::pcsc::IfdEndpoint endpoint;
     endpoint.runtime_directory = runtime_dir;
@@ -313,9 +299,11 @@ int main(int argc, char** argv) {
     // lease drains, the first tune attempt can race the receiver reset and
     // end with a clean but empty stream, so retry both cases.
     for (int attempt = 0; attempt < 50; ++attempt) {
-        const int attempt_receiver =
-            receiver_pool[(receiver_slot + attempt) % receiver_pool.size()];
-        child_storage[4] = std::to_string(attempt_receiver);
+        if (!px4_adapter::set_child_receiver_for_attempt(
+                &child_storage, receiver_map, tune_plan.system, receiver,
+                static_cast<std::size_t>(attempt))) {
+            return fail("cannot select child receiver for retry");
+        }
         std::vector<char*> child_argv;
         child_argv.reserve(child_storage.size() + 1);
         for (std::string& argument : child_storage) {

@@ -14,6 +14,13 @@ c++ -std=c++17 -Wall -Wextra -Werror \
 
 c++ -std=c++17 -Wall -Wextra -Werror \
     -I"$repo_dir/mirakc/src/main/cpp" \
+    "$repo_dir/mirakc/src/main/cpp/px4_tune_plan.cpp" \
+    "$repo_dir/mirakc/src/main/cpp/tests/px4_receiver_retry_test.cpp" \
+    -o "$build_dir/px4_receiver_retry_test"
+"$build_dir/px4_receiver_retry_test"
+
+c++ -std=c++17 -Wall -Wextra -Werror \
+    -I"$repo_dir/mirakc/src/main/cpp" \
     "$repo_dir/mirakc/src/main/cpp/tests/px4_card_retry_test.cpp" \
     -o "$build_dir/px4_card_retry_test"
 "$build_dir/px4_card_retry_test"
