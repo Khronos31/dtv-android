@@ -262,13 +262,7 @@ class EpgStationService : Service() {
             lines.add(portIndex + 1, "clientSocketioPort: $PORT")
         }
         File(root, "config/config.yml").writeText(preferRawLiveTs(lines.joinToString("\n") + "\n"))
-        for (name in listOf("operatorLogConfig", "serviceLogConfig", "epgUpdaterLogConfig")) {
-            val dest = File(root, "config/$name.yml")
-            if (dest.isFile) continue
-            val sample = File(root, "config/$name.sample.yml")
-            check(sample.isFile) { "upstream $name.sample.yml is missing" }
-            sample.copyTo(dest, overwrite = false)
-        }
+        EpgStationConfigFiles.ensureLogConfigs(File(payload, "config"), File(root, "config"))
     }
 
     private fun preferRawLiveTs(yaml: String): String {

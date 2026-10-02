@@ -89,6 +89,43 @@ class EpgStationLayoutTest {
     }
 
     @Test
+    fun newInstallCreatesRuntimeConfigsFromPayloadSamplesAndKeepsExistingConfigs() {
+        val filesDir = temporaryFolder.newFolder("files-config")
+        val first = EpgStationLayout.prepare(
+            filesDir = filesDir,
+            version = "payload-v1",
+            installPayload = { target -> installPayloadWithConfigSamples(target, "v1") },
+            createSymbolicLink = ::createDataLink,
+            readSymbolicLink = ::readDataLink
+        )
+        val runtimeConfig = File(first.root, "config/config.yml").apply {
+            writeText("synthetic rendered runtime config")
+        }
+        val payloadConfig = File(first.payload, "config")
+
+        EpgStationConfigFiles.ensureLogConfigs(payloadConfig, File(first.root, "config"))
+
+        assertEquals("synthetic rendered runtime config", File(payloadConfig, "config.yml").readText())
+        assertEquals("synthetic operator config v1", File(first.root, "config/operatorLogConfig.yml").readText())
+        assertEquals("synthetic service config v1", File(first.root, "config/serviceLogConfig.yml").readText())
+        assertEquals("synthetic EPG updater config v1", File(first.root, "config/epgUpdaterLogConfig.yml").readText())
+
+        File(first.root, "config/operatorLogConfig.yml").writeText("user-maintained operator config")
+        val updated = EpgStationLayout.prepare(
+            filesDir = filesDir,
+            version = "payload-v2",
+            installPayload = { target -> installPayloadWithConfigSamples(target, "v2") },
+            createSymbolicLink = ::createDataLink,
+            readSymbolicLink = ::readDataLink
+        )
+        EpgStationConfigFiles.ensureLogConfigs(File(updated.payload, "config"), File(updated.root, "config"))
+
+        assertEquals("user-maintained operator config", File(updated.root, "config/operatorLogConfig.yml").readText())
+        assertEquals("user-maintained operator config", File(updated.payload, "config/operatorLogConfig.yml").readText())
+        assertEquals("synthetic rendered runtime config", runtimeConfig.readText())
+    }
+
+    @Test
     fun failedPayloadStagingLeavesExistingPayloadAndPersistentDataUntouched() {
         val filesDir = temporaryFolder.newFolder("files-failure")
         val first = prepare(filesDir, "payload-v1")
@@ -135,6 +172,15 @@ class EpgStationLayoutTest {
             writeText("synthetic $version")
         }
         File(target, "payload.version").writeText(version)
+    }
+
+    private fun installPayloadWithConfigSamples(target: File, version: String) {
+        installPayload(target, "payload-$version")
+        val config = File(target, "config").apply { mkdirs() }
+        File(config, "config.yml.template").writeText("synthetic config template $version")
+        File(config, "operatorLogConfig.sample.yml").writeText("synthetic operator config $version")
+        File(config, "serviceLogConfig.sample.yml").writeText("synthetic service config $version")
+        File(config, "epgUpdaterLogConfig.sample.yml").writeText("synthetic EPG updater config $version")
     }
 
     private fun createDataLink(target: File, link: File) {
