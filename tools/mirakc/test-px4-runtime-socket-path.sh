@@ -7,7 +7,7 @@ if [ "$#" -ne 1 ] || [ ! -f "$1/userland/src/posix_ipc.cpp" ]; then
     exit 2
 fi
 px4_userland_dir=$1
-expected_px4_ref=d1f4e42810d5a2023ff4a6c31f798cb381026693
+expected_px4_ref=cf38742618bb02db41a95def619fbff50e9eb0f3
 actual_px4_ref=$(git -C "$px4_userland_dir" rev-parse HEAD)
 if [ "$actual_px4_ref" != "$expected_px4_ref" ]; then
     printf '%s\n' "px4-userland HEAD mismatch: expected $expected_px4_ref, found $actual_px4_ref" >&2
