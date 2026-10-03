@@ -7,6 +7,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cstring>
 #include <string>
 
@@ -364,15 +365,21 @@ Java_dev_khronos31_mirakc_NativeUsbProcess_nativePollSiano(JNIEnv*, jclass, jint
 
 extern "C" JNIEXPORT jintArray JNICALL
 Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStartPx4d(
-    JNIEnv* env, jclass, jstring executable, jstring firmware, jstring baseSerial,
+    JNIEnv* env, jclass, jstring executable, jstring firmware, jstring baseSerial, jstring instanceToken,
     jstring runtimeDir, jint firstUsbFd, jint secondUsbFd) {
     const std::string executablePath = stringFromJni(env, executable);
     const std::string firmwarePath = stringFromJni(env, firmware);
     const std::string baseSerialValue = stringFromJni(env, baseSerial);
+    const std::string instanceTokenValue = stringFromJni(env, instanceToken);
     const std::string runtimeDirPath = stringFromJni(env, runtimeDir);
     const bool single = secondUsbFd < 0;
+    const bool validInstance = !instanceTokenValue.empty() && instanceTokenValue.size() <= 80 &&
+        std::all_of(instanceTokenValue.begin(), instanceTokenValue.end(), [](unsigned char value) {
+            return (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z') ||
+                (value >= '0' && value <= '9') || value == '_' || value == '-' || value == '.';
+        });
     if (executablePath.empty() || firmwarePath.empty() || baseSerialValue.empty() ||
-        runtimeDirPath.empty() || firstUsbFd < 0 ||
+        !validInstance || runtimeDirPath.empty() || firstUsbFd < 0 ||
         (!single && (secondUsbFd < 0 || firstUsbFd == secondUsbFd))) {
         return nullptr;
     }
@@ -417,7 +424,7 @@ Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStartPx4d(
         // Keep only stdio and the USB descriptors px4d was given.
         close_inherited_descriptors(3, single ? -1 : 4);
 
-        char* argv_storage[12];
+        char* argv_storage[14];
         int argc = 0;
         argv_storage[argc++] = const_cast<char*>(executablePath.c_str());
         argv_storage[argc++] = const_cast<char*>("--fd");
@@ -428,6 +435,8 @@ Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStartPx4d(
         }
         argv_storage[argc++] = const_cast<char*>("--device");
         argv_storage[argc++] = const_cast<char*>(baseSerialValue.c_str());
+        argv_storage[argc++] = const_cast<char*>("--instance");
+        argv_storage[argc++] = const_cast<char*>(instanceTokenValue.c_str());
         argv_storage[argc++] = const_cast<char*>("--firmware");
         argv_storage[argc++] = const_cast<char*>(firmwarePath.c_str());
         argv_storage[argc++] = const_cast<char*>("--runtime-dir");

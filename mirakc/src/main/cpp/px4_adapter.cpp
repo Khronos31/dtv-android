@@ -19,6 +19,7 @@
 #include "px4_tune_plan.h"
 #include "px4_receiver_retry.h"
 
+#include <algorithm>
 #include <px4/error.h>
 #include <px4/pcsc_ifd_adapter.h>
 
@@ -51,6 +52,16 @@ bool parse_int(const std::string& text, int* value) {
     }
     *value = static_cast<int>(parsed);
     return true;
+}
+
+bool valid_instance_token(const std::string& value) {
+    if (value.empty() || value.size() > 80) return false;
+    return std::all_of(value.begin(), value.end(), [](unsigned char character) {
+        return (character >= 'A' && character <= 'Z') ||
+            (character >= 'a' && character <= 'z') ||
+            (character >= '0' && character <= '9') || character == '_' ||
+            character == '-' || character == '.';
+    });
 }
 
 int fail(const char* message) {
@@ -178,6 +189,7 @@ int child_result(int status) {
 int main(int argc, char** argv) {
     std::string px4_ts;
     std::string base_serial;
+    std::string instance_token;
     std::string model_text;
     std::string receiver_text;
     std::string runtime_dir;
@@ -185,6 +197,7 @@ int main(int argc, char** argv) {
     std::string tsid_text;
     bool have_px4_ts = false;
     bool have_base_serial = false;
+    bool have_instance_token = false;
     bool have_model = false;
     bool have_receiver = false;
     bool have_runtime_dir = false;
@@ -201,6 +214,10 @@ int main(int argc, char** argv) {
             if (have_base_serial) return fail("duplicate --device");
             base_serial = value;
             have_base_serial = true;
+        } else if (consume_option(argc, argv, &index, "--instance", &value)) {
+            if (have_instance_token) return fail("duplicate --instance");
+            instance_token = value;
+            have_instance_token = true;
         } else if (consume_option(argc, argv, &index, "--model", &value)) {
             if (have_model) return fail("duplicate --model");
             model_text = value;
@@ -226,17 +243,18 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (!have_px4_ts || !have_base_serial || !have_model || !have_receiver || !have_runtime_dir || !have_channel ||
+    if (!have_px4_ts || !have_base_serial || !have_instance_token || !have_model || !have_receiver || !have_runtime_dir || !have_channel ||
         px4_ts.empty() || base_serial.empty() || runtime_dir.empty()) {
-        return fail("--px4-ts, --device, --model, --receiver, --runtime-dir and --channel are required");
+        return fail("--px4-ts, --device, --instance, --model, --receiver, --runtime-dir and --channel are required");
     }
+    if (!valid_instance_token(instance_token)) return fail("--instance is not a valid runtime token");
     int receiver = 0;
     if (!parse_int(receiver_text, &receiver) || receiver_text != std::to_string(receiver)) {
         return fail("--receiver must be a receiver ID");
     }
     const std::optional<px4_adapter::ReceiverMap> parsed_receiver_map =
         px4_adapter::receiver_map_for_model(model_text);
-    if (!parsed_receiver_map.has_value()) return fail("--model must be q3u4 or mlt5");
+    if (!parsed_receiver_map.has_value()) return fail("--model must be q3u4, mlt5, m1ur or s1ur");
     const px4_adapter::ReceiverMap receiver_map = *parsed_receiver_map;
     if (!px4_adapter::base_serial_matches_model(receiver_map, base_serial)) {
         return fail("--device serial length does not match --model");
@@ -258,8 +276,8 @@ int main(int argc, char** argv) {
     std::vector<std::string> child_storage;
     child_storage.reserve(18);
     child_storage.push_back(px4_ts);
-    child_storage.emplace_back("--device");
-    child_storage.push_back(base_serial);
+    child_storage.emplace_back("--instance");
+    child_storage.push_back(instance_token);
     child_storage.emplace_back("--receiver");
     child_storage.push_back(receiver_text);
     child_storage.emplace_back("--system");
@@ -285,7 +303,7 @@ int main(int argc, char** argv) {
     px4::userland::pcsc::PosixIfdCardClientFactory factory;
     px4::userland::pcsc::IfdEndpoint endpoint;
     endpoint.runtime_directory = runtime_dir;
-    endpoint.device_instance = base_serial;
+    endpoint.device_instance = instance_token;
 
     // Keep the real downstream (mirakc) endpoint separate: each attempt wraps
     // STDOUT with a counting forwarder so a tune that produces no TS can be

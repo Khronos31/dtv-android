@@ -21,6 +21,8 @@ enum class SatelliteSelector {
 enum class ReceiverMap {
     kPxQ3u4,
     kPxMlt5,
+    kPxM1ur,
+    kPxS1ur,
 };
 
 struct TunePlan {

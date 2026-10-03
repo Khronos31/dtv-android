@@ -51,7 +51,9 @@ class MirakcService : Service() {
                 lastError = "none"
                 statusText = "USB permission granted: ${device.deviceName}"
                 requestUsbPermissionIfNeeded()
-                mirakcSupervisor?.reconfigure()
+                if (MirakcUsbEventPolicy.affectsTunerConfiguration(device.vendorId, device.productId)) {
+                    mirakcSupervisor?.reconfigure()
+                }
             } else {
                 lastError = "USB permission was denied"
                 publishStatus()
@@ -63,10 +65,19 @@ class MirakcService : Service() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action != UsbManager.ACTION_USB_DEVICE_ATTACHED &&
                 intent.action != UsbManager.ACTION_USB_DEVICE_DETACHED) return
-            if (intent.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) {
-                requestUsbPermissionIfNeeded()
+            val device = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE) ?: run {
+                publishStatus()
+                return
             }
-            mirakcSupervisor?.reconfigure()
+            val isAttached = intent.action == UsbManager.ACTION_USB_DEVICE_ATTACHED
+            if (!isAttached && MirakcUsbEventPolicy.isPx4Tuner(device.vendorId, device.productId)) {
+                mirakcSupervisor?.invalidatePx4Device(device.deviceName)
+            }
+            if (isAttached && isUsbPermissionTarget(device)) requestUsbPermissionIfNeeded()
+            if (MirakcUsbEventPolicy.affectsTunerConfiguration(device.vendorId, device.productId) &&
+                (!isAttached || usbManager.hasPermission(device))) {
+                mirakcSupervisor?.reconfigure()
+            }
             publishStatus()
         }
     }
@@ -211,7 +222,7 @@ class MirakcService : Service() {
             return
         }
         if (supportedDevices().isEmpty() && px4Devices().isEmpty()) {
-            lastError = "No supported tuner found (Siano or PX-Q3U4)"
+            lastError = "No supported tuner found (Siano or supported PX4 device)"
             publishStatus()
             return
         }
@@ -292,6 +303,10 @@ class MirakcService : Service() {
     }
 
     private fun readerDevices(): List<UsbDevice> = usbManager.deviceList.values.filter(::isSmartCardReader)
+
+    private fun isUsbPermissionTarget(device: UsbDevice): Boolean =
+        MirakcUsbEventPolicy.affectsTunerConfiguration(device.vendorId, device.productId) ||
+            isSmartCardReader(device)
 
     private fun openUsbForTuner(index: Int, deviceName: String): SianoUsbHandle {
         val device = supportedDevices().firstOrNull {
@@ -420,7 +435,10 @@ class MirakcService : Service() {
         private const val NOTIFICATION_CHANNEL = "mirakc-service"
         private const val NOTIFICATION_ID = 40772
         private val PX4_PRODUCT_IDS = setOf(Px4DeviceSelector.Q3U4_PRODUCT_ID) +
-            Px4DeviceSelector.MLT5_PRODUCT_IDS
+            Px4DeviceSelector.MLT5_PRODUCT_IDS + setOf(
+                Px4DeviceSelector.M1UR_PRODUCT_ID,
+                Px4DeviceSelector.S1UR_PRODUCT_ID
+            )
 
         @Volatile
         var statusText: String = "Starting mirakc service..."

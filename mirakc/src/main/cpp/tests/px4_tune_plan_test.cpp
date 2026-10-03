@@ -119,6 +119,22 @@ int main() {
                     px4_adapter::ReceiverMap::kPxMlt5);
     expect_rejected("Q3U4 map rejects MLT-only overlap", 8, "BS01_0");
 
+    expect_plan("M1UR terrestrial receiver", 0, "27", std::nullopt,
+                BroadcastSystem::kIsdbT, 557142, SatelliteSelector::kNone, 0,
+                px4_adapter::ReceiverMap::kPxM1ur);
+    expect_plan("M1UR satellite receiver", 0, "BS15_0", std::nullopt,
+                BroadcastSystem::kIsdbS, 1318000, SatelliteSelector::kSlot, 0,
+                px4_adapter::ReceiverMap::kPxM1ur);
+    expect_rejected("M1UR receiver one is invalid", 1, "27", std::nullopt,
+                    px4_adapter::ReceiverMap::kPxM1ur);
+    expect_plan("S1UR terrestrial receiver", 0, "27", std::nullopt,
+                BroadcastSystem::kIsdbT, 557142, SatelliteSelector::kNone, 0,
+                px4_adapter::ReceiverMap::kPxS1ur);
+    expect_rejected("S1UR has no satellite frontend", 0, "BS15_0", std::nullopt,
+                    px4_adapter::ReceiverMap::kPxS1ur);
+    expect_rejected("Q3 receiver is never substituted into MLT map", 6, "27", std::nullopt,
+                    px4_adapter::ReceiverMap::kPxMlt5);
+
     std::cout << "px4 tune-plan tests: PASS\n";
     return EXIT_SUCCESS;
 }

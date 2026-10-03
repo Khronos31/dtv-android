@@ -15,7 +15,7 @@ import java.net.URL
 import java.security.MessageDigest
 import java.util.zip.ZipInputStream
 
-/** Downloads and generates the PX-Q3U4 firmware without modifying a valid cache. */
+/** Downloads and generates the PX4 firmware image without modifying a valid cache. */
 internal class Px4FirmwareAcquirer(
     private val destinationDirectory: () -> File?,
     private val fwtool: () -> File,

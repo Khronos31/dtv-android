@@ -29,6 +29,7 @@ void expect_child_receiver(
     std::vector<std::string> child_arguments{
         "px4-ts", "--device", model == px4_adapter::ReceiverMap::kPxQ3u4
             ? "12345678901234" : "123456789012345",
+        "--instance", "px4-test-device",
         "--receiver", std::to_string(selected), "--system",
         system == px4_adapter::BroadcastSystem::kIsdbT ? "isdb-t" : "isdb-s"
     };
@@ -52,15 +53,23 @@ void expect_child_receiver(
 int main() {
     const auto q3u4 = px4_adapter::receiver_map_for_model("q3u4");
     const auto mlt5 = px4_adapter::receiver_map_for_model("mlt5");
+    const auto m1ur = px4_adapter::receiver_map_for_model("m1ur");
+    const auto s1ur = px4_adapter::receiver_map_for_model("s1ur");
     if (!q3u4 || *q3u4 != px4_adapter::ReceiverMap::kPxQ3u4 ||
         !mlt5 || *mlt5 != px4_adapter::ReceiverMap::kPxMlt5 ||
+        !m1ur || *m1ur != px4_adapter::ReceiverMap::kPxM1ur ||
+        !s1ur || *s1ur != px4_adapter::ReceiverMap::kPxS1ur ||
         px4_adapter::receiver_map_for_model("unknown")) {
         fail("explicit model names map to the supported receiver maps");
     }
     if (!px4_adapter::base_serial_matches_model(*q3u4, "12345678901234") ||
         !px4_adapter::base_serial_matches_model(*mlt5, "123456789012345") ||
+        !px4_adapter::base_serial_matches_model(*m1ur, "123456789012345") ||
+        !px4_adapter::base_serial_matches_model(*s1ur, "123456789012345") ||
         px4_adapter::base_serial_matches_model(*q3u4, "123456789012345") ||
-        px4_adapter::base_serial_matches_model(*mlt5, "12345678901234")) {
+        px4_adapter::base_serial_matches_model(*mlt5, "12345678901234") ||
+        px4_adapter::base_serial_matches_model(*m1ur, "12345678901234") ||
+        px4_adapter::base_serial_matches_model(*s1ur, "12345678901234")) {
         fail("base serial validation follows the explicit model");
     }
 
@@ -81,6 +90,12 @@ int main() {
                           BroadcastSystem::kIsdbS, 1, 0, 1);
     expect_child_receiver("MLT5 satellite retry stays in MLT5 pool", *mlt5,
                           BroadcastSystem::kIsdbS, 1, 1, 0);
+    expect_child_receiver("M1UR GR retry stays on receiver zero", *m1ur,
+                          BroadcastSystem::kIsdbT, 0, 1, 0);
+    expect_child_receiver("M1UR satellite retry stays on receiver zero", *m1ur,
+                          BroadcastSystem::kIsdbS, 0, 1, 0);
+    expect_child_receiver("S1UR GR retry stays on receiver zero", *s1ur,
+                          BroadcastSystem::kIsdbT, 0, 1, 0);
 
     std::vector<std::string> missing_receiver{"px4-ts", "--device", "123456789012345"};
     if (px4_adapter::set_child_receiver_for_attempt(

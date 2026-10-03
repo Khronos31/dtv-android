@@ -54,8 +54,8 @@ NATIVE_NAMES = (
 )
 CHECKS = (
     "candidate_binding", "service_api", "ten_cycles", "descriptor_ownership",
-    "zero_orphan", "siano_12seg", "q3u4_eight_tuner", "bs_cs_integrity",
-    "concurrency_single_px4d", "epgstation_scan_schedule_live",
+    "zero_orphan", "siano_12seg", "px4_fleet_inventory", "bs_cs_integrity",
+    "concurrency_px4_fleet", "epgstation_scan_schedule_live",
     "size_metrics", "rss_metrics", "usb_detach_reconnect",
 )
 
@@ -356,39 +356,61 @@ def parse_diagnostic_snapshot(text: str) -> tuple[dict[int, dict[str, Any]], dic
 
 
 def validate_q3u4_inventory(tuners: Any) -> dict[str, Any]:
-    """Validate the eight PX4 entries while allowing Siano entries alongside them."""
+    """Validate the supported PX4 fleet and require at least one complete Q3U4."""
     if not isinstance(tuners, list):
         raise EvidenceError("/api/tuners must be an array")
-    px4 = []
+    profiles = {
+        "Q3U4": {0: {"BS", "CS"}, 1: {"BS", "CS"}, 2: {"GR"}, 3: {"GR"},
+                 4: {"BS", "CS"}, 5: {"BS", "CS"}, 6: {"GR"}, 7: {"GR"}},
+        "MLT5": {receiver: {"GR", "BS", "CS"} for receiver in range(5)},
+        "M1UR": {0: {"GR", "BS", "CS"}},
+        "S1UR": {0: {"GR"}},
+    }
+    serial_lengths = {"Q3U4": 14, "MLT5": 15, "M1UR": 15, "S1UR": 15}
+    parsed: dict[tuple[str, str], dict[int, dict[str, Any]]] = {}
+    names: set[str] = set()
     for item in tuners:
         if not isinstance(item, dict):
             raise EvidenceError("tuner object is not an object")
         name = item.get("name")
-        if isinstance(name, str) and name.startswith("PX4-"):
-            px4.append(item)
-    if len(px4) != 8:
-        raise EvidenceError(f"expected exactly eight PX4 tuner objects, got {len(px4)}")
-    gr = []
-    satellite = []
-    for item in px4:
-        name = item["name"]
+        if not isinstance(name, str) or not name.startswith("PX4-"):
+            continue
+        match = re.fullmatch(r"PX4-(Q3U4|MLT5|M1UR|S1UR)-(\d+)-R(\d+)", name)
+        if not match:
+            raise EvidenceError(f"unexpected PX4 tuner name: {name}")
+        model, serial, receiver_text = match.groups()
+        receiver = int(receiver_text)
+        if len(serial) != serial_lengths[model] or name in names:
+            raise EvidenceError(f"PX4 tuner identity is malformed or duplicated: {name}")
+        names.add(name)
         types = item.get("types")
         if not isinstance(types, list):
             raise EvidenceError("PX4 tuner object has no upstream `types` array")
         normalized = {str(value).upper() for value in types}
-        if name.startswith("PX4-GR-"):
-            if len(types) != 1 or normalized != {"GR"}:
-                raise EvidenceError("PX4-GR tuner types must be exactly {GR}")
-            gr.append(item)
-        elif name.startswith("PX4-S-"):
-            if len(types) != 2 or normalized != {"BS", "CS"}:
-                raise EvidenceError("PX4-S tuner types must be exactly {BS, CS}")
-            satellite.append(item)
-        else:
-            raise EvidenceError(f"unexpected PX4 tuner name: {name}")
-    if len(gr) != 4 or len(satellite) != 4:
-        raise EvidenceError(f"expected four PX4-GR and four PX4-S entries, got {len(gr)}/{len(satellite)}")
-    return {"px4_count": 8, "px4_gr_count": len(gr), "px4_satellite_count": len(satellite), "inventory": px4}
+        expected_types = profiles[model].get(receiver)
+        if expected_types is None or len(types) != len(expected_types) or normalized != expected_types:
+            raise EvidenceError(f"PX4-{model} receiver {receiver} has unsupported tuner types")
+        group = parsed.setdefault((model, serial), {})
+        if receiver in group:
+            raise EvidenceError(f"PX4 enclosure has duplicate receiver {receiver}: {model}/{serial}")
+        group[receiver] = item
+    if not parsed:
+        raise EvidenceError("no supported PX4 tuner entries are present")
+    for (model, serial), receivers in parsed.items():
+        if set(receivers) != set(profiles[model]):
+            raise EvidenceError(f"incomplete PX4-{model} receiver inventory: {serial}")
+    q3u4 = [items for (model, _), items in parsed.items() if model == "Q3U4"]
+    if not q3u4:
+        raise EvidenceError("no complete PX-Q3U4 enclosure is present")
+    flat = [item for receivers in parsed.values() for item in receivers.values()]
+    return {
+        "px4_count": len(flat),
+        "q3u4_enclosures": len(q3u4),
+        "px4_gr_count": sum(1 for item in flat if "GR" in {str(value).upper() for value in item["types"]}),
+        "px4_satellite_count": sum(1 for item in flat if {"BS", "CS"} & {str(value).upper() for value in item["types"]}),
+        "model_enclosures": {model: sum(1 for key in parsed if key[0] == model) for model in profiles},
+        "inventory": flat,
+    }
 
 
 def validate_descriptor_snapshot(tables: dict[int, list[str]], rows: dict[int, dict[str, Any]]) -> dict[str, Any]:
@@ -409,7 +431,7 @@ def validate_descriptor_snapshot(tables: dict[int, list[str]], rows: dict[int, d
     inherited = {target: pids for target, pids in owners.items() if any(pid in main for pid in pids)}
     if inherited:
         raise EvidenceError(f"mirakc process inherited USB/smart-card descriptors: {inherited}")
-    expected_owner_markers = ("libsiano-ts.so", "libmirakc-b25-filter.so", "libpx4d.so")
+    expected_owner_markers = ("libsiano-ts.so", "libmirakc-b25-filter.so")
     marker_processes: dict[str, list[int]] = {}
     for marker in expected_owner_markers:
         pids = [pid for pid, row in rows.items() if marker in row["text"]]
@@ -418,9 +440,13 @@ def validate_descriptor_snapshot(tables: dict[int, list[str]], rows: dict[int, d
         marker_processes[marker] = pids
         if not any(pid in owner_pids for owner_pids in owners.values() for pid in pids):
             raise EvidenceError(f"active owner process has no observed USB/CCID descriptor: {marker}")
-    px4_targets = {pid for pids in owners.values() for pid in pids if pid in marker_processes["libpx4d.so"]}
-    if len(px4_targets) != 1:
-        raise EvidenceError(f"PX4 USB descriptors must have exactly one px4d owner: {sorted(px4_targets)}")
+    px4_pids = [pid for pid, row in rows.items() if "libpx4d.so" in row["text"]]
+    if not px4_pids:
+        raise EvidenceError("no active px4d enclosure owner was observed")
+    px4_targets = {pid for pids in owners.values() for pid in pids if pid in px4_pids}
+    if set(px4_targets) != set(px4_pids):
+        raise EvidenceError(f"each active PX4 enclosure must own a USB descriptor: {sorted(px4_pids)}")
+    marker_processes["libpx4d.so"] = sorted(px4_pids)
     return {"descriptor_owners": owners, "owner_processes": marker_processes, "px4_owner_pids": sorted(px4_targets), "tracked_pids": sorted(tables)}
 
 
@@ -944,6 +970,13 @@ class Harness:
             for response in reversed(responses):
                 response.close()
         descriptor_result = validate_descriptor_snapshot(tables, diagnostic_rows)
+        inventory_result = self.results.get("px4_fleet_inventory", {}).get("observed", {})
+        model_enclosures = inventory_result.get("model_enclosures")
+        if not isinstance(model_enclosures, dict):
+            raise EvidenceError("PX4 model inventory is unavailable for descriptor reconciliation")
+        expected_owners = sum(model_enclosures.values())
+        if len(descriptor_result["px4_owner_pids"]) != expected_owners:
+            raise EvidenceError("active px4d owners do not match the enumerated PX4 enclosure count")
         return {
             **descriptor_result,
             "active_streams": stream_evidence,
@@ -1073,9 +1106,13 @@ class Harness:
         output["common_overlap_seconds"] = overlap_end - overlap_start
         rows = self.tracked_rows()
         owners = [row for row in rows.values() if "libpx4d.so" in row["text"] or "px4d" in row["text"]]
-        if len(owners) != 1:
-            raise EvidenceError(f"expected exactly one observed px4d owner, got {len(owners)}")
-        output["px4d_owner"] = owners[0]["text"]
+        if not owners:
+            raise EvidenceError("no active px4d enclosure owner was observed")
+        inventory_result = self.results.get("px4_fleet_inventory", {}).get("observed", {})
+        model_enclosures = inventory_result.get("model_enclosures")
+        if not isinstance(model_enclosures, dict) or len(owners) != sum(model_enclosures.values()):
+            raise EvidenceError("active px4d owners do not match the enumerated PX4 enclosure count")
+        output["px4d_owners"] = [row["text"] for row in owners]
         return output
 
     def check_epgstation(self) -> dict[str, Any]:
@@ -1287,9 +1324,9 @@ class Harness:
                 self.check("service_api", self.check_service)
                 self.check("ten_cycles", self.check_cycles)
                 self.check("siano_12seg", self.check_siano)
-                self.check("q3u4_eight_tuner", self.check_q3u4)
+                self.check("px4_fleet_inventory", self.check_q3u4)
                 self.check("bs_cs_integrity", self.check_satellite)
-                self.check("concurrency_single_px4d", self.check_concurrency)
+                self.check("concurrency_px4_fleet", self.check_concurrency)
                 self.check("descriptor_ownership", self.check_descriptors)
                 self.check("epgstation_scan_schedule_live", self.check_epgstation)
                 self.check("size_metrics", lambda: self.check_sizes(candidate))

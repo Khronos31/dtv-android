@@ -14,6 +14,8 @@ namespace px4_adapter {
 inline std::optional<ReceiverMap> receiver_map_for_model(std::string_view model) {
     if (model == "q3u4") return ReceiverMap::kPxQ3u4;
     if (model == "mlt5") return ReceiverMap::kPxMlt5;
+    if (model == "m1ur") return ReceiverMap::kPxM1ur;
+    if (model == "s1ur") return ReceiverMap::kPxS1ur;
     return std::nullopt;
 }
 
@@ -27,6 +29,7 @@ inline bool base_serial_matches_model(ReceiverMap model, std::string_view serial
 
 inline std::vector<int> receiver_pool(ReceiverMap model, BroadcastSystem system) {
     if (model == ReceiverMap::kPxMlt5) return {0, 1, 2, 3, 4};
+    if (model == ReceiverMap::kPxM1ur || model == ReceiverMap::kPxS1ur) return {0};
     return system == BroadcastSystem::kIsdbT
         ? std::vector<int>{2, 3, 6, 7}
         : std::vector<int>{0, 1, 4, 5};

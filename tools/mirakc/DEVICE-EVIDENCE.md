@@ -103,19 +103,23 @@ These routes and shapes are pinned against
 
 The Siano and BS/CS checks capture MPEG-TS, verify 188-byte sync and selected
 PIDs' `scrambling_control == 0`, and run `ffprobe` requiring MPEG-2 video and
-AAC. The Q3U4 check filters the full `/api/tuners` inventory to entries named
-`PX4-*`, then requires exactly eight PX4 entries: four `PX4-GR-*` and four
-`PX4-S-*`, with exclusive GR versus BS/CS types. Siano entries may coexist and
-are not counted as PX4 evidence. Concurrent probes also require exactly one
-observed `libpx4d.so` owner. Native/APK/installed sizes, cold-start,
+AAC. The PX4 fleet check filters the full `/api/tuners` inventory to `PX4-*`
+entries and validates complete receiver sets by model and serial: Q3U4 has
+four GR and four BS/CS receivers; MLT5 has five dual-system receivers; M1UR
+has one dual-system receiver; S1UR has one GR receiver. Other enabled Android
+PX4 enclosures may coexist, but unsupported model names, receiver IDs,
+duplicate identities, or incomplete profiles fail the check. Siano entries
+may coexist and are not counted as PX4 evidence. Concurrent probes require one
+or more observed `libpx4d.so` owners, and the descriptor snapshot must map
+each active owner to its own USB descriptor. Native/APK/installed sizes, cold-start,
 idle-PSS, and PSS totals for every tracked child during an observed EPG job are
 recorded from the candidate and device.
 
 The descriptor check opens the planned Siano and satellite streams, keeps both
 HTTP responses open, and reads `/proc/<pid>/fd` through adb shell for every
 observed mirakc/native process in that active snapshot. It requires
-`libsiano-ts.so`, `libmirakc-b25-filter.so`, and exactly one `libpx4d.so`
-owner, each with a unique USB/CCID target; the main mirakc/upstream
+`libsiano-ts.so`, `libmirakc-b25-filter.so`, and every active per-enclosure
+`libpx4d.so` owner, each with a unique USB/CCID target; the main mirakc/upstream
 `libmirakc.so` process must own none. Main classification uses structured
 `argv0` (exact app package/suffix or `libmirakc.so` basename), not a package
 substring in a child path. Production user-build SELinux may deny the shell

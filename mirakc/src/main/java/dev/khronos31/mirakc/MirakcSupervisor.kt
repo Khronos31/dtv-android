@@ -181,6 +181,11 @@ internal class MirakcSupervisor(
 
     fun px4Status(): String = px4.status()
 
+    /** Invalidate a PX4 owner's descriptors directly from Android's detach event. */
+    fun invalidatePx4Device(deviceName: String) {
+        px4.invalidateDetachedDevice(deviceName)
+    }
+
     /** Ask the running upstream JobManager to invoke its real EIT job once. */
     fun triggerUpdateSchedules(): Boolean {
         synchronized(lock) {
@@ -221,7 +226,7 @@ internal class MirakcSupervisor(
                 if (stopping) return
             }
             val generation = broker.start()
-            val px4Generation = px4.startOrGet()
+            val px4Generation = px4.startAllOrGet()
             val abortAfterBrokerStart = synchronized(lock) { stopping }
             if (abortAfterBrokerStart) {
                 // stop() may have raced with broker.start(); do not leave a
@@ -591,7 +596,7 @@ internal class MirakcSupervisor(
         recordingDir: File,
         strings: File,
         generation: SianoGeneration,
-        px4Generation: Px4Generation?
+        px4Generations: List<Px4Generation>
     ): String {
         val arib = File(context.applicationInfo.nativeLibraryDir, "libmirakc-arib.so")
         val adapter = File(context.applicationInfo.nativeLibraryDir, "libmirakc-siano-adapter.so")
@@ -601,7 +606,7 @@ internal class MirakcSupervisor(
         val aribPath = yamlPath(arib)
         val b25FilterPath = yamlPath(b25Filter)
         val tunerConfig = buildString {
-            if (generation.tunerCount == 0 && px4Generation == null) {
+            if (generation.tunerCount == 0 && px4Generations.isEmpty()) {
                 append("tuners: []\n")
             } else {
                 append("tuners:\n")
@@ -621,60 +626,42 @@ internal class MirakcSupervisor(
                     append(" --channel={{{channel}}}\n")
                 }
             }
-            px4Generation?.let { px4 ->
+            px4Generations.forEach { px4 ->
                 val px4Ts = yamlPath(File(context.applicationInfo.nativeLibraryDir, "libpx4-ts.so"))
-                repeat(px4.terrestrialReceivers.size) { index ->
-                    append("  - name: PX4-GR-${px4.terrestrialReceivers[index]}\n")
-                    append("    types: [GR]\n")
+                px4.tuners.forEach { tuner ->
+                    val tunerTypes = buildList {
+                        if (tuner.supportsTerrestrial) add("GR")
+                        if (tuner.supportsSatellite) {
+                            add("BS")
+                            add("CS")
+                        }
+                    }
+                    append("  - name: ${tuner.name}\n")
+                    append("    types: [${tunerTypes.joinToString(", ")}]\n")
                     append("    decoded: true\n")
                     append("    command: ")
                     append(yamlPath(px4Adapter))
                     append(" --px4-ts=")
                     append(px4Ts)
                     append(" ")
-                    append(px4.adapterArguments(px4.terrestrialReceivers[index]).joinToString(" "))
+                    append(px4.adapterArguments(tuner.receiver).joinToString(" "))
                     append(" --runtime-dir=")
                     append(yamlPath(px4.runtimeDir))
-                    append(" --channel={{{channel}}}\n")
-                }
-                repeat(px4.satelliteReceivers.size) { index ->
-                    append("  - name: PX4-S-${px4.satelliteReceivers[index]}\n")
-                    append("    types: [BS, CS]\n")
-                    append("    decoded: true\n")
-                    append("    command: ")
-                    append(yamlPath(px4Adapter))
-                    append(" --px4-ts=")
-                    append(px4Ts)
-                    append(" ")
-                    append(px4.adapterArguments(px4.satelliteReceivers[index]).joinToString(" "))
-                    append(" --runtime-dir=")
-                    append(yamlPath(px4.runtimeDir))
-                    append(" --channel={{{channel}}} {{{extra_args}}}\n")
-                }
-                repeat(px4.dualReceivers.size) { index ->
-                    append("  - name: PX4-${px4.dualReceivers[index]}\n")
-                    append("    types: [GR, BS, CS]\n")
-                    append("    decoded: true\n")
-                    append("    command: ")
-                    append(yamlPath(px4Adapter))
-                    append(" --px4-ts=")
-                    append(px4Ts)
-                    append(" ")
-                    append(px4.adapterArguments(px4.dualReceivers[index]).joinToString(" "))
-                    append(" --runtime-dir=")
-                    append(yamlPath(px4.runtimeDir))
-                    append(" --channel={{{channel}}} {{{extra_args}}}\n")
+                    append(" --channel={{{channel}}}")
+                    if (tuner.supportsSatellite) append(" {{{extra_args}}}")
+                    append("\n")
                 }
             }
         }
-        val satelliteChannelConfig = if (px4Generation == null) {
+        val hasSatellitePx4 = px4Generations.any { px4 -> px4.tuners.any { it.supportsSatellite } }
+        val satelliteChannelConfig = if (!hasSatellitePx4) {
             ""
         } else {
             renderPx4SatelliteChannelConfig()
         }
         val terrestrialChannelConfig = renderTerrestrialChannelConfig(
             terrestrialChannels(),
-            appendListHeaderWhenEmpty = px4Generation != null
+            appendListHeaderWhenEmpty = px4Generations.any { px4 -> px4.tuners.any { it.supportsTerrestrial } }
         )
         val jobsConfig = renderMirakcJobCommands(aribPath)
         return """

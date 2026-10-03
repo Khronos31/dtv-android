@@ -33,19 +33,26 @@ internal data class Px4Generation(
     val baseSerial: String,
     val model: Px4DeviceModel,
     val runtimeDir: File,
-    val terrestrialReceivers: List<Int>,
-    val satelliteReceivers: List<Int>,
-    val dualReceivers: List<Int> = emptyList()
+    val instanceToken: String,
+    val tuners: List<Px4TunerPlan>
 ) {
     fun adapterArguments(receiver: Int): List<String> = listOf(
         "--device=$baseSerial",
+        "--instance=$instanceToken",
         "--model=${model.adapterArgument}",
         "--receiver=$receiver"
     )
 }
 
-/** Starts px4d only after pairing and validating the two Android USB owners. */
-internal class Px4DaemonSupervisor(
+/** Starts px4d only after one enclosure's USB identity has been validated. */
+internal interface Px4EnclosureRunner {
+    fun startOrGet(): Px4Generation?
+    fun stop()
+    fun invalidateForDetach()
+    fun status(): String
+}
+
+private class Px4EnclosureDaemon(
     private val executable: () -> File,
     private val firmware: () -> File,
     private val identities: () -> List<Px4DeviceIdentity>,
@@ -53,18 +60,17 @@ internal class Px4DaemonSupervisor(
     private val runtimeDir: File,
     private val onStateChanged: () -> Unit,
     private val onDaemonFailure: () -> Unit
-) {
+) : Px4EnclosureRunner {
     private val lock = java.lang.Object()
     private var process: NativeUsbProcess.StartedPx4d? = null
     private var owners: List<Px4UsbHandle> = emptyList()
     private var monitor: Thread? = null
     private var starting = false
-    private var reconfigurePending = false
     private var closed = false
     @Volatile private var generation: Px4Generation? = null
     @Volatile private var state = "disabled (PX4 not initialized)"
 
-    fun startOrGet(): Px4Generation? {
+    override fun startOrGet(): Px4Generation? {
         synchronized(lock) {
             while (starting && !closed) {
                 try {
@@ -78,49 +84,48 @@ internal class Px4DaemonSupervisor(
             generation?.let { return it }
             starting = true
         }
-        while (true) {
-            val result = try {
-                startGeneration()
-            } catch (error: Exception) {
-                setState("disabled (PX4 start failed: ${error.message ?: error.javaClass.simpleName})")
-                null
-            }
-            val rerun = synchronized(lock) {
-                val pending = reconfigurePending && !closed
-                reconfigurePending = false
-                if (!pending) {
-                    starting = false
-                    lock.notifyAll()
-                }
-                pending
-            }
-            if (!rerun) return result
-            stopCurrent()
+        val result = try {
+            startGeneration()
+        } catch (error: Exception) {
+            setState("disabled (PX4 start failed: ${error.message ?: error.javaClass.simpleName})")
+            null
         }
-    }
-
-    fun reconfigure() {
         synchronized(lock) {
-            if (starting) {
-                reconfigurePending = true
-                return
-            }
-        }
-        stopCurrent()
-        startOrGet()
-    }
-
-    fun stop() {
-        synchronized(lock) {
-            closed = true
-            reconfigurePending = false
+            starting = false
             lock.notifyAll()
         }
+        return result
+    }
+
+    override fun stop() {
+        var interrupted = false
+        synchronized(lock) {
+            closed = true
+            lock.notifyAll()
+            while (starting) {
+                try {
+                    lock.wait()
+                } catch (_: InterruptedException) {
+                    interrupted = true
+                }
+            }
+        }
         stopCurrent()
+        if (interrupted) Thread.currentThread().interrupt()
         setState("stopped")
     }
 
-    fun status(): String = state
+    /** Invalidate a detached owner's active generation immediately. */
+    override fun invalidateForDetach() {
+        synchronized(lock) {
+            closed = true
+            lock.notifyAll()
+        }
+        stopCurrent()
+        setState("stopped (USB detached)")
+    }
+
+    override fun status(): String = state
 
     private fun startGeneration(): Px4Generation? {
         val selected = selectEnclosure()
@@ -165,6 +170,7 @@ internal class Px4DaemonSupervisor(
                 executable = binary.absolutePath,
                 firmware = firmwareFile.absolutePath,
                 baseSerial = selected.serial,
+                instanceToken = selected.instanceToken,
                 runtimeDir = runtimeDir.absolutePath,
                 firstUsbFd = handles[0].fd,
                 secondUsbFd = handles.getOrNull(1)?.fd ?: -1
@@ -177,7 +183,7 @@ internal class Px4DaemonSupervisor(
         startDiagnostics(started)
 
         val ready = try {
-            awaitReady(started.pid, selected.serial)
+            awaitReady(started.pid, selected.instanceToken)
             true
         } catch (error: Exception) {
             Log.e(TAG, "PX4 readiness failed: ${error.message ?: error.javaClass.simpleName}")
@@ -189,24 +195,10 @@ internal class Px4DaemonSupervisor(
             return null
         }
 
-        val result = if (selected.model == Px4DeviceModel.MLT5) {
-            Px4Generation(
-                selected.serial,
-                selected.model,
-                runtimeDir,
-                terrestrialReceivers = emptyList(),
-                satelliteReceivers = emptyList(),
-                dualReceivers = listOf(0, 1, 2, 3, 4)
-            )
-        } else {
-            Px4Generation(
-                selected.serial,
-                selected.model,
-                runtimeDir,
-                terrestrialReceivers = listOf(2, 3, 6, 7),
-                satelliteReceivers = listOf(0, 1, 4, 5)
-            )
-        }
+        val result = Px4Generation(
+            selected.serial, selected.model, runtimeDir, selected.instanceToken,
+            Px4DeviceSelector.tunersFor(selected)
+        )
         return synchronized(lock) {
             if (closed) {
                 // Service teardown raced startup; do not publish a generation
@@ -255,8 +247,8 @@ internal class Px4DaemonSupervisor(
         return file
     }
 
-    private fun awaitReady(pid: Int, base: String) {
-        val socket = File(runtimeDir, "px4-userland/$base/control.sock")
+    private fun awaitReady(pid: Int, instanceToken: String) {
+        val socket = File(runtimeDir, "px4-userland/$instanceToken/control.sock")
         val deadline = System.nanoTime() + READY_TIMEOUT_NS
         while (System.nanoTime() < deadline && !Thread.currentThread().isInterrupted) {
             when (NativeUsbProcess.pollPx4d(pid)) {
@@ -406,5 +398,108 @@ internal class Px4DaemonSupervisor(
         const val MAX_DIAGNOSTICS_BYTES = 64 * 1024
         const val MAX_DIAGNOSTIC_LINE = 512
         const val TAG = "Px4DaemonSupervisor"
+    }
+}
+
+/** Reconciles one independently-owned px4d process per unambiguous enclosure. */
+internal class Px4DaemonSupervisor(
+    private val executable: () -> File,
+    private val firmware: () -> File,
+    private val identities: () -> List<Px4DeviceIdentity>,
+    private val openDevice: (Px4DeviceIdentity) -> Px4UsbHandle,
+    private val runtimeDir: File,
+    private val onStateChanged: () -> Unit,
+    private val onDaemonFailure: () -> Unit,
+    private val testOwnerFactory: ((Px4Enclosure) -> Px4EnclosureRunner)? = null
+) {
+    private class IdentitySource(var value: List<Px4DeviceIdentity>)
+    private data class Owner(val identitySource: IdentitySource, val daemon: Px4EnclosureRunner)
+
+    private val lock = Any()
+    private val owners = linkedMapOf<String, Owner>()
+    private val retiring = mutableListOf<Px4EnclosureRunner>()
+    @Volatile private var rejectionState: String? = null
+    private var closed = false
+
+    fun startAllOrGet(): List<Px4Generation> {
+        val plan = Px4DeviceSelector.plan(identities())
+        val retired = mutableListOf<Px4EnclosureRunner>()
+        val active: List<Px4EnclosureRunner>
+        synchronized(lock) {
+            if (closed) return emptyList()
+            retired += retiring
+            retiring.clear()
+            rejectionState = plan.rejections.takeIf { it.isNotEmpty() }?.joinToString(", ")
+            val wanted = plan.enclosures.associateBy { it.instanceToken }
+            owners.toMap().forEach { (token, owner) ->
+                val enclosure = wanted[token]
+                if (enclosure == null || owner.identitySource.value.sortedBy { it.deviceName } !=
+                    enclosure.devices.sortedBy { it.deviceName }) {
+                    owners.remove(token)
+                    retired += owner.daemon
+                }
+            }
+            plan.enclosures.forEach { enclosure ->
+                if (owners.containsKey(enclosure.instanceToken)) return@forEach
+                val source = IdentitySource(enclosure.devices)
+                val daemon = testOwnerFactory?.invoke(enclosure) ?: Px4EnclosureDaemon(
+                    executable = executable,
+                    firmware = firmware,
+                    identities = { source.value },
+                    openDevice = openDevice,
+                    runtimeDir = File(runtimeDir, enclosure.instanceToken),
+                    onStateChanged = onStateChanged,
+                    onDaemonFailure = onDaemonFailure
+                )
+                owners[enclosure.instanceToken] = Owner(source, daemon)
+            }
+            active = owners.toSortedMap().values.map { it.daemon }
+        }
+        retired.forEach { it.stop() }
+        return active.mapNotNull { it.startOrGet() }
+    }
+
+    /**
+     * Consume the detach event against the already-owned device path. Do not
+     * wait for a later device-list rescan: Android can reuse that path and
+     * serial immediately when the same enclosure is reinserted.
+     */
+    fun invalidateDetachedDevice(deviceName: String) {
+        val detachedOwners = synchronized(lock) {
+            val snapshots = owners.map { (token, owner) ->
+                Px4OwnerIdentity(token, owner.identitySource.value.mapTo(linkedSetOf()) { it.deviceName })
+            }
+            val tokens = Px4OwnerDetachPolicy.matchingTokens(snapshots, deviceName)
+            val matches = tokens.mapNotNull { token -> owners.remove(token)?.daemon }
+            retiring += matches
+            matches
+        }
+        detachedOwners.forEach { it.invalidateForDetach() }
+    }
+
+    /** Refreshes the permitted identity set while retaining unchanged daemon owners. */
+    fun reconfigure() {
+        startAllOrGet()
+    }
+
+    fun stop() {
+        val retired: List<Px4EnclosureRunner>
+        synchronized(lock) {
+            closed = true
+            retired = owners.values.map { it.daemon } + retiring
+            owners.clear()
+            retiring.clear()
+        }
+        retired.forEach { it.stop() }
+    }
+
+    fun status(): String {
+        val states = synchronized(lock) { owners.toSortedMap().map { (token, owner) -> token to owner.daemon.status() } }
+        val rejection = rejectionState
+        return buildList {
+            if (states.isEmpty()) add(rejection ?: "disabled (PX4 not connected)")
+            states.forEach { (token, state) -> add("$token: $state") }
+            if (rejection != null && states.isNotEmpty()) add("waiting: $rejection")
+        }.joinToString("; ")
     }
 }

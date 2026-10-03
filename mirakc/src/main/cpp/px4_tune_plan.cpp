@@ -21,6 +21,33 @@ bool is_mlt5_receiver(int receiver) {
     return receiver >= 0 && receiver <= 4;
 }
 
+bool supports_terrestrial(ReceiverMap model, int receiver) {
+    switch (model) {
+    case ReceiverMap::kPxQ3u4:
+        return is_q3u4_terrestrial_receiver(receiver);
+    case ReceiverMap::kPxMlt5:
+        return is_mlt5_receiver(receiver);
+    case ReceiverMap::kPxM1ur:
+    case ReceiverMap::kPxS1ur:
+        return receiver == 0;
+    }
+    return false;
+}
+
+bool supports_satellite(ReceiverMap model, int receiver) {
+    switch (model) {
+    case ReceiverMap::kPxQ3u4:
+        return is_q3u4_satellite_receiver(receiver);
+    case ReceiverMap::kPxMlt5:
+        return is_mlt5_receiver(receiver);
+    case ReceiverMap::kPxM1ur:
+        return receiver == 0;
+    case ReceiverMap::kPxS1ur:
+        return false;
+    }
+    return false;
+}
+
 bool parse_decimal(std::string_view text, std::uint32_t maximum, std::uint32_t* value) {
     if (text.empty() || (text.size() > 1 && text.front() == '0')) return false;
     for (const char character : text) {
@@ -62,16 +89,10 @@ bool create_tune_plan(
         set_error(error, "missing tune plan output");
         return false;
     }
-    const bool terrestrial = receiver_map == ReceiverMap::kPxMlt5
-        ? is_mlt5_receiver(receiver)
-        : is_q3u4_terrestrial_receiver(receiver);
-    const bool satellite = receiver_map == ReceiverMap::kPxMlt5
-        ? is_mlt5_receiver(receiver)
-        : is_q3u4_satellite_receiver(receiver);
+    const bool terrestrial = supports_terrestrial(receiver_map, receiver);
+    const bool satellite = supports_satellite(receiver_map, receiver);
     if (!terrestrial && !satellite) {
-        set_error(error, receiver_map == ReceiverMap::kPxMlt5
-            ? "receiver is outside the PX-MLT5 receiver map"
-            : "receiver is outside the PX-Q3U4 receiver map");
+        set_error(error, "receiver is outside the selected PX-4 receiver map");
         return false;
     }
     if (tsid.has_value() && tsid->empty()) {
@@ -152,7 +173,7 @@ bool create_tune_plan(
         return true;
     }
 
-    set_error(error, "unknown or malformed PX-Q3U4 channel");
+    set_error(error, "unknown or malformed PX-4 channel");
     return false;
 }
 

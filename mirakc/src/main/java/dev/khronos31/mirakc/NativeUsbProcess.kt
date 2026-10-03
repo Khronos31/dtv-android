@@ -142,12 +142,13 @@ internal object NativeUsbProcess {
         executable: String,
         firmware: String,
         baseSerial: String,
+        instanceToken: String,
         runtimeDir: String,
         firstUsbFd: Int,
         secondUsbFd: Int
     ): StartedPx4d {
         val handles = nativeStartPx4d(
-            executable, firmware, baseSerial, runtimeDir, firstUsbFd, secondUsbFd
+            executable, firmware, baseSerial, instanceToken, runtimeDir, firstUsbFd, secondUsbFd
         )
         check(handles != null && handles.size == 2) { "Unable to start px4d" }
         val outputFd = handles[0]
@@ -204,6 +205,7 @@ internal object NativeUsbProcess {
         executable: String,
         firmware: String,
         baseSerial: String,
+        instanceToken: String,
         runtimeDir: String,
         firstUsbFd: Int,
         secondUsbFd: Int

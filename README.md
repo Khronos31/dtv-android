@@ -28,7 +28,7 @@ mirakc APK は上流の mirakc `3.4.86` を Android 向けに移植して組み�
 | | |
 | --- | --- |
 | 本体 | Android TV / Google TV（Google TV Streamer で動作確認） |
-| チューナー | PLEX PX-S1UD、同じ Siano チップの USB チューナー、または PLEX PX-Q3U4 |
+| チューナー | PLEX PX-S1UD／同じ Siano チップの USB チューナー、PX-Q3U4、PX-MLT5PE、DTV02A-5TS-P、PX-M1UR、PX-S1UR |
 | カードリーダー | CCID 対応の USB カードリーダー（Identive/SCM SCR33xx v2.0 で動作確認） |
 | カード | B-CAS カード |
 | その他 | USB ハブ（本体のポートが1つしかないため）、録画用の USB ストレージ（任意・exFAT） |
@@ -54,12 +54,14 @@ mirakc APK は上流の mirakc `3.4.86` を Android 向けに移植して組み�
    インストールを許可する必要があります。
 3. チューナーとカードリーダーを USB ハブ経由でテレビに挿します。
 
-PX-Q3U4を使う場合、初回起動時にアプリが公式PLEX HTTPS配布物から必要なSYSを
+PX4 を使う場合、初回起動時にアプリが公式PLEX HTTPS配布物から必要なSYSを
 取得し、同梱のGPL-2.0 `px4_drv/fwtool`（v0.2.1固定）で
 `it930x-firmware.bin`を生成します。ZIP、SYS、生成済みfirmwareはAPKに含めず、
 アプリ専用外部ファイル領域へ検証後に原子的にキャッシュします。既存の有効な
 キャッシュはネットワークなしで再利用できます。取得や生成に失敗した場合はPX4
 だけを無効化し、Sianoとmirakcは継続します。手動のfirmware provisionは不要です。
+PX4対応機種のうち、M1UR/S1UR、MLT5系および複数筐体の同時利用はソフトウェア上の
+識別・adapter試験までで、接続実機での受信試験は未実施です。
 
 ## 使い方
 
@@ -155,8 +157,17 @@ USB 権限を要求する Siano の ID は次の3つです。
 * `187f:0302`
 
 Siano の USB ディスクリプタは Android 側の broker が世代ごとに管理し、上流 mirakc
-の tuner command には専用の Siano adapter 経由で渡します。PX-Q3U4 は同様に
-`px4d` と PX4 adapter が管理します。
+の tuner command には専用の Siano adapter 経由で渡します。PX-Q3U4、PX-MLT5PE、
+DTV02A-5TS-P、PX-M1UR、PX-S1UR は機器ごとの `px4d` instance と PX4 adapter が
+管理します。Q3U4 は同じ14桁baseのUSBシリアル末尾 `1`/`2` のペア、その他の対応機種は
+15桁シリアルの単一USBデバイスとして識別します。
+
+対応チューナーの接続・切断では、生成済みの tuner 構成を反映するため上流
+mirakc を再起動します。この間は配信や録画ジョブが中断する場合があります。
+同一性が変わらない PX4 筐体の `px4d` とUSB所有権は維持しますが、他筐体を含む
+上流処理の無停止は保証しません。対応チューナー以外のUSB機器やカードリーダーの
+接続・権限変更では、mirakcを再起動しません。PX4切断通知では再構成を待たずに
+該当筐体の旧USB世代を無効化し、同じUSBパスが再利用されても旧FDを引き継ぎません。
 
 ```text
 siano-ts --channel N --firmware <filesDir>/isdbt_rio.inp --fd 3
@@ -257,14 +268,15 @@ JDK 17 と Android NDK r26 以降が要ります。Gradle タスクは SDK の `
 `tools/mirakc/build-android.sh`、mirakc-arib には `tools/mirakc-arib/build-android.sh`
 を使います。
 
-PX-Q3U4（`0511:084a`、2 デバイス）と、PX-MLT5PE（`0511:024e`）および DTV02A-5TS-P（`0511:924e`、いずれも 1 デバイス）の `px4d` は pinned な
+PX-Q3U4（`0511:084a`、2 デバイス）、PX-MLT5PE（`0511:024e`）、DTV02A-5TS-P（`0511:924e`）、PX-M1UR（`0511:0854`）、PX-S1UR（`0511:0855`、後者4機種はいずれも1デバイス）の `px4d` は pinned な
 [px4-userland](https://github.com/Khronos31/px4-userland) v0.1.9
 （commit `cf38742618bb02db41a95def619fbff50e9eb0f3`）を使います。PX4 firmware
 生成器のビルドには [nns779/px4_drv](https://github.com/nns779/px4_drv) v0.2.1
 （commit `2b3f79b5bc5db56e8556bb28397f7d8f74b2adeb`）の detached checkout も必要です。
 それぞれ `-Ppx4UserlandDir` と `-Ppx4DrvDir` で渡せます（既定値は作者の環境の
 `/config/GitHub/px4-userland` と `/config/GitHub/px4_drv`）。両方とも指定した
-commit の clean checkout にしてください。
+commit の clean checkout にしてください。Android APKで許可しているのは上記5 model familiesのみ。
+複数の異なる筐体は、それぞれ独立した `--instance` token・runtime directory・`px4d` processを持ちます。
 
 ```sh
 export JAVA_HOME=/path/to/jdk17

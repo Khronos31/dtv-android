@@ -113,8 +113,8 @@ def verify(root: Path, apk: Path | None = None) -> dict[str, object]:
     checks = receipt.get("checks")
     required_checks = {
         "candidate_binding", "service_api", "ten_cycles", "descriptor_ownership",
-        "zero_orphan", "siano_12seg", "q3u4_eight_tuner", "bs_cs_integrity",
-        "concurrency_single_px4d", "epgstation_scan_schedule_live", "size_metrics",
+        "zero_orphan", "siano_12seg", "px4_fleet_inventory", "bs_cs_integrity",
+        "concurrency_px4_fleet", "epgstation_scan_schedule_live", "size_metrics",
         "rss_metrics", "usb_detach_reconnect",
     }
     if not isinstance(checks, dict) or set(checks) != required_checks or any(not isinstance(item, dict) or item.get("status") != "pass" for item in checks.values()):

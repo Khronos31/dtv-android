@@ -206,13 +206,21 @@ started_harness.stop_epgstation()
 assert not started_harness.epg_started_by_harness
 assert any("force-stop" in command for command in started_commands[1])
 
-q3u4 = [{"name": f"PX4-GR-{index}", "types": ["GR"]} for index in range(4)]
-q3u4.extend({"name": f"PX4-S-{index}", "types": ["BS", "CS"]} for index in range(4))
+q3u4 = [{"name": f"PX4-Q3U4-12345678901234-R{index}",
+          "types": ["GR"] if index in {2, 3, 6, 7} else ["BS", "CS"]}
+         for index in range(8)]
 q3u4.append({"name": "Siano-12seg", "types": ["GR"]})
 assert module.validate_q3u4_inventory(q3u4)["px4_count"] == 8
-q3u4[0]["types"] = ["GR", "BS"]
+mlt5 = [{"name": f"PX4-MLT5-123456789012345-R{index}", "types": ["GR", "BS", "CS"]} for index in range(5)]
+m1ur = [{"name": "PX4-M1UR-000000000000001-R0", "types": ["GR", "BS", "CS"]}]
+s1ur = [{"name": "PX4-S1UR-000000000000001-R0", "types": ["GR"]}]
+mixed = module.validate_q3u4_inventory(q3u4 + mlt5 + m1ur + s1ur)
+assert mixed["px4_count"] == 15
+assert mixed["model_enclosures"] == {"Q3U4": 1, "MLT5": 1, "M1UR": 1, "S1UR": 1}
+invalid_q3 = list(q3u4)
+invalid_q3[0] = {**invalid_q3[0], "types": ["GR", "BS"]}
 try:
-    module.validate_q3u4_inventory(q3u4)
+    module.validate_q3u4_inventory(invalid_q3)
 except module.EvidenceError:
     pass
 else:
@@ -223,14 +231,16 @@ active_rows = {
     2: {"argv0": "/data/app/dev.khronos31.mirakc-abc/lib/libsiano-ts.so", "text": "2 1 /data/app/dev.khronos31.mirakc-abc/lib/libsiano-ts.so"},
     3: {"argv0": "/data/app/dev.khronos31.mirakc-abc/lib/libmirakc-b25-filter.so", "text": "3 1 /data/app/dev.khronos31.mirakc-abc/lib/libmirakc-b25-filter.so"},
     4: {"argv0": "/data/app/dev.khronos31.mirakc-abc/lib/libpx4d.so", "text": "4 1 /data/app/dev.khronos31.mirakc-abc/lib/libpx4d.so"},
+    5: {"argv0": "/data/app/dev.khronos31.mirakc-abc/lib/libpx4d.so", "text": "5 1 /data/app/dev.khronos31.mirakc-abc/lib/libpx4d.so"},
 }
 active_tables = {
     1: [],
     2: ["lrwx------ 1 u u 64 x -> /dev/bus/usb/001/002"],
     3: ["lrwx------ 1 u u 64 x -> /dev/usb/ccid-reader"],
     4: ["lrwx------ 1 u u 64 x -> /dev/bus/usb/001/003"],
+    5: ["lrwx------ 1 u u 64 x -> /dev/bus/usb/001/004"],
 }
-assert module.validate_descriptor_snapshot(active_tables, active_rows)["px4_owner_pids"] == [4]
+assert module.validate_descriptor_snapshot(active_tables, active_rows)["px4_owner_pids"] == [4, 5]
 snapshot_json = json.dumps({"schema": 1, "uid": 10131, "processes": [
     {"pid": 2, "ppid": 1, "argv0": active_rows[2]["argv0"], "fds": [{"fd": 4, "target": "/dev/bus/usb/001/002"}]},
 ]})
@@ -265,6 +275,9 @@ expect_bad_snapshot([{"pid": 2, "ppid": 1, "argv0": "x", "fds": [{"fd": 4, "targ
 
 concurrency_harness = module.Harness.__new__(module.Harness)
 concurrency_harness.plan = {"concurrency": {"gr_path": "/gr", "satellite_path": "/sat", "minimum_bytes": 1880}}
+concurrency_harness.results = {"px4_fleet_inventory": {"observed": {
+    "model_enclosures": {"Q3U4": 1, "MLT5": 0, "M1UR": 1, "S1UR": 0}
+}}}
 concurrency_harness.args = type("Args", (), {"timeout": 1.0, "job_timeout": 1.0})()
 concurrency_harness.ensure_service = lambda: None
 concurrency_harness.base_url = lambda path: path
@@ -278,10 +291,14 @@ concurrency_harness.observe_job = lambda label: {
     "started": [1],
     "completed": True,
 }
-concurrency_harness.tracked_rows = lambda: {1: {"text": "1 0 libpx4d.so"}}
+concurrency_harness.tracked_rows = lambda: {
+    1: {"text": "1 0 libpx4d.so --instance=px4-q3u4-123"},
+    2: {"text": "2 0 libpx4d.so --instance=px4-m1ur-456"},
+}
 threads_before = {thread.ident for thread in threading.enumerate()}
 concurrency_result = concurrency_harness.check_concurrency()
 assert concurrency_result["common_overlap_seconds"] > 0
+assert len(concurrency_result["px4d_owners"]) == 2
 assert not [thread for thread in threading.enumerate() if thread.ident not in threads_before]
 assert "trigger_update_schedules" in source
 

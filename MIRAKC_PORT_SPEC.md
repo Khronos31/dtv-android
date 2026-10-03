@@ -7,9 +7,11 @@ Date: 2026-10-02
 
 Replace the Kotlin Mirakurun-compatible server in the `mirakc` APK with an
 Android port of upstream mirakc, while keeping Android-specific lifecycle and
-USB-permission handling in a thin Kotlin/JNI supervisor.  Package the latest
-stable releases of both tuner backends so one APK can operate either Siano RIO
-devices, a PLEX PX-Q3U4, or one PX-MLT5PE / DTV02A-5TS-P without a kernel driver.
+USB-permission handling in a thin Kotlin/JNI supervisor. Package the latest
+stable releases of both tuner backends so one APK can operate Siano RIO devices
+and multiple PX4 enclosures without a kernel driver. The Android-supported PX4
+matrix is PX-Q3U4, PX-MLT5PE / DTV02A-5TS-P, PX-M1UR, and PX-S1UR; this does not
+enable every model compiled into px4-userland.
 
 The pinned inputs for the first port are:
 
@@ -52,11 +54,14 @@ moving branch.
 6. With a Siano tuner and external CCID B-CAS reader, service scan produces at
    least one service and EPGStation can play a service stream.  A captured
    12-seg stream is descrambled and accepted by `ffprobe`.
-7. With a PX-Q3U4, Android grants both bridge permissions, one `px4d` owns both
-   descriptors, mirakc exposes eight tuners (four GR and four BS/CS), and at
-   least one GR and one BS service stream pass MPEG-TS integrity checks.  The
-   built-in card path descrambles 12-seg content.  Verified on the connected
-   PX-Q3U4 hardware.
+7. For each supported PX4 enclosure, offline tests prove model/serial grouping,
+   stable per-enclosure IPC instances, unique mirakc tuner IDs, and receiver
+   capabilities. One `px4d` owns each enclosure's USB descriptors. A PX-Q3U4
+   exposes four GR and four BS/CS tuners; each MLT5 variant exposes five dual
+   system tuners; M1UR exposes one GR/BS/CS tuner; S1UR exposes one GR tuner.
+   The adapter passes the same instance token to `px4-ts` and the PC/SC endpoint.
+   Physical receive/card acceptance remains a separate device test; the prior
+   PX-Q3U4 observations do not certify M1UR/S1UR or simultaneous enclosures.
 8. EPGStation Server using `http://127.0.0.1:40772/` can scan channels, receive
    schedule updates and start/stop live streams without API-shape workarounds
    in EPGStation.
@@ -73,8 +78,9 @@ moving branch.
 - Change the EPGStation Server APK or its stored database.
 - Add unsupported tuner hardware beyond the device matrices of the two pinned
   userland projects.
-- Publish a release, create a tag, push commits, install an APK, or restart a
-  Home Assistant/add-on service in this implementation phase.
+- Merge into `main`, create a tag, publish a release, install an APK, or restart
+  a Home Assistant/add-on service in this implementation phase. Branch commits,
+  pushes and draft PR creation are authorized for this task.
 - Reimplement mirakc HTTP endpoints in Kotlin or Java.
 
 ## Constraints
@@ -92,8 +98,10 @@ moving branch.
   mirakc command adapters; mirakc itself receives no device descriptor.  Owner
   death or USB detach invalidates the IPC generation and triggers bounded
   teardown/reacquisition rather than reusing a stale descriptor.
-- `px4d` is the only owner of a Q3U4 pair.  mirakc tuner commands use `px4-ts`
-  over px4-userland's versioned local IPC.
+- `px4d` is the only owner of one PX4 enclosure (the Q3U4 bridge pair, or one
+  single-USB device). Each enclosure has a stable model/product/serial-derived
+  `--instance` token and a private runtime directory. mirakc tuner commands and
+  PC/SC use that same token with px4-userland's versioned local IPC.
 - The full upstream mirakc-arib command set is the baseline.  Size or feature
   reductions must not substitute the current Kotlin parser or invent a second
   wire/API compatibility layer.
@@ -151,10 +159,11 @@ moving branch.
    `siano-ts`, plus an executable decode filter using a dedicated external CCID
    owner.  Verify real GR scan, EPG and 12-seg playback.  Risk: owner failure or
    backpressure corrupts the adapter stream.
-6. **PX4 path.** Start one `px4d` from the Q3U4 bridge pair, expose eight mirakc
-   tuner entries through `px4-ts`, and add a decode-filter card adapter over
-   portable IPC.  Verify offline config/process tests, then the hardware matrix.
-   Risk: bridge pairing, LNB state, or card ownership survives a failed child.
+6. **PX4 path.** Start one `px4d` per complete supported enclosure (Q3U4 bridge
+   pair or single-USB model), expose its supported mirakc tuner entries through
+   `px4-ts`, and add a decode-filter card adapter over portable IPC. Verify
+   offline config/process tests, then the hardware matrix. Risk: bridge
+   pairing, LNB state, or card ownership survives a failed child.
 7. **End-to-end compatibility.** Run EPGStation and stream workflows, detach and
    reconnect USB, stop/restart the APK, and produce the final evidence receipt.
    Risk: individually green components fail under concurrent job/stream load.
@@ -185,9 +194,47 @@ updating the inventory; no runtime auto-NIT requirement is established here.
 
 This increment does not claim full satellite acceptance.  The remaining gate is
 at least one BS and one CS integrity stream with card descrambling, and
-concurrency evidence that GR, satellite and EPG jobs share the single px4d
-owner correctly.  The host parser test can be run with
+concurrency evidence that GR, satellite and EPG jobs share each active px4d
+owner correctly. The host parser test can be run with
 `./tools/mirakc/test-px4-tune-plan.sh`.
+
+### PX4 enclosure fleet support (2026-10-03)
+
+The Android USB filter and tuner planner now support the exact device matrix
+already present in the pinned source: PX-Q3U4 (`0511:084a`), PX-MLT5PE
+(`0511:024e`), DTV02A-5TS-P (`0511:924e`), PX-M1UR (`0511:0854`), and PX-S1UR
+(`0511:0855`). Other devices compiled into px4-userland remain unsupported by
+the APK. Q3U4 bridge devices pair only by a shared 14-digit base and suffix
+`1`/`2`; each complete pair is one enclosure. MLT5 variants, M1UR and S1UR each
+use their full 15-digit serial as the device identity. Repeated serial/product
+identities or duplicate Android USB paths are rejected. M1UR and S1UR may have
+the same serial because model and product ID also participate in the identity.
+
+Every enclosure receives a deterministic, runtime-token-safe `--instance`
+derived from model, USB product ID and serial, a separate app-private runtime
+directory, and one owning `px4d`. Commands pass that same token to both
+`px4-ts` and the PX4 card endpoint. Receiver profiles are Q3U4 GR `2,3,6,7`
+and BS/CS `0,1,4,5`; MLT5 five dual-system receivers `0..4`; M1UR receiver 0
+dual-system (satellite LNB remains 0V); S1UR receiver 0 GR only. The retry pool
+is selected by model and broadcast system so a candidate is never substituted
+from another profile. Offline selector, receiver and tune-plan tests cover
+these rules. No M1UR/S1UR or multi-enclosure hardware verification is claimed.
+
+The Android adapter links directly against px4-userland v0.1.9 source at
+`cf38742618bb02db41a95def619fbff50e9eb0f3`; its FD startup accepts one USB FD
+for MLT5/M1UR/S1UR and two for Q3U4, and its `--instance`/PCSC interfaces are
+part of that pinned source contract. The Android wrapper does not copy source
+from the reference add-on or rely on a prebuilt Android adapter.
+
+USB lifecycle broadcasts only reconfigure upstream mirakc for supported Siano
+or PX4 tuner identities. Unrelated USB accessories and CCID-reader permission
+changes do not restart mirakc. A supported tuner attach/detach still restarts
+mirakc so its generated tuner table matches the current fleet; this may
+interrupt streams and recording/EPG jobs, including work using another
+enclosure. Unchanged PX4 owners keep their `px4d` process and USB descriptors,
+but this does not promise uninterrupted upstream service. A PX4 detach
+invalidates the owner's saved device path immediately, before asynchronous
+reconfiguration, and drains any in-flight startup before the path can be reused.
 
 The two least-known mandatory components were increments 1 and 2.  Both Phase 0
 feasibility gates are complete; remaining acceptance evidence is still required.
