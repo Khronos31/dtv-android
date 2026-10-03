@@ -144,11 +144,13 @@ private class Px4EnclosureDaemon(
             setState("disabled (px4d not packaged)")
             return null
         }
-        if (runtimeDir.exists() && !runtimeDir.deleteRecursively()) {
-            setState("disabled (cannot clear PX4 runtime)")
+        // All enclosure daemons share this root; the pinned userland owns and
+        // safely cleans each instance's stale sockets and lease files.
+        if (!runtimeDir.isDirectory && !runtimeDir.mkdirs()) {
+            setState("disabled (cannot create PX4 runtime)")
             return null
         }
-        if (!runtimeDir.mkdirs() && !runtimeDir.isDirectory) {
+        if (!runtimeDir.isDirectory) {
             setState("disabled (cannot create PX4 runtime)")
             return null
         }
@@ -248,7 +250,9 @@ private class Px4EnclosureDaemon(
     }
 
     private fun awaitReady(pid: Int, instanceToken: String) {
-        val socket = File(runtimeDir, "px4-userland/$instanceToken/control.sock")
+        val socket = Px4RuntimeLayout.endpoint(
+            runtimeDir, instanceToken, Px4RuntimeLayout.CONTROL_ENDPOINT
+        )
         val deadline = System.nanoTime() + READY_TIMEOUT_NS
         while (System.nanoTime() < deadline && !Thread.currentThread().isInterrupted) {
             when (NativeUsbProcess.pollPx4d(pid)) {
@@ -447,7 +451,9 @@ internal class Px4DaemonSupervisor(
                     firmware = firmware,
                     identities = { source.value },
                     openDevice = openDevice,
-                    runtimeDir = File(runtimeDir, enclosure.instanceToken),
+                    runtimeDir = Px4RuntimeLayout.runtimeDirectoryForEnclosure(
+                        runtimeDir, enclosure.instanceToken
+                    ),
                     onStateChanged = onStateChanged,
                     onDaemonFailure = onDaemonFailure
                 )

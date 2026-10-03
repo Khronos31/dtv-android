@@ -60,10 +60,34 @@ val px4ReceiverRetryTests = layout.projectDirectory.file("src/main/cpp/tests/px4
 val px4CardRetryHeader = layout.projectDirectory.file("src/main/cpp/px4_card_retry.h")
 val px4CardRetryTests = layout.projectDirectory.file("src/main/cpp/tests/px4_card_retry_test.cpp")
 val px4TunePlanTestScript = layout.projectDirectory.file("../tools/mirakc/test-px4-tune-plan.sh")
+val px4RuntimeSocketPathTest =
+    layout.projectDirectory.file("src/main/cpp/tests/px4_runtime_socket_path_test.cpp")
+val px4RuntimeSocketPathTestScript =
+    layout.projectDirectory.file("../tools/mirakc/test-px4-runtime-socket-path.sh")
 val px4AdapterCmake = layout.projectDirectory.file("src/main/cpp/CMakeLists.txt")
 val px4AdapterVerifier = layout.projectDirectory.file("../tools/mirakc/verify-android-elf.sh")
 val px4UserlandDir = providers.gradleProperty("px4UserlandDir")
     .orElse("/config/GitHub/px4-userland")
+
+val runPx4RuntimeSocketPathHostTests = tasks.register<Exec>("runPx4RuntimeSocketPathHostTests") {
+    group = "verification"
+    description = "Checks Android PX4 socket paths against pinned px4-userland"
+    workingDir(project.rootDir)
+    commandLine("/bin/sh", px4RuntimeSocketPathTestScript.asFile.absolutePath, px4UserlandDir.get())
+    inputs.files(px4RuntimeSocketPathTest, px4RuntimeSocketPathTestScript)
+    inputs.files(px4UserlandDir.map { directoryName ->
+        val root = file(directoryName).resolve("userland")
+        listOf(
+            root.resolve("include/px4/error.h"),
+            root.resolve("include/px4/ipc.h"),
+            root.resolve("include/px4/posix_ipc.h"),
+            root.resolve("src/error.cpp"),
+            root.resolve("src/ipc.cpp"),
+            root.resolve("src/posix_ipc.cpp")
+        )
+    })
+}
+
 val px4DrvDir = providers.gradleProperty("px4DrvDir")
     .orElse("/config/GitHub/px4_drv")
 val px4DrvPinnedRef = "2b3f79b5bc5db56e8556bb28397f7d8f74b2adeb"
@@ -109,8 +133,11 @@ val runT1StateMachineHostTests = tasks.register<Exec>("runT1StateMachineHostTest
     )
 }
 
-tasks.matching { it.name == "check" || it.name == "test" }.configureEach {
+tasks.matching {
+    it.name == "check" || it.name == "test" || it.name.endsWith("UnitTest")
+}.configureEach {
     dependsOn(runT1StateMachineHostTests)
+    dependsOn(runPx4RuntimeSocketPathHostTests)
 }
 
 val mirakcBinaries = listOf(

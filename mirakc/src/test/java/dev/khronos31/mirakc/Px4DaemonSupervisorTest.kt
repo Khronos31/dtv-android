@@ -8,6 +8,51 @@ import org.junit.Test
 
 class Px4DaemonSupervisorTest {
     @Test
+    fun upstreamEndpointsFitAndroidUnixSocketPathForEverySupportedModelAndInstance() {
+        val runtimeRoot = File("/data/user/0/dev.khronos31.mirakc/files/p4")
+        val sharedSerial = "123456789012345"
+        val identities = listOf(
+            Px4DeviceIdentity("q3-1", "123456789012341", Px4DeviceSelector.Q3U4_PRODUCT_ID),
+            Px4DeviceIdentity("q3-2", "123456789012342", Px4DeviceSelector.Q3U4_PRODUCT_ID),
+            Px4DeviceIdentity("mlt", "987654321098765", 0x024e),
+            Px4DeviceIdentity("m1ur", sharedSerial, Px4DeviceSelector.M1UR_PRODUCT_ID),
+            Px4DeviceIdentity("s1ur", sharedSerial, Px4DeviceSelector.S1UR_PRODUCT_ID)
+        )
+        val plan = Px4DeviceSelector.plan(identities)
+
+        assertTrue("all enclosures should be accepted", plan.rejections.isEmpty())
+        assertEquals(4, plan.enclosures.size)
+        assertEquals(
+            plan.enclosures.size,
+            plan.enclosures.map { it.instanceToken }.toSet().size
+        )
+        val endpointPaths = mutableListOf<String>()
+        plan.enclosures.forEach { enclosure ->
+            val ownerRuntime = Px4RuntimeLayout.runtimeDirectoryForEnclosure(
+                runtimeRoot, enclosure.instanceToken
+            )
+            listOf(
+                Px4RuntimeLayout.CONTROL_ENDPOINT, // px4d, readiness, and PC/SC card client
+                Px4RuntimeLayout.STREAM_ENDPOINT // px4-ts stream client
+            ).forEach { endpointName ->
+                val path = Px4RuntimeLayout.endpoint(ownerRuntime, enclosure.instanceToken, endpointName)
+                    .absolutePath
+                val pathBytesIncludingNul = path.toByteArray(Charsets.UTF_8).size + 1
+                assertTrue(
+                    "$endpointName path for ${enclosure.model} uses $pathBytesIncludingNul bytes: $path",
+                    pathBytesIncludingNul <= UNIX_SOCKET_PATH_CAPACITY
+                )
+                endpointPaths += path
+            }
+        }
+        assertEquals(endpointPaths.size, endpointPaths.toSet().size)
+        assertTrue(
+            plan.enclosures.single { it.model == Px4DeviceModel.M1UR }.instanceToken !=
+                plan.enclosures.single { it.model == Px4DeviceModel.S1UR }.instanceToken
+        )
+    }
+
+    @Test
     fun detachInvalidatesOldOwnerAndDrainsItBeforeSameIdentityCanStartAgain() {
         val device = Px4DeviceIdentity("usb-path-reused", "123456789012345", Px4DeviceSelector.M1UR_PRODUCT_ID)
         val identities = listOf(device)
@@ -72,5 +117,10 @@ class Px4DaemonSupervisorTest {
         }
 
         override fun status(): String = if (stopped) "stopped" else "running"
+    }
+
+    private companion object {
+        // sockaddr_un.sun_path includes the terminating NUL byte.
+        const val UNIX_SOCKET_PATH_CAPACITY = 108
     }
 }
