@@ -8,6 +8,22 @@ internal object MirakcUsbEventPolicy {
     fun isPx4Tuner(vendorId: Int, productId: Int): Boolean =
         vendorId == PX4_VENDOR_ID && Px4DeviceSelector.modelForProductId(productId) != null
 
+    fun requiresMirakcReconfigureOnLifecycle(
+        vendorId: Int,
+        productId: Int,
+        isCcidReader: Boolean,
+        isAttached: Boolean,
+        permissionGranted: Boolean
+    ): Boolean =
+        (affectsTunerConfiguration(vendorId, productId) || isCcidReader) &&
+            (!isAttached || permissionGranted)
+
+    fun requiresMirakcReconfigureOnPermissionGrant(
+        vendorId: Int,
+        productId: Int,
+        isCcidReader: Boolean
+    ): Boolean = affectsTunerConfiguration(vendorId, productId) || isCcidReader
+
     private fun isSianoTuner(vendorId: Int, productId: Int): Boolean =
         vendorId == SIANO_VENDOR_ID && productId == SIANO_PRODUCT_ID ||
             vendorId == SIANO_COMPAT_VENDOR_ID && productId in SIANO_COMPAT_PRODUCT_IDS

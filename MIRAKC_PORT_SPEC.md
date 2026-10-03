@@ -54,14 +54,11 @@ moving branch.
 6. With a Siano tuner and external CCID B-CAS reader, service scan produces at
    least one service and EPGStation can play a service stream.  A captured
    12-seg stream is descrambled and accepted by `ffprobe`.
-7. For each supported PX4 enclosure, offline tests prove model/serial grouping,
-   stable per-enclosure IPC instances, unique mirakc tuner IDs, and receiver
-   capabilities. One `px4d` owns each enclosure's USB descriptors. A PX-Q3U4
-   exposes four GR and four BS/CS tuners; each MLT5 variant exposes five dual
-   system tuners; M1UR exposes one GR/BS/CS tuner; S1UR exposes one GR tuner.
-   The adapter passes the same instance token to `px4-ts` and the PC/SC endpoint.
-   Physical receive/card acceptance remains a separate device test; the prior
-   PX-Q3U4 observations do not certify M1UR/S1UR or simultaneous enclosures.
+7. With a PX-Q3U4, Android grants both bridge permissions, one `px4d` owns both
+   descriptors, mirakc exposes eight tuners (four GR and four BS/CS), and at
+   least one GR and one BS service stream pass MPEG-TS integrity checks. The
+   built-in card path descrambles 12-seg content. Verified on the connected
+   PX-Q3U4 hardware.
 8. EPGStation Server using `http://127.0.0.1:40772/` can scan channels, receive
    schedule updates and start/stop live streams without API-shape workarounds
    in EPGStation.
@@ -219,6 +216,11 @@ dual-system (satellite LNB remains 0V); S1UR receiver 0 GR only. The retry pool
 is selected by model and broadcast system so a candidate is never substituted
 from another profile. Offline selector, receiver and tune-plan tests cover
 these rules. No M1UR/S1UR or multi-enclosure hardware verification is claimed.
+These extensions are candidate-stage software work only. Offline identity,
+receiver and IPC tests do not satisfy the PX-Q3U4 hardware acceptance gate in
+criterion 7 or establish reception, descrambling, concurrency, or multi-
+enclosure acceptance for MLT5, M1UR, S1UR, or simultaneous PX4 devices. Those
+checks remain pending separate device validation.
 
 The Android adapter links directly against px4-userland v0.1.9 source at
 `cf38742618bb02db41a95def619fbff50e9eb0f3`; its FD startup accepts one USB FD
@@ -226,15 +228,17 @@ for MLT5/M1UR/S1UR and two for Q3U4, and its `--instance`/PCSC interfaces are
 part of that pinned source contract. The Android wrapper does not copy source
 from the reference add-on or rely on a prebuilt Android adapter.
 
-USB lifecycle broadcasts only reconfigure upstream mirakc for supported Siano
-or PX4 tuner identities. Unrelated USB accessories and CCID-reader permission
-changes do not restart mirakc. A supported tuner attach/detach still restarts
-mirakc so its generated tuner table matches the current fleet; this may
-interrupt streams and recording/EPG jobs, including work using another
-enclosure. Unchanged PX4 owners keep their `px4d` process and USB descriptors,
-but this does not promise uninterrupted upstream service. A PX4 detach
-invalidates the owner's saved device path immediately, before asynchronous
-reconfiguration, and drains any in-flight startup before the path can be reused.
+USB lifecycle broadcasts reconfigure upstream mirakc for supported Siano/PX4
+tuners and CCID-reader attach/detach or permission changes. For a newly
+attached device without permission, reconfiguration waits until permission is
+granted. Unrelated USB accessories do not restart mirakc. A relevant attach,
+detach, or permission change restarts mirakc and rotates the Siano/reader
+generation; this may interrupt streams and recording/EPG jobs, including work
+using another enclosure. Unchanged PX4 owners keep their `px4d` process and USB
+descriptors, but this does not promise uninterrupted upstream service. A PX4
+detach invalidates the owner's saved device path immediately, before
+asynchronous reconfiguration, and drains any in-flight startup before the path
+can be reused.
 
 The two least-known mandatory components were increments 1 and 2.  Both Phase 0
 feasibility gates are complete; remaining acceptance evidence is still required.

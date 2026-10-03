@@ -51,7 +51,9 @@ class MirakcService : Service() {
                 lastError = "none"
                 statusText = "USB permission granted: ${device.deviceName}"
                 requestUsbPermissionIfNeeded()
-                if (MirakcUsbEventPolicy.affectsTunerConfiguration(device.vendorId, device.productId)) {
+                if (MirakcUsbEventPolicy.requiresMirakcReconfigureOnPermissionGrant(
+                        device.vendorId, device.productId, isSmartCardReader(device)
+                    )) {
                     mirakcSupervisor?.reconfigure()
                 }
             } else {
@@ -70,12 +72,18 @@ class MirakcService : Service() {
                 return
             }
             val isAttached = intent.action == UsbManager.ACTION_USB_DEVICE_ATTACHED
+            val isCcidReader = isSmartCardReader(device)
             if (!isAttached && MirakcUsbEventPolicy.isPx4Tuner(device.vendorId, device.productId)) {
                 mirakcSupervisor?.invalidatePx4Device(device.deviceName)
             }
             if (isAttached && isUsbPermissionTarget(device)) requestUsbPermissionIfNeeded()
-            if (MirakcUsbEventPolicy.affectsTunerConfiguration(device.vendorId, device.productId) &&
-                (!isAttached || usbManager.hasPermission(device))) {
+            if (MirakcUsbEventPolicy.requiresMirakcReconfigureOnLifecycle(
+                    device.vendorId,
+                    device.productId,
+                    isCcidReader,
+                    isAttached,
+                    usbManager.hasPermission(device)
+                )) {
                 mirakcSupervisor?.reconfigure()
             }
             publishStatus()

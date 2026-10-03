@@ -39,6 +39,20 @@ internal data class SianoGeneration(
     val deviceNames: List<String>
 )
 
+/** Allows a failed CCID open to retry after a reader USB/permission generation change. */
+internal class SianoReaderAvailability {
+    var unavailable: Boolean = false
+        private set
+
+    fun markUnavailable() {
+        unavailable = true
+    }
+
+    fun resetForGenerationChange() {
+        unavailable = false
+    }
+}
+
 /** Brokers tuner command clients to exactly one Android-owned Siano process. */
 internal class SianoTunerBroker(
     private val sianoExecutable: () -> File,
@@ -59,12 +73,12 @@ internal class SianoTunerBroker(
     @Volatile private var running = false
     @Volatile private var closed = false
     private var readerHandle: SianoReaderHandle? = null
-    private var readerHandleUnavailable = false
+    private val readerAvailability = SianoReaderAvailability()
     private var readerLeaseHeld = false
     @Volatile private var generation = SianoGeneration("", "", 0, emptyList())
 
     fun start(): SianoGeneration {
-        synchronized(lock) {
+        val next = synchronized(lock) {
             check(!closed) { "Siano tuner broker is closed" }
             if (!running) {
                 val newSocketName = nextSocketName()
@@ -77,14 +91,16 @@ internal class SianoTunerBroker(
                     it.start()
                 }
             }
-            return rotateGenerationLocked()
+            rotateGenerationLocked()
         }
+        invalidateReaderHandle()
+        return next
     }
 
     fun rotateGeneration(): SianoGeneration {
-        synchronized(lock) {
-            return rotateGenerationLocked()
-        }
+        val next = synchronized(lock) { rotateGenerationLocked() }
+        invalidateReaderHandle()
+        return next
     }
 
     fun currentGeneration(): SianoGeneration = generation
@@ -364,11 +380,11 @@ internal class SianoTunerBroker(
 
     private fun acquireReaderLease(): SianoReaderHandle {
         synchronized(readerLeaseLock) {
-            if (readerHandle == null && !readerHandleUnavailable) {
+            if (readerHandle == null && !readerAvailability.unavailable) {
                 readerHandle = try {
                     openReader()
                 } catch (error: Exception) {
-                    readerHandleUnavailable = true
+                    readerAvailability.markUnavailable()
                     null
                 }
             }
@@ -385,6 +401,28 @@ internal class SianoTunerBroker(
             readerLeaseHeld = true
             return handle
         }
+    }
+
+    private fun invalidateReaderHandle() {
+        var interrupted = false
+        val stale: SianoReaderHandle?
+        synchronized(readerLeaseLock) {
+            while (readerLeaseHeld && !closed) {
+                try {
+                    readerLeaseLock.wait(1_000)
+                } catch (_: InterruptedException) {
+                    interrupted = true
+                }
+            }
+            stale = readerHandle
+            readerHandle = null
+            readerAvailability.resetForGenerationChange()
+        }
+        try {
+            stale?.close()
+        } catch (_: Exception) {
+        }
+        if (interrupted) Thread.currentThread().interrupt()
     }
 
     private fun releaseReaderLease() {

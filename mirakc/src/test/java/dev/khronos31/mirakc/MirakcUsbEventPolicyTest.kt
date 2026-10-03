@@ -15,10 +15,23 @@ class MirakcUsbEventPolicyTest {
     }
 
     @Test
-    fun unrelatedUsbAndReaderChangesDoNotRestartMirakc() {
-        assertFalse(MirakcUsbEventPolicy.affectsTunerConfiguration(0x04e6, 0x511a))
+    fun unrelatedUsbAccessoriesDoNotRestartMirakc() {
         assertFalse(MirakcUsbEventPolicy.affectsTunerConfiguration(0x0511, 0x7777))
         assertFalse(MirakcUsbEventPolicy.isPx4Tuner(0x0511, Px4DeviceSelector.MLT5_PRODUCT_IDS.first() + 1))
         assertFalse(MirakcUsbEventPolicy.affectsTunerConfiguration(0x1234, 0x5678))
+    }
+
+    @Test
+    fun ccidPermissionAndLifecycleChangesRetainTheMirakcRecoveryPath() {
+        assertFalse(MirakcUsbEventPolicy.requiresMirakcReconfigureOnLifecycle(
+            0x04e6, 0x511a, isCcidReader = true, isAttached = true, permissionGranted = false))
+        assertTrue(MirakcUsbEventPolicy.requiresMirakcReconfigureOnPermissionGrant(
+            0x04e6, 0x511a, isCcidReader = true))
+        assertTrue(MirakcUsbEventPolicy.requiresMirakcReconfigureOnLifecycle(
+            0x04e6, 0x511a, isCcidReader = true, isAttached = true, permissionGranted = true))
+        assertTrue(MirakcUsbEventPolicy.requiresMirakcReconfigureOnLifecycle(
+            0x04e6, 0x511a, isCcidReader = true, isAttached = false, permissionGranted = false))
+        assertFalse(MirakcUsbEventPolicy.requiresMirakcReconfigureOnLifecycle(
+            0x1234, 0x5678, isCcidReader = false, isAttached = false, permissionGranted = false))
     }
 }
