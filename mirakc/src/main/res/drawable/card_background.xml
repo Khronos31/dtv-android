@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_focused="true">
+        <shape android:shape="rectangle">
+            <corners android:radius="@dimen/tv_card_corner" />
+            <solid android:color="@color/tv_card_bg_focused" />
+            <stroke android:width="@dimen/tv_card_stroke_focused_width" android:color="@color/tv_card_stroke_focused" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <corners android:radius="@dimen/tv_card_corner" />
+            <solid android:color="@color/tv_card_bg" />
+            <stroke android:width="@dimen/tv_card_stroke_width" android:color="@color/tv_card_stroke" />
+        </shape>
+    </item>
+</selector>

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Focused -->
+    <item android:state_focused="true">
+        <shape android:shape="rectangle">
+            <corners android:radius="@dimen/tv_rail_item_corner" />
+            <solid android:color="@color/tv_rail_item_focused" />
+            <stroke android:width="2dp" android:color="@color/tv_card_stroke_focused" />
+        </shape>
+    </item>
+    <!-- Selected / Activated -->
+    <item android:state_selected="true">
+        <shape android:shape="rectangle">
+            <corners android:radius="@dimen/tv_rail_item_corner" />
+            <solid android:color="@color/tv_rail_item_active" />
+        </shape>
+    </item>
+    <item android:state_activated="true">
+        <shape android:shape="rectangle">
+            <corners android:radius="@dimen/tv_rail_item_corner" />
+            <solid android:color="@color/tv_rail_item_active" />
+        </shape>
+    </item>
+    <!-- Normal -->
+    <item>
+        <shape android:shape="rectangle">
+            <corners android:radius="@dimen/tv_rail_item_corner" />
+            <solid android:color="@color/tv_rail_item_normal" />
+        </shape>
+    </item>
+</selector>

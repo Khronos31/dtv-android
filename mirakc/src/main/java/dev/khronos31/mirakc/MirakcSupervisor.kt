@@ -11,19 +11,27 @@ import java.nio.charset.StandardCharsets
 internal const val MIRAKC_JOB_FILTER_ARGS =
     "{{#sids}} --sids={{{.}}}{{/sids}}{{#xsids}} --xsids={{{.}}}{{/xsids}}"
 
-internal fun renderMirakcJobCommands(aribPath: String): String = buildString {
-    append("  scan-services:\n")
-    append("    command: /system/bin/timeout 30 $aribPath scan-services")
-    append(MIRAKC_JOB_FILTER_ARGS)
-    append("\n    disabled: false\n")
-    append("  sync-clocks:\n")
-    append("    command: /system/bin/timeout 30 $aribPath sync-clocks")
-    append(MIRAKC_JOB_FILTER_ARGS)
-    append("\n    disabled: false\n")
-    append("  update-schedules:\n")
-    append("    command: /system/bin/timeout 600 $aribPath collect-eits")
-    append(MIRAKC_JOB_FILTER_ARGS)
-    append("\n    disabled: false")
+internal fun renderMirakcJobCommands(
+    aribPath: String,
+    epgIntervalMinutes: Int = EpgUpdateIntervalSettings.DEFAULT_MINUTES
+): String {
+    require(epgIntervalMinutes in EpgUpdateIntervalSettings.MIN_MINUTES..EpgUpdateIntervalSettings.MAX_MINUTES) {
+        "EPG interval must be ${EpgUpdateIntervalSettings.MIN_MINUTES}..${EpgUpdateIntervalSettings.MAX_MINUTES} minutes"
+    }
+    return buildString {
+        append("  scan-services:\n")
+        append("    command: /system/bin/timeout 30 $aribPath scan-services")
+        append(MIRAKC_JOB_FILTER_ARGS)
+        append("\n    disabled: false\n")
+        append("  sync-clocks:\n")
+        append("    command: /system/bin/timeout 30 $aribPath sync-clocks")
+        append(MIRAKC_JOB_FILTER_ARGS)
+        append("\n    disabled: false\n")
+        append("  update-schedules:\n")
+        append("    command: /system/bin/timeout 600 $aribPath collect-eits")
+        append(MIRAKC_JOB_FILTER_ARGS)
+        append("\n    schedule: '@every ${epgIntervalMinutes}m'\n    disabled: false")
+    }
 }
 
 /** Owns the upstream mirakc process, but not tuner or smart-card descriptors. */
@@ -106,6 +114,7 @@ internal class MirakcSupervisor(
             process = null
             try {
                 clearUpdateSchedulesTrigger()
+                clearGrScanTriggers()
             } catch (error: IOException) {
                 Log.e(TAG, "acceptance trigger cleanup failed during stop", error)
             }
@@ -201,6 +210,56 @@ internal class MirakcSupervisor(
         }
     }
 
+    /** Queue the range scan; upstream JobManager takes the low-priority tuner lease. */
+    fun requestGrScan(): Boolean {
+        synchronized(lock) {
+            val parent = grScanTrigger.parentFile ?: return false
+            if (stopping || process == null || !parent.isDirectory || grScanTrigger.exists() ||
+                grScanStatus()?.isRunning == true
+            ) return false
+            return try {
+                if (grScanCancelTrigger.exists() && !grScanCancelTrigger.delete()) {
+                    throw IOException("cannot clear stale GR cancellation marker")
+                }
+                val scanId = System.currentTimeMillis().coerceAtLeast(1L)
+                val previousState = grScanStateFile.takeIf { it.isFile && it.length() <= MAX_SCAN_STATUS_BYTES }
+                    ?.readText(StandardCharsets.UTF_8)
+                writeGrScanState("queued\n0\n50\n\n\n0\n$scanId\nNONE\n")
+                if (!grScanTrigger.createNewFile()) {
+                    previousState?.let { writeGrScanState(it) }
+                    return false
+                }
+                true
+            } catch (error: IOException) {
+                Log.e(TAG, "GR scan trigger failed", error)
+                false
+            }
+        }
+    }
+
+    /** Cancellation takes effect between channels, after the current tuner lease is released. */
+    fun cancelGrScan(): Boolean {
+        synchronized(lock) {
+            val parent = grScanCancelTrigger.parentFile ?: return false
+            if (stopping || process == null || !parent.isDirectory || grScanStatus()?.isRunning != true) return false
+            return try {
+                grScanCancelTrigger.exists() || grScanCancelTrigger.createNewFile()
+            } catch (error: IOException) {
+                Log.e(TAG, "GR scan cancellation trigger failed", error)
+                false
+            }
+        }
+    }
+
+    fun grScanStatus(): GrScanStatus? {
+        if (!grScanStateFile.isFile || grScanStateFile.length() > MAX_SCAN_STATUS_BYTES) return null
+        return try {
+            GrScanStatus.parse(grScanStateFile.readText(StandardCharsets.UTF_8))
+        } catch (_: IOException) {
+            null
+        }
+    }
+
     private fun startOnWorker() {
         var started: NativeUsbProcess.StartedMirakc? = null
         try {
@@ -222,6 +281,8 @@ internal class MirakcSupervisor(
             // A marker is meaningful only while this exact upstream process
             // is alive; never carry one across a crash/restart.
             clearUpdateSchedulesTrigger()
+            clearGrScanTriggers()
+            markGrScanInterruptedIfRunning()
             synchronized(lock) {
                 if (stopping) return
             }
@@ -359,6 +420,36 @@ internal class MirakcSupervisor(
     private fun clearUpdateSchedulesTrigger() {
         if (updateSchedulesTrigger.exists() && !updateSchedulesTrigger.delete()) {
             throw IOException("cannot remove stale acceptance trigger: $updateSchedulesTrigger")
+        }
+    }
+
+    private fun clearGrScanTriggers() {
+        listOf(grScanTrigger, grScanCancelTrigger).forEach { marker ->
+            if (marker.exists() && !marker.delete()) {
+                throw IOException("cannot remove stale GR scan trigger: $marker")
+            }
+        }
+    }
+
+    /** Once mirakc is gone, preserve progress while making an abandoned scan non-applicable. */
+    private fun markGrScanInterruptedIfRunning() {
+        val status = grScanStatus()?.takeIf { it.isRunning } ?: return
+        try {
+            writeGrScanState(
+                "interrupted\n${status.completed}\n${status.total}\n" +
+                    "${status.currentChannel ?: ""}\n${status.foundChannels.joinToString(",")}\n" +
+                    "${status.failedChannels}\n${status.scanId}\nINTERRUPTED\n"
+            )
+        } catch (error: IOException) {
+            Log.e(TAG, "unable to mark interrupted GR scan", error)
+        }
+    }
+
+    private fun writeGrScanState(contents: String) {
+        val temporary = grScanStateFile.resolveSibling(".gr-scan-state.android.tmp")
+        temporary.writeText(contents, StandardCharsets.UTF_8)
+        if (!temporary.renameTo(grScanStateFile)) {
+            throw IOException("cannot replace GR scan status: $grScanStateFile")
         }
     }
 
@@ -576,6 +667,7 @@ internal class MirakcSupervisor(
             NativeUsbProcess.stop(started.pid)
         } finally {
             finishDiagnostics(started)
+            markGrScanInterruptedIfRunning()
         }
     }
 
@@ -663,7 +755,12 @@ internal class MirakcSupervisor(
             terrestrialChannels(),
             appendListHeaderWhenEmpty = px4Generations.any { px4 -> px4.tuners.any { it.supportsTerrestrial } }
         )
-        val jobsConfig = renderMirakcJobCommands(aribPath)
+        val epgIntervalMinutes = EpgUpdateIntervalStore(
+            AndroidStringSettings(
+                context.getSharedPreferences("epg-update-settings", Context.MODE_PRIVATE)
+            )
+        ).minutes()
+        val jobsConfig = renderMirakcJobCommands(aribPath, epgIntervalMinutes)
         return """
             |epg:
             |  cache-dir: '${yamlPath(cacheDir)}'
@@ -699,9 +796,16 @@ internal class MirakcSupervisor(
         const val MAX_DIAGNOSTICS_BYTES = 64 * 1024
         const val MAX_DIAGNOSTIC_LINE = 512
         const val DIAGNOSTICS_DRAIN_TIMEOUT_MS = 500L
+        const val MAX_SCAN_STATUS_BYTES = 2 * 1024
         const val TAG = "MirakcSupervisor"
     }
 
     private val updateSchedulesTrigger: File
         get() = epgDir.resolve("cache/.acceptance-update-schedules")
+    private val grScanTrigger: File
+        get() = epgDir.resolve("cache/.acceptance-gr-scan")
+    private val grScanCancelTrigger: File
+        get() = epgDir.resolve("cache/.acceptance-cancel-gr-scan")
+    private val grScanStateFile: File
+        get() = epgDir.resolve("cache/.gr-scan-state")
 }

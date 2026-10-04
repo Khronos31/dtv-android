@@ -1,233 +1,115 @@
-diff --git mirakc-core/src/web/access_control.rs mirakc-core/src/web/access_control.rs
-index 3cbc4ffc..214849bf 100644
---- mirakc-core/src/web/access_control.rs
-+++ mirakc-core/src/web/access_control.rs
-@@ -55,0 +56,4 @@ where
-+            Some(ConnectInfo(PeerInfo::TcpUnavailable)) => {
-+                tracing::warn!("No TCP peer info available, disconnect");
-+                false
-+            }
-@@ -59,0 +64,4 @@ where
-+            Some(ConnectInfo(PeerInfo::UnixUnavailable)) => {
-+                tracing::warn!("No Unix peer info available, disconnect");
-+                false
-+            }
-diff --git mirakc-core/src/web/peer_info.rs mirakc-core/src/web/peer_info.rs
-index 4cff3fb5..df0f492c 100644
---- mirakc-core/src/web/peer_info.rs
-+++ mirakc-core/src/web/peer_info.rs
-@@ -11,0 +12 @@ pub(crate) enum PeerInfo {
-+    TcpUnavailable,
-@@ -16,0 +18 @@ pub(crate) enum PeerInfo {
-+    UnixUnavailable,
-@@ -23,2 +25,6 @@ impl Connected<&TcpStream> for PeerInfo {
--        Self::Tcp {
--            addr: target.peer_addr().unwrap(),
-+        match target.peer_addr() {
-+            Ok(addr) => Self::Tcp { addr },
-+            Err(error) => {
-+                tracing::error!(?error, "Failed to obtain TCP peer address");
-+                Self::TcpUnavailable
-+            }
-@@ -30,0 +37,14 @@ impl Connected<&UnixStream> for PeerInfo {
-+        let addr = match target.peer_addr() {
-+            Ok(addr) => Arc::new(addr),
-+            Err(error) => {
-+                tracing::error!(?error, "Failed to obtain Unix peer address");
-+                return Self::UnixUnavailable;
-+            }
-+        };
-+        let cred = match target.peer_cred() {
-+            Ok(cred) => cred,
-+            Err(error) => {
-+                tracing::error!(?error, "Failed to obtain Unix peer credentials");
-+                return Self::UnixUnavailable;
-+            }
-+        };
-@@ -32,2 +52,2 @@ impl Connected<&UnixStream> for PeerInfo {
--            addr: Arc::new(target.peer_addr().unwrap()),
--            cred: target.peer_cred().unwrap(),
-+            addr,
-+            cred,
-diff --git mirakc-core/src/web/server.rs mirakc-core/src/web/server.rs
-index 1e3c940d..a91e68c2 100644
---- mirakc-core/src/web/server.rs
-+++ mirakc-core/src/web/server.rs
-@@ -2,0 +3 @@ use std::sync::Arc;
-+use std::time::Duration;
-@@ -28 +29,19 @@ pub(super) async fn serve(config: Arc<Config>, app: Router) -> Result<(), Error>
--    while set.join_next().await.is_some() {}
-+    while let Some(result) = set.join_next().await {
-+        match result {
-+            Ok(Ok(())) => {
-+                tracing::error!("Web server task ended unexpectedly");
-+                set.abort_all();
-+                return Err(anyhow::anyhow!("web server task ended unexpectedly").into());
-+            }
-+            Ok(Err(error)) => {
-+                tracing::error!(?error, "Web server task failed");
-+                set.abort_all();
-+                return Err(error);
-+            }
-+            Err(error) => {
-+                tracing::error!(?error, "Web server task panicked");
-+                set.abort_all();
-+                return Err(anyhow::anyhow!("web server task failed: {error}").into());
-+            }
-+        }
-+    }
-@@ -36,0 +56 @@ macro_rules! serve {
-+        {
-@@ -38,0 +59 @@ macro_rules! serve {
-+            let mut accept_backoff_ms = 100u64;
-@@ -40,2 +61,22 @@ macro_rules! serve {
--                let (socket, _remote_addr) = $listener.accept().await.unwrap();
--                let tower_service = make_service.call(&socket).await.unwrap();
-+                let (socket, _remote_addr) = match $listener.accept().await {
-+                    Ok(connection) => {
-+                        accept_backoff_ms = 100;
-+                        connection
-+                    }
-+                    Err(error) => {
-+                        tracing::error!(?error, "Failed to accept web connection");
-+                        if is_fatal_accept_error(&error) {
-+                            return Err(anyhow::anyhow!("web accept failed: {error}").into());
-+                        }
-+                        tokio::time::sleep(Duration::from_millis(accept_backoff_ms)).await;
-+                        accept_backoff_ms = (accept_backoff_ms.saturating_mul(2)).min(1_000);
-+                        continue;
-+                    }
-+                };
-+                let tower_service = match make_service.call(&socket).await {
-+                    Ok(service) => service,
-+                    Err(error) => {
-+                        tracing::error!(?error, "Failed to create web service");
-+                        continue;
-+                    }
-+                };
-@@ -57 +98,15 @@ macro_rules! serve {
--        let _ = handle.await;
-+        match handle.await {
-+            Ok(Ok(())) => {
-+                tracing::error!("Web accept loop ended unexpectedly");
-+                Err(anyhow::anyhow!("web accept loop ended unexpectedly").into())
-+            }
-+            Ok(Err(error)) => {
-+                tracing::error!(?error, "Web accept loop stopped");
-+                Err(error)
-+            }
-+            Err(error) => {
-+                tracing::error!(?error, "Web accept loop failed");
-+                Err(anyhow::anyhow!("web accept loop failed: {error}").into())
-+            }
-+        }
-+        }
-@@ -60,0 +116,7 @@ macro_rules! serve {
-+fn is_fatal_accept_error(error: &std::io::Error) -> bool {
-+    // These descriptor/operation errors do not become healthy by retrying;
-+    // transient resource errors continue through the bounded backoff above.
-+    matches!(error.raw_os_error(), Some(9 | 22 | 88))
-+        || error.kind() == std::io::ErrorKind::InvalidInput
+diff --git mirakc-core/src/config.rs mirakc-core/src/config.rs
+index eb7c8a0a..9a03e9cf 100644
+--- mirakc-core/src/config.rs
++++ mirakc-core/src/config.rs
+@@ -840,13 +840,27 @@ impl JobConfig {
+                 "config.jobs[{name}].command: must be a non-empty string"
+             );
+             assert!(
+-                cron::Schedule::from_str(&self.schedule).is_ok(),
++                parse_fixed_delay_schedule(&self.schedule).is_some()
++                    || cron::Schedule::from_str(&self.schedule).is_ok(),
+                 "config.jobs[{name}].schedule: not valid"
+             );
+         }
+     }
+ }
+ 
++/// Parse the Android adapter's fixed-delay form.  It deliberately accepts
++/// whole minutes only, so the UI and upstream scheduler share one strict range.
++pub(crate) fn parse_fixed_delay_schedule(schedule: &str) -> Option<std::time::Duration> {
++    let minutes = schedule
++        .strip_prefix("@every ")?
++        .strip_suffix('m')?
++        .parse::<u64>()
++        .ok()?;
++    (1..=1440)
++        .contains(&minutes)
++        .then(|| std::time::Duration::from_secs(minutes * 60))
 +}
 +
-@@ -63,2 +125 @@ async fn http(addr: std::net::SocketAddr, app: Router) -> Result<(), Error> {
--    serve!(listener, app);
--    Ok(())
-+    serve!(listener, app)
-@@ -72,2 +133 @@ async fn uds(path: PathBuf, app: Router) -> Result<(), Error> {
--    serve!(listener, app);
--    Ok(())
-+    serve!(listener, app)
-diff --git mirakc/src/main.rs mirakc/src/main.rs
-index 97af1017..3670840c 100644
---- mirakc/src/main.rs
-+++ mirakc/src/main.rs
-@@ -58 +58,7 @@ async fn main() {
--        None => serve::main(config).await,
-+        None => {
-+            if let Err(error) = serve::main(config).await {
-+                tracing::error!(%error, "mirakc server failed");
-+                eprintln!("mirakc: server failed; exiting");
-+                std::process::exit(1);
-+            }
+ #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+ #[serde(rename_all = "kebab-case")]
+ #[serde(deny_unknown_fields)]
+@@ -2796,6 +2810,29 @@ mod tests {
+         config.validate("test");
+     }
+ 
++    #[test]
++    fn fixed_delay_job_schedule_accepts_only_whole_minutes_from_one_to_1440() {
++        for minutes in [1, 10, 60, 1440] {
++            assert_eq!(
++                parse_fixed_delay_schedule(&format!("@every {minutes}m")),
++                Some(Duration::from_secs(minutes * 60))
++            );
 +        }
-diff --git mirakc/src/serve.rs mirakc/src/serve.rs
-index fce531f6..f2acf6ba 100644
---- mirakc/src/serve.rs
-+++ mirakc/src/serve.rs
-@@ -8 +8 @@ use tokio::signal::unix::SignalKind;
--pub async fn main(config: Arc<config::Config>) {
-+pub async fn main(config: Arc<config::Config>) -> Result<(), mirakc_core::error::Error> {
-@@ -49 +49 @@ pub async fn main(config: Arc<config::Config>) {
--    tokio::select! {
-+    let web_result = tokio::select! {
-@@ -51,4 +51,2 @@ pub async fn main(config: Arc<config::Config>) {
--            match result {
--                Ok(_) => (),
--                Err(err) => tracing::error!(%err),
--            }
-+            eprintln!("mirakc: web serve returned");
-+            result
-@@ -56,0 +55 @@ pub async fn main(config: Arc<config::Config>) {
-+            eprintln!("mirakc: SIGINT received");
-@@ -57,0 +57 @@ pub async fn main(config: Arc<config::Config>) {
-+            Ok(())
-@@ -59,0 +60 @@ pub async fn main(config: Arc<config::Config>) {
-+            eprintln!("mirakc: SIGTERM received");
-@@ -60,0 +62 @@ pub async fn main(config: Arc<config::Config>) {
-+            Ok(())
-@@ -62 +64 @@ pub async fn main(config: Arc<config::Config>) {
--    }
-+    };
-@@ -69,0 +72,4 @@ pub async fn main(config: Arc<config::Config>) {
-+    if let Err(ref err) = web_result {
-+        tracing::error!(%err, "Web server stopped with an error");
++        for schedule in [
++            "@every 0m",
++            "@every 1441m",
++            "@every 1s",
++            "@every Xm",
++            "@every 10 m",
++        ] {
++            assert_eq!(parse_fixed_delay_schedule(schedule), None, "{schedule}");
++        }
++
++        let mut config = job_config();
++        config.schedule = "@every 10m".to_string();
++        config.validate("test");
 +    }
-+    web_result
-diff --git mirakc-core/src/epg/service_scanner.rs mirakc-core/src/epg/service_scanner.rs
---- mirakc-core/src/epg/service_scanner.rs
-+++ mirakc-core/src/epg/service_scanner.rs
-@@ -1,1 +1,2 @@
++
+     #[test]
+     #[should_panic(expected = "config.jobs[test].command: must be a non-empty string")]
+     fn test_job_config_validate_command() {
+diff --git mirakc-core/src/epg/clock_synchronizer.rs mirakc-core/src/epg/clock_synchronizer.rs
+index 850f6cfb..324d0326 100644
+--- mirakc-core/src/epg/clock_synchronizer.rs
++++ mirakc-core/src/epg/clock_synchronizer.rs
+@@ -1,5 +1,6 @@
+ use std::collections::HashMap;
  use std::sync::Arc;
 +use std::time::Duration;
-@@ -67,6 +67,34 @@
-     async fn scan_services_in_channel(
+ 
+ use actlet::prelude::*;
+ use serde::Deserialize;
+@@ -69,6 +70,32 @@ where
          channel: &ChannelConfig,
          command: &str,
          tuner_manager: &T,
-     ) -> anyhow::Result<Vec<EpgService>> {
++    ) -> anyhow::Result<Vec<SyncClock>> {
 +        let max_attempts = scan_attempt_limit(channel.channel_type);
 +        for attempt in 0..max_attempts {
-+            match Self::scan_services_in_channel_once(channel, command, tuner_manager).await {
-+                Ok(services) => return Ok(services),
++            match Self::sync_clocks_in_channel_once(channel, command, tuner_manager).await {
++                Ok(clocks) => return Ok(clocks),
 +                Err(error) if attempt + 1 < max_attempts => {
 +                    tracing::warn!(
 +                        channel.name,
 +                        attempt = attempt + 1,
 +                        max_attempts,
 +                        %error,
-+                        "Retrying service scan"
++                        "Retrying clock synchronization"
 +                    );
-+                    tokio::time::sleep(Duration::from_millis(
-+                        PX4_SATELLITE_SCAN_RETRY_DELAY_MS,
-+                    ))
-+                    .await;
++                    tokio::time::sleep(Duration::from_millis(PX4_SATELLITE_EPG_RETRY_DELAY_MS))
++                        .await;
 +                }
 +                Err(error) => return Err(error),
 +            }
 +        }
-+        unreachable!("service scan attempt limit is always positive")
++        unreachable!("clock synchronization attempt limit is always positive")
 +    }
 +
-+    async fn scan_services_in_channel_once(
++    async fn sync_clocks_in_channel_once(
 +        channel: &ChannelConfig,
 +        command: &str,
 +        tuner_manager: &T,
-+    ) -> anyhow::Result<Vec<EpgService>> {
-         tracing::debug!(channel.name, "Scanning services...");
-@@ -130,0 +161,9 @@
-+
-+const PX4_SATELLITE_SCAN_RETRY_DELAY_MS: u64 = 200;
+     ) -> anyhow::Result<Vec<SyncClock>> {
+         tracing::debug!(channel.name, "Synchronizing clocks...");
+ 
+@@ -127,6 +154,15 @@ where
+     }
+ }
+ 
++const PX4_SATELLITE_EPG_RETRY_DELAY_MS: u64 = 200;
 +
 +fn scan_attempt_limit(channel_type: ChannelType) -> usize {
 +    match channel_type {
@@ -235,26 +117,41 @@ diff --git mirakc-core/src/epg/service_scanner.rs mirakc-core/src/epg/service_sc
 +        ChannelType::GR | ChannelType::SKY => 1,
 +    }
 +}
-@@ -162,5 +172,13 @@
- #[cfg(test)]
- mod tests {
-     use super::*;
-     use crate::tuner::stub::TunerManagerStub;
-     use test_log::test;
 +
+ #[derive(Clone, Deserialize)]
+ #[cfg_attr(test, derive(Serialize))]
+ #[serde(rename_all = "camelCase")]
+@@ -145,6 +181,14 @@ mod tests {
+     use assert_matches::assert_matches;
+     use test_log::test;
+ 
 +    #[test]
-+    fn satellite_scan_retry_is_limited_to_satellite_channels() {
++    fn satellite_clock_retry_is_limited_to_satellite_channels() {
 +        assert_eq!(scan_attempt_limit(ChannelType::GR), 1);
 +        assert_eq!(scan_attempt_limit(ChannelType::BS), 3);
 +        assert_eq!(scan_attempt_limit(ChannelType::CS), 3);
 +        assert_eq!(scan_attempt_limit(ChannelType::SKY), 1);
 +    }
++
+     #[test(tokio::test)]
+     async fn test_sync_clocks_in_channel() {
+         let stub = TunerManagerStub::default();
 diff --git mirakc-core/src/epg/eit_feeder.rs mirakc-core/src/epg/eit_feeder.rs
+index 0df38541..b570ab68 100644
 --- mirakc-core/src/epg/eit_feeder.rs
 +++ mirakc-core/src/epg/eit_feeder.rs
-@@ -3,0 +4 @@
+@@ -1,6 +1,7 @@
+ use std::collections::HashMap;
+ use std::collections::HashSet;
+ use std::sync::Arc;
 +use std::time::Duration;
-@@ -22,0 +24,32 @@
+ 
+ use actlet::prelude::*;
+ use tokio::io::AsyncBufReadExt;
+@@ -20,6 +21,38 @@ pub struct EitFeeder<T, E> {
+     epg: E,
+ }
+ 
 +const PX4_SATELLITE_EPG_RETRY_DELAY_MS: u64 = 200;
 +
 +fn eit_attempt_limit(channel_type: ChannelType) -> usize {
@@ -287,16 +184,17 @@ diff --git mirakc-core/src/epg/eit_feeder.rs mirakc-core/src/epg/eit_feeder.rs
 +    }
 +}
 +
-@@ -166,0 +200,30 @@
+ impl<T, E> EitFeeder<T, E>
+ where
+     T: Clone + Send + Sync + 'static,
+@@ -164,6 +197,31 @@ where
+         tuner_manager: &T,
+         epg: &E,
+     ) -> Result<(), Error> {
 +        let max_attempts = eit_attempt_limit(channel.channel_type);
 +        for attempt in 0..max_attempts {
-+            let num_sections = Self::collect_eits_in_channel_once(
-+                channel,
-+                command,
-+                tuner_manager,
-+                epg,
-+            )
-+            .await?;
++            let num_sections =
++                Self::collect_eits_in_channel_once(channel, command, tuner_manager, epg).await?;
 +            if !should_retry_empty_eit(attempt, max_attempts, num_sections) {
 +                return Ok(());
 +            }
@@ -318,67 +216,60 @@ diff --git mirakc-core/src/epg/eit_feeder.rs mirakc-core/src/epg/eit_feeder.rs
 +        tuner_manager: &T,
 +        epg: &E,
 +    ) -> Result<usize, Error> {
-@@ -264 +327 @@
+         tracing::debug!(channel.name, "Collecting EIT sections...");
+ 
+         let user = TunerUser {
+@@ -261,6 +319,6 @@ where
+             "Collected EIT sections"
+         );
+ 
 -        Ok(())
 +        Ok(num_sections)
-diff --git mirakc-core/src/epg/clock_synchronizer.rs mirakc-core/src/epg/clock_synchronizer.rs
---- mirakc-core/src/epg/clock_synchronizer.rs
-+++ mirakc-core/src/epg/clock_synchronizer.rs
-@@ -2,0 +3 @@
-+use std::time::Duration;
-@@ -72,0 +74,28 @@
-+        let max_attempts = scan_attempt_limit(channel.channel_type);
-+        for attempt in 0..max_attempts {
-+            match Self::sync_clocks_in_channel_once(channel, command, tuner_manager).await {
-+                Ok(clocks) => return Ok(clocks),
-+                Err(error) if attempt + 1 < max_attempts => {
-+                    tracing::warn!(
-+                        channel.name,
-+                        attempt = attempt + 1,
-+                        max_attempts,
-+                        %error,
-+                        "Retrying clock synchronization"
-+                    );
-+                    tokio::time::sleep(Duration::from_millis(
-+                        PX4_SATELLITE_EPG_RETRY_DELAY_MS,
-+                    ))
-+                    .await;
-+                }
-+                Err(error) => return Err(error),
-+            }
-+        }
-+        unreachable!("clock synchronization attempt limit is always positive")
-+    }
-+
-+    async fn sync_clocks_in_channel_once(
-+        channel: &ChannelConfig,
-+        command: &str,
-+        tuner_manager: &T,
-+    ) -> anyhow::Result<Vec<SyncClock>> {
-@@ -129,0 +159,9 @@
-+const PX4_SATELLITE_EPG_RETRY_DELAY_MS: u64 = 200;
-+
-+fn scan_attempt_limit(channel_type: ChannelType) -> usize {
-+    match channel_type {
-+        ChannelType::BS | ChannelType::CS => 3,
-+        ChannelType::GR | ChannelType::SKY => 1,
-+    }
-+}
-+
-@@ -146,0 +185,8 @@
-+
-+    #[test]
-+    fn satellite_clock_retry_is_limited_to_satellite_channels() {
-+        assert_eq!(scan_attempt_limit(ChannelType::GR), 1);
-+        assert_eq!(scan_attempt_limit(ChannelType::BS), 3);
-+        assert_eq!(scan_attempt_limit(ChannelType::CS), 3);
-+        assert_eq!(scan_attempt_limit(ChannelType::SKY), 1);
-+    }
+     }
+ }
 diff --git mirakc-core/src/epg/job.rs mirakc-core/src/epg/job.rs
-index d89feda..e44aecf 100644
+index d89feda6..41da4174 100644
 --- mirakc-core/src/epg/job.rs
 +++ mirakc-core/src/epg/job.rs
-@@ -59,0 +60,20 @@ where
+@@ -1,14 +1,16 @@
+ use std::env;
++use std::io;
++use std::path::Path;
+ use std::str::FromStr;
+ use std::sync::Arc;
+-use std::time::Instant;
++use std::time::{Instant, SystemTime, UNIX_EPOCH};
+ 
+ use actlet::prelude::*;
+ use chrono::DateTime;
+ use chrono_jst::Jst;
+ use once_cell::sync::Lazy;
+ 
+-use crate::config::Config;
++use crate::config::{parse_fixed_delay_schedule, Config};
+ use crate::epg::clock_synchronizer::ClockSynchronizer;
+ use crate::epg::eit_feeder::FeedEitSections;
+ use crate::epg::service_scanner::ServiceScanner;
+@@ -17,6 +19,7 @@ use crate::epg::*;
+ pub struct JobManager<T, E, F> {
+     config: Arc<Config>,
+     scanning_services: bool,
++    scanning_gr_channels: bool,
+     synchronizing_clocks: bool,
+     updating_schedules: bool,
+     tuner_manager: T,
+@@ -40,6 +43,7 @@ where
+         JobManager {
+             config,
+             scanning_services: false,
++            scanning_gr_channels: false,
+             synchronizing_clocks: false,
+             updating_schedules: false,
+             tuner_manager,
+@@ -57,6 +61,146 @@ where
+             .unwrap()
+     }
+ 
 +    /// Accept one app-private trigger without adding a public control endpoint.
 +    /// The marker is created only by the Android app's DUMP-protected provider;
 +    /// removing it before dispatch makes duplicate triggers idempotent.
@@ -387,6 +278,7 @@ index d89feda..e44aecf 100644
 +            return;
 +        };
 +        let marker = cache_dir.join(".acceptance-update-schedules");
++        let gr_scan_marker = cache_dir.join(".acceptance-gr-scan");
 +        let addr = ctx.address().clone();
 +        ctx.spawn_task(async move {
 +            loop {
@@ -396,8 +288,820 @@ index d89feda..e44aecf 100644
 +                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
 +                    Err(error) => tracing::warn!(?error, "Failed to read acceptance trigger"),
 +                }
++                match tokio::fs::remove_file(&gr_scan_marker).await {
++                    Ok(()) => addr.emit(InvokeGrScan).await,
++                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
++                    Err(error) => tracing::warn!(?error, "Failed to read GR scan trigger"),
++                }
 +            }
 +        });
 +    }
-@@ -212,0 +234 @@ where
++
++    async fn invoke_gr_scan(&mut self) {
++        if self.scanning_gr_channels {
++            tracing::warn!(job = "scan-gr-channels", "Already running, skip");
++            return;
++        }
++        let Some(cache_dir) = self.config.epg.cache_dir.as_deref() else {
++            tracing::warn!(
++                job = "scan-gr-channels",
++                "EPG cache directory is unavailable"
++            );
++            return;
++        };
++        self.scanning_gr_channels = true;
++        let scan_id = new_gr_scan_id();
++        let cancel_marker = cache_dir.join(".acceptance-cancel-gr-scan");
++        let scanner = ServiceScanner::new(self.config.clone(), self.tuner_manager.clone());
++        let result = scanner
++            .scan_gr_channels(
++                |completed, current_channel, found_channels| {
++                    write_gr_scan_status(
++                        cache_dir,
++                        scan_id,
++                        "running",
++                        completed,
++                        current_channel,
++                        found_channels,
++                        0,
++                        None,
++                    )
++                },
++                || cancel_marker.is_file(),
++            )
++            .await;
++        match result {
++            Ok(result) if result.interrupted => {
++                let _ = write_gr_scan_status(
++                    cache_dir,
++                    scan_id,
++                    "interrupted",
++                    result.completed,
++                    result.current_channel,
++                    &result.found_channels,
++                    result.failed_channels,
++                    Some("CANCELED"),
++                );
++            }
++            Ok(result) if result.failed_channels == 0 && result.found_channels.is_empty() => {
++                let _ = write_gr_scan_status(
++                    cache_dir,
++                    scan_id,
++                    "empty",
++                    result.completed,
++                    result.current_channel,
++                    &result.found_channels,
++                    0,
++                    Some("NO_CHANNELS_FOUND"),
++                );
++            }
++            Ok(result) if result.failed_channels == 0 => {
++                let _ = write_gr_scan_status(
++                    cache_dir,
++                    scan_id,
++                    "complete",
++                    result.completed,
++                    result.current_channel,
++                    &result.found_channels,
++                    0,
++                    None,
++                );
++                tracing::info!(
++                    job = "scan-gr-channels",
++                    found_channels = result.found_channels.len(),
++                    "Done"
++                );
++            }
++            Ok(result) => {
++                let _ = write_gr_scan_status(
++                    cache_dir,
++                    scan_id,
++                    "failed",
++                    result.completed,
++                    result.current_channel,
++                    &result.found_channels,
++                    result.failed_channels,
++                    Some("CHANNEL_SCAN_FAILED"),
++                );
++                tracing::warn!(
++                    job = "scan-gr-channels",
++                    failed_channels = result.failed_channels,
++                    "Scan failed; partial results will not be applied"
++                );
++            }
++            Err(error) => {
++                let _ = write_gr_scan_status(
++                    cache_dir,
++                    scan_id,
++                    "failed",
++                    0,
++                    None,
++                    &[],
++                    0,
++                    Some("STATUS_WRITE_FAILED"),
++                );
++                tracing::warn!(kind = ?error.kind(), "GR scan progress could not be saved");
++            }
++        }
++        if let Err(error) = std::fs::remove_file(cancel_marker) {
++            if error.kind() != std::io::ErrorKind::NotFound {
++                tracing::warn!(?error, "Failed to clear GR scan cancellation trigger");
++            }
++        }
++        self.scanning_gr_channels = false;
++    }
+     async fn scan_services(&mut self, ctx: &mut Context<Self>) {
+         if Self::is_job_disabled_for_debug("scan-services") {
+             tracing::debug!(job = "scan-services", "Disabled for debug");
+@@ -171,14 +315,23 @@ where
+     }
+ 
+     fn schedule_update_schedules(&mut self, ctx: &mut Context<Self>) {
+-        let datetime =
+-            self.calc_next_scheduled_datetime(&self.config.jobs.update_schedules.schedule);
+-        tracing::info!(
+-            job = "update-schedules",
+-            datetime = datetime.to_rfc3339(),
+-            "Scheduled"
+-        );
+-        let interval = (datetime - Jst::now()).to_std().unwrap();
++        let schedule = &self.config.jobs.update_schedules.schedule;
++        let interval = if let Some(interval) = parse_fixed_delay_schedule(schedule) {
++            tracing::info!(
++                job = "update-schedules",
++                interval = %humantime::format_duration(interval),
++                "Scheduled with fixed delay after completion"
++            );
++            interval
++        } else {
++            let datetime = self.calc_next_scheduled_datetime(schedule);
++            tracing::info!(
++                job = "update-schedules",
++                datetime = datetime.to_rfc3339(),
++                "Scheduled"
++            );
++            (datetime - Jst::now()).to_std().unwrap()
++        };
+         let addr = ctx.address().clone();
+         ctx.spawn_task(async move {
+             tokio::time::sleep(interval).await;
+@@ -194,6 +347,42 @@ where
+     }
+ }
+ 
++fn write_gr_scan_status(
++    cache_dir: &Path,
++    scan_id: u64,
++    state: &str,
++    completed: usize,
++    current_channel: Option<u16>,
++    found_channels: &[u16],
++    failed_channels: usize,
++    error_code: Option<&str>,
++) -> io::Result<()> {
++    let destination = cache_dir.join(".gr-scan-state");
++    let temporary = cache_dir.join(".gr-scan-state.tmp");
++    let found = found_channels
++        .iter()
++        .map(u16::to_string)
++        .collect::<Vec<_>>()
++        .join(",");
++    let contents = format!(
++        "{state}\n{completed}\n50\n{}\n{found}\n{failed_channels}\n{scan_id}\n{}\n",
++        current_channel
++            .map(|value| value.to_string())
++            .unwrap_or_default(),
++        error_code.unwrap_or("NONE")
++    );
++    std::fs::write(&temporary, contents)?;
++    std::fs::rename(temporary, destination)
++}
++
++fn new_gr_scan_id() -> u64 {
++    SystemTime::now()
++        .duration_since(UNIX_EPOCH)
++        .map(|duration| duration.as_millis() as u64)
++        .unwrap_or_default()
++        .max(1)
++}
++
+ #[async_trait]
+ impl<T, E, F> Actor for JobManager<T, E, F>
+ where
+@@ -210,6 +399,7 @@ where
+     async fn started(&mut self, ctx: &mut Context<Self>) {
+         // It's guaranteed that no response is sent before initial jobs are invoked.
+         tracing::debug!("Started");
 +        self.schedule_acceptance_trigger(ctx);
+         if self.config.jobs.scan_services.disabled {
+             // Nothing to do.
+         } else if is_fresh(&self.config, "services.json") {
+@@ -385,6 +575,28 @@ where
+     }
+ }
+ 
++#[derive(Message)]
++struct InvokeGrScan;
++
++#[async_trait]
++impl<T, E, F> Handler<InvokeGrScan> for JobManager<T, E, F>
++where
++    T: Clone + Send + Sync + 'static,
++    T: Call<StartStreaming>,
++    T: TriggerFactory<StopStreaming>,
++    E: Clone + Send + Sync + 'static,
++    E: Emit<SaveSchedules>,
++    E: Emit<UpdateClocks>,
++    E: Emit<UpdateServices>,
++    F: Clone + Send + Sync + 'static,
++    F: Call<FeedEitSections>,
++{
++    async fn handle(&mut self, _msg: InvokeGrScan, _ctx: &mut Context<Self>) {
++        tracing::debug!(msg.name = "InvokeGrScan");
++        self.invoke_gr_scan().await;
++    }
++}
++
+ // used for debugging purposes
+ 
+ static EPG_FRESH_PERIOD: Lazy<Option<std::time::Duration>> = Lazy::new(|| {
+@@ -412,3 +624,30 @@ fn is_fresh(config: &Config, filename: &str) -> bool {
+         _ => false,
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::write_gr_scan_status;
++
++    #[test]
++    fn gr_scan_status_has_bounded_line_format_and_stable_scan_id() {
++        let cache_dir = tempfile::tempdir().unwrap();
++        write_gr_scan_status(
++            cache_dir.path(),
++            1_759_591_680_123,
++            "running",
++            2,
++            Some(14),
++            &[13, 14],
++            0,
++            None,
++        )
++        .unwrap();
++
++        let contents = std::fs::read_to_string(cache_dir.path().join(".gr-scan-state")).unwrap();
++        assert_eq!(
++            contents,
++            "running\n2\n50\n14\n13,14\n0\n1759591680123\nNONE\n"
++        );
++    }
++}
+diff --git mirakc-core/src/epg/service_scanner.rs mirakc-core/src/epg/service_scanner.rs
+index b2cad233..7de4da22 100644
+--- mirakc-core/src/epg/service_scanner.rs
++++ mirakc-core/src/epg/service_scanner.rs
+@@ -1,4 +1,5 @@
+ use std::sync::Arc;
++use std::time::Duration;
+ 
+ use actlet::prelude::*;
+ use indexmap::IndexMap;
+@@ -64,10 +65,97 @@ where
+         results
+     }
+ 
++    /// Scan every Japan terrestrial physical channel through the same tuner
++    /// manager and low-priority job lease used by EPG service discovery.
++    /// Errors are counted separately so the Android caller can fail closed
++    /// instead of applying a partial channel list.
++    pub async fn scan_gr_channels<F, C>(
++        &self,
++        mut on_progress: F,
++        should_cancel: C,
++    ) -> std::io::Result<GrScanResult>
++    where
++        F: FnMut(usize, Option<u16>, &[u16]) -> std::io::Result<()> + Send,
++        C: Fn() -> bool + Send,
++    {
++        const CHANNEL_COUNT: usize = 50;
++        let mut found_channels = Vec::new();
++        let mut failed_channels = 0;
++        let mut completed = 0;
++        let mut current_channel = None;
++        let mut interrupted = false;
++        let command = &self.config.jobs.scan_services.command;
++
++        on_progress(0, None, &found_channels)?;
++        for (index, channel_number) in (13u16..=62).enumerate() {
++            if should_cancel() {
++                interrupted = true;
++                break;
++            }
++            let channel = ChannelConfig {
++                name: format!("GR-{channel_number}"),
++                channel_type: ChannelType::GR,
++                channel: channel_number.to_string(),
++                extra_args: String::new(),
++                services: Vec::new(),
++                excluded_services: Vec::new(),
++                disabled: false,
++            };
++            match Self::scan_services_in_channel(&channel, command, &self.tuner_manager).await {
++                Ok(services) if !services.is_empty() => found_channels.push(channel_number),
++                Ok(_) => {}
++                Err(error) if error.downcast_ref::<NoServiceFound>().is_some() => {}
++                Err(_) => {
++                    // Error text can include commands or paths; progress state
++                    // records only the count and never serializes raw errors.
++                    tracing::warn!(channel = channel_number, "GR channel scan failed");
++                    failed_channels += 1;
++                }
++            }
++            completed = index + 1;
++            current_channel = Some(channel_number);
++            on_progress(index + 1, Some(channel_number), &found_channels)?;
++        }
++        debug_assert_eq!(CHANNEL_COUNT, 62 - 13 + 1);
++        Ok(GrScanResult {
++            found_channels,
++            failed_channels,
++            completed,
++            current_channel,
++            interrupted,
++        })
++    }
++
+     async fn scan_services_in_channel(
+         channel: &ChannelConfig,
+         command: &str,
+         tuner_manager: &T,
++    ) -> anyhow::Result<Vec<EpgService>> {
++        let max_attempts = scan_attempt_limit(channel.channel_type);
++        for attempt in 0..max_attempts {
++            match Self::scan_services_in_channel_once(channel, command, tuner_manager).await {
++                Ok(services) => return Ok(services),
++                Err(error) if attempt + 1 < max_attempts => {
++                    tracing::warn!(
++                        channel.name,
++                        attempt = attempt + 1,
++                        max_attempts,
++                        %error,
++                        "Retrying service scan"
++                    );
++                    tokio::time::sleep(Duration::from_millis(PX4_SATELLITE_SCAN_RETRY_DELAY_MS))
++                        .await;
++                }
++                Err(error) => return Err(error),
++            }
++        }
++        unreachable!("service scan attempt limit is always positive")
++    }
++
++    async fn scan_services_in_channel_once(
++        channel: &ChannelConfig,
++        command: &str,
++        tuner_manager: &T,
+     ) -> anyhow::Result<Vec<EpgService>> {
+         tracing::debug!(channel.name, "Scanning services...");
+ 
+@@ -113,7 +201,9 @@ where
+         // streaming in the next iteration.
+         let _ = handle.await;
+ 
+-        anyhow::ensure!(!buf.is_empty(), "No service, maybe out of service");
++        if buf.is_empty() {
++            return Err(NoServiceFound.into());
++        }
+ 
+         let services: Vec<TsService> = serde_json::from_slice(&buf)?;
+         tracing::debug!(
+@@ -129,6 +219,27 @@ where
+     }
+ }
+ 
++#[derive(Debug, thiserror::Error)]
++#[error("No service, maybe out of service")]
++struct NoServiceFound;
++
++#[derive(Debug)]
++pub struct GrScanResult {
++    pub found_channels: Vec<u16>,
++    pub failed_channels: usize,
++    pub completed: usize,
++    pub current_channel: Option<u16>,
++    pub interrupted: bool,
++}
++
++const PX4_SATELLITE_SCAN_RETRY_DELAY_MS: u64 = 200;
++
++fn scan_attempt_limit(channel_type: ChannelType) -> usize {
++    match channel_type {
++        ChannelType::BS | ChannelType::CS => 3,
++        ChannelType::GR | ChannelType::SKY => 1,
++    }
++}
+ #[derive(Clone, Deserialize)]
+ #[cfg_attr(test, derive(Serialize))]
+ #[serde(rename_all = "camelCase")]
+@@ -165,6 +276,14 @@ mod tests {
+     use crate::tuner::stub::TunerManagerStub;
+     use test_log::test;
+ 
++    #[test]
++    fn satellite_scan_retry_is_limited_to_satellite_channels() {
++        assert_eq!(scan_attempt_limit(ChannelType::GR), 1);
++        assert_eq!(scan_attempt_limit(ChannelType::BS), 3);
++        assert_eq!(scan_attempt_limit(ChannelType::CS), 3);
++        assert_eq!(scan_attempt_limit(ChannelType::SKY), 1);
++    }
++
+     #[test(tokio::test)]
+     async fn test_scan_services_in_channel() {
+         let stub = TunerManagerStub::default();
+@@ -239,4 +358,117 @@ mod tests {
+         let results = scan.scan_services().await;
+         assert!(results[0].1.is_none());
+     }
++
++    #[test(tokio::test)]
++    async fn gr_scan_uses_the_full_physical_channel_range_and_reports_progress() {
++        let expected = vec![TsService {
++            nid: 1.into(),
++            tsid: 2.into(),
++            sid: 3.into(),
++            service_type: 4,
++            logo_id: 0,
++            remote_control_key_id: 1,
++            name: "service".to_string(),
++        }];
++        let config_yml = format!(
++            r#"
++            jobs:
++              scan-services:
++                command: echo '{}'
++        "#,
++            serde_json::to_string(&expected).unwrap()
++        );
++        let config = Arc::new(serde_norway::from_str::<Config>(&config_yml).unwrap());
++        let scan = ServiceScanner::new(config, TunerManagerStub::default());
++        let mut progress = Vec::new();
++
++        let result = scan
++            .scan_gr_channels(
++                |completed, channel, found| {
++                    if let Some(channel) = channel {
++                        progress.push((completed, channel, found.to_vec()));
++                    }
++                    Ok(())
++                },
++                || false,
++            )
++            .await
++            .unwrap();
++
++        let expected_channels: Vec<u16> = (13..=62).collect();
++        assert_eq!(result.failed_channels, 0);
++        assert_eq!(result.found_channels, expected_channels);
++        assert_eq!(result.completed, 50);
++        assert!(!result.interrupted);
++        assert_eq!(progress.len(), 50);
++        assert_eq!(progress.first().unwrap().0, 1);
++        assert_eq!(progress.last().unwrap().0, 50);
++        assert_eq!(progress.last().unwrap().1, 62);
++        assert_eq!(progress.last().unwrap().2, expected_channels);
++    }
++
++    #[test(tokio::test)]
++    async fn gr_scan_stops_between_channels_when_cancelled() {
++        use std::sync::atomic::{AtomicBool, Ordering};
++
++        let expected = vec![TsService {
++            nid: 1.into(),
++            tsid: 2.into(),
++            sid: 3.into(),
++            service_type: 4,
++            logo_id: 0,
++            remote_control_key_id: 1,
++            name: "service".to_string(),
++        }];
++        let config_yml = format!(
++            r#"
++            jobs:
++              scan-services:
++                command: echo '{}'
++        "#,
++            serde_json::to_string(&expected).unwrap()
++        );
++        let config = Arc::new(serde_norway::from_str::<Config>(&config_yml).unwrap());
++        let scan = ServiceScanner::new(config, TunerManagerStub::default());
++        let cancelled = AtomicBool::new(false);
++
++        let result = scan
++            .scan_gr_channels(
++                |completed, _, _| {
++                    if completed == 1 {
++                        cancelled.store(true, Ordering::SeqCst);
++                    }
++                    Ok(())
++                },
++                || cancelled.load(Ordering::SeqCst),
++            )
++            .await
++            .unwrap();
++
++        assert!(result.interrupted);
++        assert_eq!(result.completed, 1);
++        assert_eq!(result.current_channel, Some(13));
++        assert_eq!(result.found_channels, vec![13]);
++    }
++
++    #[test(tokio::test)]
++    async fn gr_scan_treats_empty_channels_as_unavailable_not_scan_failures() {
++        let config_yml = r#"
++            jobs:
++              scan-services:
++                command: "printf ''"
++        "#;
++        let config = Arc::new(serde_norway::from_str::<Config>(config_yml).unwrap());
++        let scan = ServiceScanner::new(config, TunerManagerStub::default());
++
++        let result = scan
++            .scan_gr_channels(|_, _, _| Ok(()), || false)
++            .await
++            .unwrap();
++
++        assert!(result.found_channels.is_empty());
++        assert_eq!(result.failed_channels, 0);
++        assert_eq!(result.completed, 50);
++        assert!(!result.interrupted);
++    }
+ }
+diff --git mirakc-core/src/web/access_control.rs mirakc-core/src/web/access_control.rs
+index 3cbc4ffc..214849bf 100644
+--- mirakc-core/src/web/access_control.rs
++++ mirakc-core/src/web/access_control.rs
+@@ -53,10 +53,18 @@ where
+                 tracing::debug!(tcp.addr = ?addr, allowed);
+                 allowed
+             }
++            Some(ConnectInfo(PeerInfo::TcpUnavailable)) => {
++                tracing::warn!("No TCP peer info available, disconnect");
++                false
++            }
+             Some(ConnectInfo(PeerInfo::Unix { addr, cred })) => {
+                 tracing::debug!(unix.addr = ?addr, unix.cred = ?cred, allowed = true);
+                 true
+             }
++            Some(ConnectInfo(PeerInfo::UnixUnavailable)) => {
++                tracing::warn!("No Unix peer info available, disconnect");
++                false
++            }
+             #[cfg(test)]
+             Some(ConnectInfo(PeerInfo::Test)) => true,
+             _ => {
+diff --git mirakc-core/src/web/peer_info.rs mirakc-core/src/web/peer_info.rs
+index 4cff3fb5..dfeba721 100644
+--- mirakc-core/src/web/peer_info.rs
++++ mirakc-core/src/web/peer_info.rs
+@@ -9,28 +9,45 @@ pub(crate) enum PeerInfo {
+     Tcp {
+         addr: std::net::SocketAddr,
+     },
++    TcpUnavailable,
+     Unix {
+         // tokio::net::unix::SocketAddr doesn't implement Clone.
+         addr: Arc<tokio::net::unix::SocketAddr>,
+         cred: tokio::net::unix::UCred,
+     },
++    UnixUnavailable,
+     #[cfg(test)]
+     Test,
+ }
+ 
+ impl Connected<&TcpStream> for PeerInfo {
+     fn connect_info(target: &TcpStream) -> Self {
+-        Self::Tcp {
+-            addr: target.peer_addr().unwrap(),
++        match target.peer_addr() {
++            Ok(addr) => Self::Tcp { addr },
++            Err(error) => {
++                tracing::error!(?error, "Failed to obtain TCP peer address");
++                Self::TcpUnavailable
++            }
+         }
+     }
+ }
+ 
+ impl Connected<&UnixStream> for PeerInfo {
+     fn connect_info(target: &UnixStream) -> Self {
+-        Self::Unix {
+-            addr: Arc::new(target.peer_addr().unwrap()),
+-            cred: target.peer_cred().unwrap(),
+-        }
++        let addr = match target.peer_addr() {
++            Ok(addr) => Arc::new(addr),
++            Err(error) => {
++                tracing::error!(?error, "Failed to obtain Unix peer address");
++                return Self::UnixUnavailable;
++            }
++        };
++        let cred = match target.peer_cred() {
++            Ok(cred) => cred,
++            Err(error) => {
++                tracing::error!(?error, "Failed to obtain Unix peer credentials");
++                return Self::UnixUnavailable;
++            }
++        };
++        Self::Unix { addr, cred }
+     }
+ }
+diff --git mirakc-core/src/web/server.rs mirakc-core/src/web/server.rs
+index 1e3c940d..434d3574 100644
+--- mirakc-core/src/web/server.rs
++++ mirakc-core/src/web/server.rs
+@@ -1,5 +1,6 @@
+ use std::path::PathBuf;
+ use std::sync::Arc;
++use std::time::Duration;
+ 
+ use axum::http::Request;
+ use axum::Router;
+@@ -25,7 +26,25 @@ pub(super) async fn serve(config: Arc<Config>, app: Router) -> Result<(), Error>
+     for path in config.server.uds_paths() {
+         set.spawn(uds(path.to_owned(), app.clone()));
+     }
+-    while set.join_next().await.is_some() {}
++    while let Some(result) = set.join_next().await {
++        match result {
++            Ok(Ok(())) => {
++                tracing::error!("Web server task ended unexpectedly");
++                set.abort_all();
++                return Err(anyhow::anyhow!("web server task ended unexpectedly").into());
++            }
++            Ok(Err(error)) => {
++                tracing::error!(?error, "Web server task failed");
++                set.abort_all();
++                return Err(error);
++            }
++            Err(error) => {
++                tracing::error!(?error, "Web server task panicked");
++                set.abort_all();
++                return Err(anyhow::anyhow!("web server task failed: {error}").into());
++            }
++        }
++    }
+     Ok(())
+ }
+ 
+@@ -33,12 +52,33 @@ pub(super) async fn serve(config: Arc<Config>, app: Router) -> Result<(), Error>
+ // See //examples/unix-domain-socket in tokio-rs/axum.
+ 
+ macro_rules! serve {
+-    ($listener:expr, $app:expr) => {
++    ($listener:expr, $app:expr) => {{
+         let handle = tokio::spawn(async move {
+             let mut make_service = $app.into_make_service_with_connect_info::<PeerInfo>();
++            let mut accept_backoff_ms = 100u64;
+             loop {
+-                let (socket, _remote_addr) = $listener.accept().await.unwrap();
+-                let tower_service = make_service.call(&socket).await.unwrap();
++                let (socket, _remote_addr) = match $listener.accept().await {
++                    Ok(connection) => {
++                        accept_backoff_ms = 100;
++                        connection
++                    }
++                    Err(error) => {
++                        tracing::error!(?error, "Failed to accept web connection");
++                        if is_fatal_accept_error(&error) {
++                            return Err(anyhow::anyhow!("web accept failed: {error}").into());
++                        }
++                        tokio::time::sleep(Duration::from_millis(accept_backoff_ms)).await;
++                        accept_backoff_ms = (accept_backoff_ms.saturating_mul(2)).min(1_000);
++                        continue;
++                    }
++                };
++                let tower_service = match make_service.call(&socket).await {
++                    Ok(service) => service,
++                    Err(error) => {
++                        tracing::error!(?error, "Failed to create web service");
++                        continue;
++                    }
++                };
+                 tokio::spawn(async move {
+                     let socket = TokioIo::new(socket);
+                     let hyper_service =
+@@ -54,14 +94,33 @@ macro_rules! serve {
+                 });
+             }
+         });
+-        let _ = handle.await;
+-    };
++        match handle.await {
++            Ok(Ok(())) => {
++                tracing::error!("Web accept loop ended unexpectedly");
++                Err(anyhow::anyhow!("web accept loop ended unexpectedly").into())
++            }
++            Ok(Err(error)) => {
++                tracing::error!(?error, "Web accept loop stopped");
++                Err(error)
++            }
++            Err(error) => {
++                tracing::error!(?error, "Web accept loop failed");
++                Err(anyhow::anyhow!("web accept loop failed: {error}").into())
++            }
++        }
++    }};
++}
++
++fn is_fatal_accept_error(error: &std::io::Error) -> bool {
++    // These descriptor/operation errors do not become healthy by retrying;
++    // transient resource errors continue through the bounded backoff above.
++    matches!(error.raw_os_error(), Some(9 | 22 | 88))
++        || error.kind() == std::io::ErrorKind::InvalidInput
+ }
+ 
+ async fn http(addr: std::net::SocketAddr, app: Router) -> Result<(), Error> {
+     let listener = TcpListener::bind(&addr).await?;
+-    serve!(listener, app);
+-    Ok(())
++    serve!(listener, app)
+ }
+ 
+ async fn uds(path: PathBuf, app: Router) -> Result<(), Error> {
+@@ -69,6 +128,5 @@ async fn uds(path: PathBuf, app: Router) -> Result<(), Error> {
+     let _ = tokio::fs::remove_file(&path).await;
+     tokio::fs::create_dir_all(path.parent().unwrap()).await?;
+     let listener = UnixListener::bind(path)?;
+-    serve!(listener, app);
+-    Ok(())
++    serve!(listener, app)
+ }
+diff --git mirakc/src/main.rs mirakc/src/main.rs
+index 97af1017..3670840c 100644
+--- mirakc/src/main.rs
++++ mirakc/src/main.rs
+@@ -55,6 +55,12 @@ async fn main() {
+ 
+     match opt.command {
+         Some(Command::RebuildTimeshift(opt)) => rebuild_timeshift::main(config, opt).await,
+-        None => serve::main(config).await,
++        None => {
++            if let Err(error) = serve::main(config).await {
++                tracing::error!(%error, "mirakc server failed");
++                eprintln!("mirakc: server failed; exiting");
++                std::process::exit(1);
++            }
++        }
+     }
+ }
+diff --git mirakc/src/serve.rs mirakc/src/serve.rs
+index fce531f6..f2acf6ba 100644
+--- mirakc/src/serve.rs
++++ mirakc/src/serve.rs
+@@ -5,7 +5,7 @@ use mirakc_core::*;
+ use tokio::signal::unix::signal;
+ use tokio::signal::unix::SignalKind;
+ 
+-pub async fn main(config: Arc<config::Config>) {
++pub async fn main(config: Arc<config::Config>) -> Result<(), mirakc_core::error::Error> {
+     let string_table = string_table::load(&config.resource.strings_yaml);
+ 
+     let system = System::new();
+@@ -46,20 +46,22 @@ pub async fn main(config: Arc<config::Config>) {
+     let mut sigint = signal(SignalKind::interrupt()).unwrap();
+     let mut sigterm = signal(SignalKind::terminate()).unwrap();
+ 
+-    tokio::select! {
++    let web_result = tokio::select! {
+         result = web::serve(config, string_table, tuner_manager, epg, recording_manager, timeshift_manager, onair_manager) => {
+-            match result {
+-                Ok(_) => (),
+-                Err(err) => tracing::error!(%err),
+-            }
++            eprintln!("mirakc: web serve returned");
++            result
+         }
+         _ = sigint.recv() => {
++            eprintln!("mirakc: SIGINT received");
+             tracing::info!("SIGINT received");
++            Ok(())
+         }
+         _ = sigterm.recv() => {
++            eprintln!("mirakc: SIGTERM received");
+             tracing::info!("SIGTERM received");
++            Ok(())
+         }
+-    }
++    };
+ 
+     tracing::info!("Stopping...");
+     // TODO
+@@ -67,4 +69,8 @@ pub async fn main(config: Arc<config::Config>) {
+     // Replace `system.stop()` with `system.shutdown().await`.
+     // Currently, `system.shutdown().await` blocks due to some bugs.
+     system.stop();
++    if let Err(ref err) = web_result {
++        tracing::error!(%err, "Web server stopped with an error");
++    }
++    web_result
+ }

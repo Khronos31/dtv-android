@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Backgrounds -->
+    <color name="tv_bg_dark">#101418</color>
+    <color name="tv_rail_bg">#13181F</color>
+    <color name="tv_settings_surface">#181E26</color>
+    <color name="tv_card_bg">#1F2732</color>
+    <color name="tv_card_bg_focused">#2A3C52</color>
+    <color name="tv_card_stroke">#2D3846</color>
+    <color name="tv_card_stroke_focused">#64B5F6</color>
+
+    <!-- Rail Navigation -->
+    <color name="tv_rail_item_normal">#00000000</color>
+    <color name="tv_rail_item_focused">#2A3644</color>
+    <color name="tv_rail_item_active">#1F2B38</color>
+    <color name="tv_rail_indicator">#4FC3F7</color>
+
+    <!-- Accents & Highlights -->
+    <color name="tv_accent">#4FC3F7</color>
+
+    <!-- Text -->
+    <color name="tv_text_primary">#FFFFFF</color>
+    <color name="tv_text_secondary">#B0BEC5</color>
+    <color name="tv_rail_text_unfocused">#90A4AE</color>
+    <color name="tv_rail_text_focused">#FFFFFF</color>
+
+    <!-- Progress -->
+    <color name="tv_progress_track">#263238</color>
+    <color name="tv_progress_bar">#29B6F6</color>
+</resources>

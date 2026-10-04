@@ -1,7 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="AppTheme" parent="android:style/Theme.Material.NoActionBar">
-        <item name="android:fontFamily">sans</item>
-        <item name="android:colorAccent">#80cbc4</item>
-        <item name="android:windowActionModeOverlay">true</item>
+    <!-- Base Leanback TV Theme -->
+    <style name="AppTheme" parent="Theme.Leanback">
+        <item name="android:windowBackground">@color/tv_bg_dark</item>
+        <item name="android:colorBackground">@color/tv_bg_dark</item>
+        <item name="android:colorPrimary">@color/tv_rail_bg</item>
+        <item name="android:colorPrimaryDark">@color/tv_bg_dark</item>
+        <item name="android:colorAccent">@color/tv_accent</item>
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="android:alertDialogTheme">@style/TvDialogTheme</item>
+    </style>
+
+    <!-- TV Dialog Theme for text input & alerts -->
+    <style name="TvDialogTheme" parent="android:style/Theme.Material.Dialog.Alert">
+        <item name="android:colorBackground">@color/tv_settings_surface</item>
+        <item name="android:colorAccent">@color/tv_accent</item>
+        <item name="android:textColorPrimary">@color/tv_text_primary</item>
+        <item name="android:textColorSecondary">@color/tv_text_secondary</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowElevation">16dp</item>
     </style>
 </resources>

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Rail Navigation -->
+    <dimen name="tv_rail_width">250dp</dimen>
+    <dimen name="tv_rail_padding_horizontal">16dp</dimen>
+    <dimen name="tv_rail_padding_top">28dp</dimen>
+    <dimen name="tv_rail_item_height">52dp</dimen>
+    <dimen name="tv_rail_item_margin_vertical">6dp</dimen>
+    <dimen name="tv_rail_item_padding_horizontal">16dp</dimen>
+    <dimen name="tv_rail_item_corner">8dp</dimen>
+
+    <!-- Panels -->
+    <dimen name="tv_panel_padding_horizontal">36dp</dimen>
+    <dimen name="tv_panel_padding_vertical">28dp</dimen>
+
+    <!-- Settings Card -->
+    <dimen name="tv_card_min_height">78dp</dimen>
+    <dimen name="tv_card_padding_horizontal">20dp</dimen>
+    <dimen name="tv_card_padding_vertical">12dp</dimen>
+    <dimen name="tv_card_corner">8dp</dimen>
+    <dimen name="tv_card_margin_bottom">10dp</dimen>
+    <dimen name="tv_card_title_width">230dp</dimen>
+    <dimen name="tv_card_stroke_width">1dp</dimen>
+    <dimen name="tv_card_stroke_focused_width">2.5dp</dimen>
+
+    <!-- Typography (sp) -->
+    <dimen name="tv_text_app_title">26sp</dimen>
+    <dimen name="tv_text_page_title">22sp</dimen>
+    <dimen name="tv_text_rail_item">17sp</dimen>
+    <dimen name="tv_text_card_title">18sp</dimen>
+    <dimen name="tv_text_card_summary">14sp</dimen>
+    <dimen name="tv_text_home_status">18sp</dimen>
+    <dimen name="tv_text_home_channel">15sp</dimen>
+</resources>

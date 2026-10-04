@@ -120,6 +120,11 @@ class MirakcService : Service() {
         MirakcDiagnostics.triggerUpdateSchedules = {
             mirakcSupervisor?.triggerUpdateSchedules() == true
         }
+        grScanStatusProvider = { mirakcSupervisor?.grScanStatus() }
+        statusSnapshotProvider = {
+            publishStatus()
+            statusText
+        }
         try {
             mirakcSupervisor?.start()
         } catch (error: Exception) {
@@ -135,6 +140,12 @@ class MirakcService : Service() {
         when (intent?.action) {
             ACTION_REQUEST_USB -> requestUsbPermissionIfNeeded()
             ACTION_APPLY_TERRESTRIAL -> applyTerrestrialSettings()
+            ACTION_SCAN_GR -> if (mirakcSupervisor?.requestGrScan() != true) {
+                lastError = "mirakc is not ready for a GR scan"
+            }
+            ACTION_CANCEL_GR_SCAN -> if (mirakcSupervisor?.cancelGrScan() != true) {
+                lastError = "no GR scan is running"
+            }
         }
         publishStatus()
         return START_STICKY
@@ -144,6 +155,8 @@ class MirakcService : Service() {
 
     override fun onDestroy() {
         MirakcDiagnostics.triggerUpdateSchedules = null
+        grScanStatusProvider = null
+        statusSnapshotProvider = null
         mirakcSupervisor?.stop()
         mirakcSupervisor = null
         if (receiverRegistered) {
@@ -240,10 +253,13 @@ class MirakcService : Service() {
 
     private fun applyTerrestrialSettings() {
         var activated = false
+        val hasPendingSettings = terrestrialSettings.snapshot().pending != null
         try {
-            terrestrialSettings.activatePending()
-            activated = true
-            configurationApplyPending.set(true)
+            if (hasPendingSettings) {
+                terrestrialSettings.activatePending()
+                activated = true
+            }
+            configurationApplyPending.set(activated)
             val supervisor = mirakcSupervisor ?: throw IllegalStateException("mirakc supervisor is unavailable")
             supervisor.restartForConfiguration()
             lastError = "none"
@@ -438,6 +454,8 @@ class MirakcService : Service() {
     companion object {
         const val ACTION_REQUEST_USB = "dev.khronos31.mirakc.REQUEST_USB"
         const val ACTION_APPLY_TERRESTRIAL = "dev.khronos31.mirakc.APPLY_TERRESTRIAL"
+        const val ACTION_SCAN_GR = "dev.khronos31.mirakc.SCAN_GR"
+        const val ACTION_CANCEL_GR_SCAN = "dev.khronos31.mirakc.CANCEL_GR_SCAN"
         private const val TERRESTRIAL_SETTINGS = "terrestrial-channel-settings"
         private const val USB_PERMISSION_ACTION = "dev.khronos31.mirakc.USB_PERMISSION"
         private const val NOTIFICATION_CHANNEL = "mirakc-service"
@@ -450,6 +468,12 @@ class MirakcService : Service() {
 
         @Volatile
         var statusText: String = "Starting mirakc service..."
+
+        @Volatile
+        internal var grScanStatusProvider: (() -> GrScanStatus?)? = null
+
+        @Volatile
+        internal var statusSnapshotProvider: (() -> String)? = null
 
     }
 }

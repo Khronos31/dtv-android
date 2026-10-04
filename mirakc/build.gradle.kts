@@ -1085,5 +1085,6 @@ android {
 dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.24")
     implementation(project(":updater"))
+    implementation("androidx.leanback:leanback:1.0.0")
     testImplementation("junit:junit:4.13.2")
 }

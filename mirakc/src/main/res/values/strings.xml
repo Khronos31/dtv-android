@@ -1,3 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">mirakc</string>
+    <string name="terrestrial_channel_summary">地上波: %1$s</string>
+
+    <!-- Navigation (Left Rail) -->
+    <string name="nav_info">情報</string>
+    <string name="nav_settings">設定</string>
+    <string name="nav_about">About</string>
+
+    <!-- Section Titles -->
+    <string name="section_info_title">情報</string>
+    <string name="section_settings_title">設定</string>
+    <string name="section_about_title">About</string>
+
+    <!-- About Section Items -->
+    <string name="about_app_version_title">アプリバージョン</string>
+    <string name="about_build_number_title">ビルド番号</string>
+    <string name="about_source_commit_title">ソースコミット</string>
+    <string name="about_mirakc_version_title">同梱 mirakc</string>
+    <string name="about_driver_versions_title">同梱ドライバ</string>
+    <string name="about_licenses_title">オープンソースライセンス</string>
+    <string name="about_licenses_desc">コンポーネントとライセンス条項の一覧</string>
+    <string name="about_github_title">GitHub リポジトリ</string>
+    <string name="about_github_desc">ソースコード</string>
+
+    <!-- Licenses Screen -->
+    <string name="licenses_title">オープンソースライセンス</string>
+    <string name="licenses_subtitle">使用されているオープンソースソフトウェアおよびライセンス通知</string>
+    <string name="about_metadata_unavailable">ビルド情報を取得できません</string>
+    <string name="about_source_open_failed">GitHub リンクを開けません</string>
+    <string name="licenses_metadata_unavailable">このAPKにライセンス情報が含まれていません。</string>
+    <string name="licenses_file_unavailable">ライセンス本文を読み込めません: %1$s</string>
+    <string name="licenses_component_heading">%1$s %2$s</string>
+    <string name="licenses_component_spdx">SPDX: %1$s</string>
+    <string name="licenses_component_source">Source: %1$s</string>
+    <string name="licenses_component_commit">Commit: %1$s</string>
+    <string name="licenses_file_source_path">File: %1$s</string>
+    <string name="licenses_separator">────────────────────────────────</string>
+
+    <!-- Settings Items -->
+    <string name="setting_epg_interval_title">番組表の更新頻度</string>
+    <string name="setting_epg_minutes_format">%1$s分</string>
+    <string name="setting_channel_title">GR物理チャンネル</string>
+    <string name="setting_scan_title">チャンネルスキャン</string>
+    <string name="setting_scan_desc">物理ch 13〜62を順番に探索</string>
+    <string name="setting_usb_title">USB権限を要求</string>
+    <string name="setting_usb_desc">接続中のデバイスの権限を要求します</string>
+    <string name="setting_restart_title">mirakcを再起動</string>
+    <string name="setting_restart_desc">設定を反映してmirakcを再起動します</string>
+    <string name="setting_stop_title">mirakcを停止</string>
+    <string name="setting_stop_desc">サービスとHTTP APIを停止します</string>
+    <string name="setting_update_title">アップデートを確認</string>
+    <string name="setting_update_desc">GitHub Releasesを確認します</string>
+    <string name="setting_card_content_description">%1$s. %2$s</string>
+
+    <!-- Dialogs & Hints -->
+    <string name="dialog_epg_interval_title">番組表の更新間隔（分）</string>
+    <string name="dialog_epg_interval_message">収集完了後に指定分数待って次のEPG収集を開始します。1〜1440分。</string>
+    <string name="dialog_channels_title">地上波の物理チャンネル</string>
+    <string name="dialog_channels_message">リモコン番号ではなく送信所の物理chを入力します。例: 13,16,21-27</string>
+    <string name="dialog_update_failed_title">Update check failed</string>
+    <string name="dialog_cancel">キャンセル</string>
+    <string name="dialog_save">保存</string>
+    <string name="dialog_ok">OK</string>
+    <string name="hint_epg_interval">1〜1440分</string>
+    <string name="hint_channels">13,16,21-27（空欄で無効）</string>
+    <string name="error_epg_interval">更新間隔を確認してください</string>
+    <string name="error_channels">物理チャンネルを確認してください</string>
+
+    <!-- Toasts -->
+    <string name="toast_scan_completed">全探索が完了し、検出した物理chを保存しました</string>
+    <string name="toast_epg_saved">更新間隔を%1$s分に保存しました。再起動後に適用します。</string>
+    <string name="toast_channels_saved">地上波設定を保存しました。再起動後に適用します。</string>
+    <string name="toast_restarting">mirakcを再起動して設定を適用します</string>
+    <string name="toast_update_available">新しい版 %1$s があります</string>
+    <string name="toast_already_up_to_date">Already up to date (%1$s)</string>
 </resources>

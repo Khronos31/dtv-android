@@ -180,6 +180,23 @@ internal class TerrestrialChannelSettingsStore(private val values: StringSetting
         values.put(PENDING_KEY, TerrestrialChannelSettings.serialize(channels))
     }
 
+    /** Atomically stage one complete scan result, and never apply it twice. */
+    fun applyScanResult(scanId: Long, channelNumbers: List<Int>): Boolean {
+        require(scanId > 0) { "scan id must be positive" }
+        require(channelNumbers.isNotEmpty()) { "an empty scan cannot replace terrestrial settings" }
+        require(channelNumbers.all { it in 13..62 }) { "scan result contains an invalid physical channel" }
+        if (values.get(LAST_APPLIED_SCAN_KEY) == scanId.toString()) return false
+
+        val channels = channelNumbers.distinct().sorted().map { TerrestrialChannel(it, "GR-$it") }
+        values.transaction(
+            mapOf(
+                PENDING_KEY to TerrestrialChannelSettings.serialize(channels),
+                LAST_APPLIED_SCAN_KEY to scanId.toString()
+            )
+        )
+        return true
+    }
+
     fun activatePending() {
         val pendingRaw = values.get(PENDING_KEY) ?: throw IllegalStateException("no pending terrestrial settings")
         val pending = TerrestrialChannelSettings.parseStored(pendingRaw)
@@ -237,6 +254,7 @@ internal class TerrestrialChannelSettingsStore(private val values: StringSetting
         const val ACTIVE_KEY = "terrestrial_channels_active"
         const val LAST_KNOWN_GOOD_KEY = "terrestrial_channels_last_known_good"
         const val APPLYING_KEY = "terrestrial_channels_apply_in_progress"
+        const val LAST_APPLIED_SCAN_KEY = "terrestrial_channels_last_applied_scan"
     }
 }
 

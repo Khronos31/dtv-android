@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root_licenses_layout"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:baselineAligned="false">
+
+    <!-- Screen Header -->
+    <LinearLayout
+        android:id="@+id/licenses_header"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingHorizontal="@dimen/tv_panel_padding_horizontal"
+        android:paddingTop="@dimen/tv_panel_padding_vertical"
+        android:paddingBottom="16dp">
+
+        <TextView
+            android:id="@+id/licenses_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/licenses_title"
+            android:textSize="@dimen/tv_text_page_title"
+            android:textStyle="bold"
+            android:textColor="@color/tv_text_primary"
+            android:fontFamily="sans-serif-medium" />
+
+        <TextView
+            android:id="@+id/licenses_subtitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/licenses_subtitle"
+            android:textSize="@dimen/tv_text_card_summary"
+            android:textColor="@color/tv_text_secondary"
+            android:fontFamily="sans-serif" />
+    </LinearLayout>
+
+    <!-- Scrollable Content Container -->
+    <ScrollView
+        android:id="@+id/licenses_scroll"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:scrollbars="vertical"
+        android:clipToPadding="false"
+        android:descendantFocusability="afterDescendants"
+        android:paddingHorizontal="@dimen/tv_panel_padding_horizontal"
+        android:paddingBottom="40dp">
+
+        <LinearLayout
+            android:id="@+id/licenses_container"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/licenses_content_text"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textSize="13sp"
+                android:textColor="@color/tv_text_secondary"
+                android:fontFamily="sans-serif"
+                android:lineSpacingMultiplier="1.2"
+                android:background="@drawable/card_background"
+                android:padding="20dp"
+                android:focusable="true"
+                android:clickable="true" />
+        </LinearLayout>
+    </ScrollView>
+</LinearLayout>
