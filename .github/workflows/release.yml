@@ -148,7 +148,12 @@ jobs:
           printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$KEYSTORE_FILE"
           sudo apt-get update
           sudo apt-get install -y patchelf
-          ./gradlew --no-daemon :epgstation-server:assembleRelease
+          ./gradlew --no-daemon \
+            :epgstation-ui-contract:test \
+            :epgstation-server:testDebugUnitTest \
+            :epgstation-server:lintDebug \
+            :epgstation-server:assembleDebug \
+            :epgstation-server:assembleRelease
           apk=epgstation-server/build/outputs/apk/release/epgstation-server-release.apk
           python3 tools/scripts/release_version.py check --component "$COMPONENT" --tag "$TAG" --apk "$apk"
           apksigner="$(find "$ANDROID_SDK_ROOT/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner -print | sort -V | tail -n 1)"
@@ -262,6 +267,6 @@ jobs:
             gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --generate-notes --title "$RELEASE_TAG" \
               dist/mirakc-0.4.0.apk dist/mirakc-0.4.0-acceptance.json dist/SHA256SUMS
           else
-            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "$RELEASE_TAG" \
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --generate-notes --title "$RELEASE_TAG" \
               "dist/${COMPONENT}-${{ needs.prepare.outputs.version }}.apk" dist/SHA256SUMS
           fi

@@ -194,4 +194,25 @@ if [[ ! -f "$payload_root/.complete" ]]; then
     touch "$payload_root/.complete"
 fi
 python3 "$repo_root/tools/patch-epgstation-template.py" "$payload_root"
+# Keep the About/License viewer's source notices in APK assets. These files are
+# copied on every preparation because the payload's .complete marker may predate
+# this UI and must not trigger an EPGStation runtime re-extraction.
+license_dir="$payload_root/licenses"
+mkdir -p "$license_dir"
+for license_source in \
+    "$repo_root/LICENSE" \
+    "$work_root/FFmpeg-n7.1/COPYING.LGPLv2.1" \
+    "$work_root/openh264-v2.5.0/LICENSE" \
+    "$ndk_root/NOTICE" \
+    "$ndk_root/NOTICE.toolchain"; do
+    if [[ ! -f "$license_source" ]]; then
+        echo "EPGStation payload: required bundled license document is missing: $license_source" >&2
+        exit 5
+    fi
+done
+cp "$repo_root/LICENSE" "$license_dir/dtv-android-LICENSE"
+cp "$work_root/FFmpeg-n7.1/COPYING.LGPLv2.1" "$license_dir/FFmpeg-LGPL-2.1-COPYING"
+cp "$work_root/openh264-v2.5.0/LICENSE" "$license_dir/OpenH264-LICENSE"
+cp "$ndk_root/NOTICE" "$license_dir/Android-NDK-NOTICE"
+cp "$ndk_root/NOTICE.toolchain" "$license_dir/Android-NDK-TOOLCHAIN-NOTICE"
 echo "Prepared EPGStation payload: $payload_root"

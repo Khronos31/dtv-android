@@ -15,4 +15,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "dtv-android"
-include(":mirakc", ":epgstation-server", ":updater", ":mirakc-ui-contract", ":mirakc-tv-ui")
+include(":mirakc", ":epgstation-server", ":updater", ":mirakc-ui-contract", ":mirakc-tv-ui", ":epgstation-ui-contract", ":epgstation-tv-ui")

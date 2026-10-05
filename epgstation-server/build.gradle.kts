@@ -28,6 +28,14 @@ android {
         }
     }
 
+    buildFeatures {
+        compose = true
+    }
+
+    composeOptions {
+        kotlinCompilerExtensionVersion = "1.5.14"
+    }
+
     signingConfigs {
         if (releaseKeystore != null) {
             create("release") {
@@ -99,6 +107,10 @@ dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.24")
     implementation("com.google.zxing:core:3.5.3")
     implementation(project(":updater"))
+    implementation(project(":epgstation-ui-contract"))
+    implementation(project(":epgstation-tv-ui"))
+    implementation("androidx.activity:activity-compose:1.9.0")
+    implementation("androidx.compose.ui:ui:1.6.8")
 
     testImplementation("junit:junit:4.13.2")
 }

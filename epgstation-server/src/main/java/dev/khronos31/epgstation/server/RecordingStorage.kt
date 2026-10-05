@@ -13,7 +13,9 @@ internal data class RecordingVolume(
     val removable: Boolean,
     val available: Boolean,
     val recordedDir: File,
-    val thumbnailDir: File
+    val thumbnailDir: File,
+    val freeBytes: Long?,
+    val totalBytes: Long?
 )
 
 internal object RecordingStorage {
@@ -95,12 +97,9 @@ internal object RecordingStorage {
             available && root.exists() -> root
             else -> null
         }
-        val detail = if (!available) {
-            "Not mounted"
-        } else {
-            val (free, total) = space(statFile ?: root)
-            "${formatBytes(free)} free of ${formatBytes(total)}"
-        }
+        val capacity = if (available) space(statFile ?: root) else null
+        val detail = capacity?.let { (free, total) -> "${formatBytes(free)} free of ${formatBytes(total)}" }
+            ?: "Not mounted"
         return RecordingVolume(
             id = id,
             title = title,
@@ -108,17 +107,23 @@ internal object RecordingStorage {
             removable = removable,
             available = available,
             recordedDir = recorded,
-            thumbnailDir = thumbnail
+            thumbnailDir = thumbnail,
+            freeBytes = capacity?.first,
+            totalBytes = capacity?.second
         )
     }
 
     private fun space(file: File): Pair<Long, Long> {
+        var existing = file
+        while (!existing.exists()) {
+            existing = existing.parentFile ?: break
+        }
         return try {
-            val stat = StatFs(file.absolutePath)
+            val stat = StatFs(existing.absolutePath)
             stat.availableBytes to stat.totalBytes
         } catch (_: Exception) {
             try {
-                file.usableSpace to file.totalSpace
+                existing.usableSpace to existing.totalSpace
             } catch (_: Exception) {
                 0L to 0L
             }

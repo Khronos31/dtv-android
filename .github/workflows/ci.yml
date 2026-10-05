@@ -186,7 +186,12 @@ jobs:
             | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" >/dev/null
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
       - name: Build
-        run: ./gradlew --no-daemon :epgstation-server:testDebugUnitTest :epgstation-server:assembleDebug
+        run: |
+          ./gradlew --no-daemon \
+            :epgstation-ui-contract:test \
+            :epgstation-server:testDebugUnitTest \
+            :epgstation-server:lintDebug \
+            :epgstation-server:assembleDebug
       - name: Verify the APK carries its module version
         run: |
           python3 tools/scripts/release_version.py check --component epgstation-server \
