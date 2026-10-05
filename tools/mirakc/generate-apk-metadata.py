@@ -28,6 +28,8 @@ ARIB_APK_SUBMODULES = audit.MIRAKC_ARIB_APK_SUBMODULES
 LIBARIB25_TREE_IDENTITY = audit.LIBARIB25_TREE_IDENTITY
 FIRMWARE_SHA256 = EXPECTED["linux-firmware-siano"]["sha256"]
 FIRMWARE_LICENSE_SHA256 = EXPECTED["linux-firmware-siano"]["license_sha256"]
+PX4_ANDROID_PATCH_PATH = audit.PX4_ANDROID_PATCH_PATH.removeprefix("sources/dtv-android/")
+PX4_ANDROID_PATCH_SHA256 = audit.PX4_ANDROID_PATCH_SHA256
 
 
 class MetadataError(Exception):
@@ -243,13 +245,19 @@ def generate(args: argparse.Namespace) -> Path:
         fail("mirakc-arib recursive submodule inventory is incomplete")
 
     for name, root_arg, role in (("siano-userland", args.siano_root, ["libsiano-ts.so"]),
-                                 ("px4-userland", args.px4_root, ["libpx4d.so", "libpx4-ts.so", "libpx4ctl.so"]),
-                                 ("px4_drv", args.px4_drv_root, ["libmirakc-px4-fwtool.so"])):
+                                 ("px4-userland", args.px4_root, ["libpx4d.so", "libpx4-ts.so", "libpx4ctl.so"])):
         root = root_arg.resolve()
         check_checkout(root, EXPECTED[name]["commit"], name)
+        source_inputs = None
+        if name == "px4-userland":
+            patch_bytes = git_bytes(dtv_root, "show", f"{args.dtv_ref}:{PX4_ANDROID_PATCH_PATH}")
+            if digest(patch_bytes) != PX4_ANDROID_PATCH_SHA256:
+                fail("DTV-owned PX4 Android patch does not match its pinned digest")
+            source_inputs = [{"path": PX4_ANDROID_PATCH_PATH, "sha256": PX4_ANDROID_PATCH_SHA256}]
         add_component(output, components, seen, name=name, version=EXPECTED[name]["version"],
                       commit=EXPECTED[name]["commit"], url=EXPECTED[name]["url"], spdx=EXPECTED[name]["spdx"],
-                      role=role, root=root, ref=EXPECTED[name]["commit"], git_license_ref=EXPECTED[name]["commit"])
+                      role=role, root=root, ref=EXPECTED[name]["commit"], git_license_ref=EXPECTED[name]["commit"],
+                      source_inputs=source_inputs)
 
     arib25_root = args.arib25_root.resolve()
     if not arib25_root.is_dir():
@@ -330,7 +338,9 @@ def main() -> int:
     parser.add_argument("--arib-root", type=Path, required=True)
     parser.add_argument("--siano-root", type=Path, required=True)
     parser.add_argument("--px4-root", type=Path, required=True)
-    parser.add_argument("--px4-drv-root", type=Path, required=True)
+    # Preserve the old optional flag for the existing APK metadata self-test.
+    # APK provenance no longer describes px4_drv/fwtool because no such payload is shipped.
+    parser.add_argument("--px4-drv-root", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--arib25-root", type=Path, required=True)
     parser.add_argument("--libusb-archive", type=Path, required=True)
     args = parser.parse_args()

@@ -22,6 +22,7 @@ if spec is None or spec.loader is None:
 source_audit = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(source_audit)
 EXPECTED = source_audit.EXPECTED
+APK_EXPECTED = {name: item for name, item in EXPECTED.items() if name != "px4_drv"}
 ARIB_SUBMODULES = source_audit.MIRAKC_ARIB_SUBMODULES
 ARIB_APK_SUBMODULES = source_audit.MIRAKC_ARIB_APK_SUBMODULES
 LIBARIB25_TREE_IDENTITY = source_audit.LIBARIB25_TREE_IDENTITY
@@ -91,7 +92,7 @@ def read_apk(path, expected_dtv_commit: str | None) -> None:
             fail("APK source metadata components/inventory missing")
         if len({component.get("name") for component in components if isinstance(component, dict)}) != len(components):
             fail("APK source metadata contains duplicate components")
-        expected_names = set(EXPECTED) | set(ARIB_APK_SUBMODULES)
+        expected_names = set(APK_EXPECTED) | set(ARIB_APK_SUBMODULES)
         actual_names = {component.get("name") for component in components if isinstance(component, dict)}
         if actual_names != expected_names:
             fail("APK source metadata component set mismatch")
@@ -101,7 +102,7 @@ def read_apk(path, expected_dtv_commit: str | None) -> None:
             fail("APK DTV commit/tree is not canonical")
         if expected_dtv_commit is not None and dtv["commit"] != expected_dtv_commit:
             fail("APK DTV commit mismatch")
-        for name, expected in EXPECTED.items():
+        for name, expected in APK_EXPECTED.items():
             component = by_name[name]
             for field in ("url", "spdx"):
                 if component.get(field) != expected[field]:
@@ -115,6 +116,13 @@ def read_apk(path, expected_dtv_commit: str | None) -> None:
                     fail("APK libarib25 tree identity is invalid")
             elif name != "dtv-android" and component.get("commit") != expected.get("commit"):
                 fail(f"APK component {name} commit mismatch")
+            if name == "px4-userland":
+                expected_source_inputs = [{
+                    "path": source_audit.PX4_ANDROID_PATCH_PATH.removeprefix("sources/dtv-android/"),
+                    "sha256": source_audit.PX4_ANDROID_PATCH_SHA256,
+                }]
+                if component.get("source_inputs") != expected_source_inputs:
+                    fail("APK PX4 DTV patch provenance mismatch")
             if name == "linux-firmware-siano":
                 if component.get("license_url") != expected["license_url"] or component.get("license_sha256") != expected["license_sha256"] or component.get("sha256") != expected["sha256"]:
                     fail("APK Siano firmware provenance mismatch")

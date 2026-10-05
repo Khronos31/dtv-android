@@ -43,6 +43,32 @@ class GrScanStatusTest {
     }
 
     @Test
+    fun cancelPreservesSameScanNativeProgressAndClearsInFlightChannel() {
+        val beforeStop = GrScanStatus.parse("running\n5\n50\n19\n16,17\n0\n1791140690515\nNONE\n")!!
+        val stopped = GrScanStatus.parse("interrupted\n5\n50\n\n16,17\n0\n1791140690515\nINTERRUPTED\n")!!
+
+        val canceled = GrScanStatus.canceledFromNative(
+            scanId = beforeStop.scanId,
+            stoppedStatus = stopped,
+            statusBeforeStop = beforeStop
+        )
+
+        assertEquals(GrScanStatus.State.INTERRUPTED, canceled.state)
+        assertEquals(5, canceled.completed)
+        assertNull(canceled.currentChannel)
+        assertEquals(listOf(16, 17), canceled.foundChannels)
+        assertEquals("CANCELED", canceled.errorCode)
+    }
+
+    @Test
+    fun cancelFallsBackWhenNeitherStatusBelongsToThisScan() {
+        val stale = GrScanStatus.parse("interrupted\n5\n50\n\n16,17\n0\n100\nINTERRUPTED\n")!!
+        val canceled = GrScanStatus.canceledFromNative(101, stale, null)
+
+        assertEquals(GrScanStatus.interrupted(101), canceled)
+    }
+
+    @Test
     fun malformedOrEmptyResultsAreNotApplicable() {
         assertNull(GrScanStatus.parse("complete\n50\n50\n62\n\n0\n12345\nNONE\n"))
         assertNull(GrScanStatus.parse("complete\n51\n50\n62\n13\n0\n12345\nNONE\n"))

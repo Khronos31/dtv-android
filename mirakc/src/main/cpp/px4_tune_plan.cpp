@@ -9,45 +9,6 @@ namespace {
 constexpr int kFirstGrChannel = 13;
 constexpr int kLastGrChannel = 62;
 
-bool is_q3u4_terrestrial_receiver(int receiver) {
-    return receiver == 2 || receiver == 3 || receiver == 6 || receiver == 7;
-}
-
-bool is_q3u4_satellite_receiver(int receiver) {
-    return receiver == 0 || receiver == 1 || receiver == 4 || receiver == 5;
-}
-
-bool is_mlt5_receiver(int receiver) {
-    return receiver >= 0 && receiver <= 4;
-}
-
-bool supports_terrestrial(ReceiverMap model, int receiver) {
-    switch (model) {
-    case ReceiverMap::kPxQ3u4:
-        return is_q3u4_terrestrial_receiver(receiver);
-    case ReceiverMap::kPxMlt5:
-        return is_mlt5_receiver(receiver);
-    case ReceiverMap::kPxM1ur:
-    case ReceiverMap::kPxS1ur:
-        return receiver == 0;
-    }
-    return false;
-}
-
-bool supports_satellite(ReceiverMap model, int receiver) {
-    switch (model) {
-    case ReceiverMap::kPxQ3u4:
-        return is_q3u4_satellite_receiver(receiver);
-    case ReceiverMap::kPxMlt5:
-        return is_mlt5_receiver(receiver);
-    case ReceiverMap::kPxM1ur:
-        return receiver == 0;
-    case ReceiverMap::kPxS1ur:
-        return false;
-    }
-    return false;
-}
-
 bool parse_decimal(std::string_view text, std::uint32_t maximum, std::uint32_t* value) {
     if (text.empty() || (text.size() > 1 && text.front() == '0')) return false;
     for (const char character : text) {
@@ -89,8 +50,8 @@ bool create_tune_plan(
         set_error(error, "missing tune plan output");
         return false;
     }
-    const bool terrestrial = supports_terrestrial(receiver_map, receiver);
-    const bool satellite = supports_satellite(receiver_map, receiver);
+    const bool terrestrial = receiver_supports_terrestrial(receiver_map, receiver);
+    const bool satellite = receiver_supports_satellite(receiver_map, receiver);
     if (!terrestrial && !satellite) {
         set_error(error, "receiver is outside the selected PX-4 receiver map");
         return false;

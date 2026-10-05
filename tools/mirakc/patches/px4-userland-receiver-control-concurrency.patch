@@ -1,0 +1,462 @@
+diff --git a/scripts/build-android.sh b/scripts/build-android.sh
+index 6a4de7a..79b8e26 100755
+--- a/scripts/build-android.sh
++++ b/scripts/build-android.sh
+@@ -83,6 +83,30 @@ x86_64)
+     ;;
+ esac
+ 
++if [ "${PX4_ANDROID_BUILD_JOBS+x}" = x ]; then
++    case "$PX4_ANDROID_BUILD_JOBS" in
++        ''|*[!0-9]*)
++            printf '%s\n' 'PX4_ANDROID_BUILD_JOBS must be a positive integer' >&2
++            exit 2
++            ;;
++    esac
++    case "$PX4_ANDROID_BUILD_JOBS" in
++        *[1-9]*) ;;
++        *)
++            printf '%s\n' 'PX4_ANDROID_BUILD_JOBS must be a positive integer' >&2
++            exit 2
++            ;;
++    esac
++    jobs=$PX4_ANDROID_BUILD_JOBS
++else
++    jobs=$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '%s' 2)
++    case "$jobs" in
++        ''|*[!0-9]*) jobs=2 ;;
++        *[1-9]*) ;;
++        *) jobs=2 ;;
++    esac
++fi
++
+ ndk=${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}
+ [ -n "$ndk" ] && [ -d "$ndk" ] || {
+     printf '%s\n' 'ANDROID_NDK_HOME must point to NDK r26 or newer' >&2
+@@ -225,7 +249,6 @@ else
+     tar -xjf "$archive" -C "$work"
+ fi
+ 
+-jobs=$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '%s' 2)
+ env -i \
+     PATH="$host_path" \
+     TMPDIR="$work/tmp" \
+diff --git a/userland/src/control_server.cpp b/userland/src/control_server.cpp
+index cfec1a8..65980a0 100644
+--- a/userland/src/control_server.cpp
++++ b/userland/src/control_server.cpp
+@@ -726,10 +726,11 @@ struct PosixControlServer::Impl final {
+             task.operation == ControlWorkerOperation::card_shutdown) {
+             return ControlWorkerLane::card;
+         }
+-        return task.operation == ControlWorkerOperation::tuner_status ||
+-                       task.operation == ControlWorkerOperation::tuner_shutdown ||
+-                       task.receiver < 4U ? ControlWorkerLane::tuner_dev1 :
+-                                            ControlWorkerLane::tuner_dev2;
++        if (task.operation == ControlWorkerOperation::tuner_status ||
++            task.operation == ControlWorkerOperation::tuner_shutdown) {
++            return ControlWorkerLane::tuner_receiver0;
++        }
++        return tuner_lane_for_receiver(task.receiver);
+     }
+ 
+     Result<void> dispatch(Client& client, const FrameView& request) noexcept
+@@ -1376,12 +1377,14 @@ struct PosixControlServer::Impl final {
+     void process_completions() noexcept
+     {
+         workers->drain_wake();
+-        for (const ControlWorkerLane lane : {ControlWorkerLane::tuner_dev1,
+-                                             ControlWorkerLane::tuner_dev2,
+-                                             ControlWorkerLane::card}) {
++        for (std::uint8_t receiver = 0U; receiver < kReceiverCount; ++receiver) {
++            const auto lane = tuner_lane_for_receiver(receiver);
+             ControlWorkerCompletion completion{};
+             while (workers->try_pop(lane, completion)) handle_completion(completion);
+         }
++        ControlWorkerCompletion completion{};
++        while (workers->try_pop(ControlWorkerLane::card, completion))
++            handle_completion(completion);
+         retry_retired_cleanup();
+         reap_retired();
+     }
+@@ -1536,7 +1539,7 @@ struct PosixControlServer::Impl final {
+                     ControlWorkerTask task{};
+                     task.kind = ControlWorkerTaskKind::background;
+                     task.operation = ControlWorkerOperation::tuner_shutdown;
+-                    const auto submitted = workers->submit(ControlWorkerLane::tuner_dev1,
++                    const auto submitted = workers->submit(ControlWorkerLane::tuner_receiver0,
+                                                            task);
+                     if (submitted) tuner_shutdown_pending = true;
+                     else record_error(submitted.error());
+diff --git a/userland/src/control_workers.cpp b/userland/src/control_workers.cpp
+index ef3ba4e..be8c7da 100644
+--- a/userland/src/control_workers.cpp
++++ b/userland/src/control_workers.cpp
+@@ -15,7 +15,7 @@ bool operation_lane_valid(ControlWorkerLane lane,
+                           const ControlWorkerTask& task) noexcept
+ {
+     if (task.operation == ControlWorkerOperation::tuner_status) {
+-        return lane == ControlWorkerLane::tuner_dev1;
++        return lane == ControlWorkerLane::tuner_receiver0;
+     }
+     switch (task.operation) {
+     case ControlWorkerOperation::tuner_status:
+@@ -31,10 +31,9 @@ bool operation_lane_valid(ControlWorkerLane lane,
+         if (task.receiver >= kReceiverCount) {
+             return false;
+         }
+-        return lane == (task.receiver < 4U ? ControlWorkerLane::tuner_dev1 :
+-                                             ControlWorkerLane::tuner_dev2);
++        return lane == tuner_lane_for_receiver(task.receiver);
+     case ControlWorkerOperation::tuner_shutdown:
+-        return lane == ControlWorkerLane::tuner_dev1;
++        return lane == ControlWorkerLane::tuner_receiver0;
+     case ControlWorkerOperation::card_status:
+     case ControlWorkerOperation::card_status_combined:
+     case ControlWorkerOperation::card_presence:
+@@ -370,7 +369,7 @@ struct ControlWorkerLanes::Impl final {
+     CardService& card_service;
+     TunerService& tuner_service;
+     WakePipe wake;
+-    std::array<std::unique_ptr<Lane>, 3U> lanes;
++    std::array<std::unique_ptr<Lane>, kControlWorkerLaneCount> lanes;
+     std::atomic<std::size_t> live_threads{0U};
+     std::atomic<Error> worker_error{Error::OK};
+     bool joined = false;
+@@ -605,8 +604,11 @@ Result<std::unique_ptr<ControlWorkerLanes>> ControlWorkerLanes::create(
+     if (!impl->wake.open()) {
+         return Result<std::unique_ptr<ControlWorkerLanes>>::failure(Error::INTERNAL);
+     }
+-    const std::array<ControlWorkerLane, 3U> lane_ids{
+-        ControlWorkerLane::tuner_dev1, ControlWorkerLane::tuner_dev2,
++    const std::array<ControlWorkerLane, kControlWorkerLaneCount> lane_ids{
++        ControlWorkerLane::tuner_receiver0, ControlWorkerLane::tuner_receiver1,
++        ControlWorkerLane::tuner_receiver2, ControlWorkerLane::tuner_receiver3,
++        ControlWorkerLane::tuner_receiver4, ControlWorkerLane::tuner_receiver5,
++        ControlWorkerLane::tuner_receiver6, ControlWorkerLane::tuner_receiver7,
+         ControlWorkerLane::card};
+     for (std::size_t index = 0U; index < lane_ids.size(); ++index) {
+         impl->lanes[index] = std::unique_ptr<Impl::Lane>(
+@@ -649,8 +651,11 @@ Result<std::unique_ptr<ControlWorkerLanes>> ControlWorkerLanes::create_for_test(
+     if (options.fail_wake_pipe || !impl->wake.open()) {
+         return Result<std::unique_ptr<ControlWorkerLanes>>::failure(Error::INTERNAL);
+     }
+-    const std::array<ControlWorkerLane, 3U> lane_ids{
+-        ControlWorkerLane::tuner_dev1, ControlWorkerLane::tuner_dev2,
++    const std::array<ControlWorkerLane, kControlWorkerLaneCount> lane_ids{
++        ControlWorkerLane::tuner_receiver0, ControlWorkerLane::tuner_receiver1,
++        ControlWorkerLane::tuner_receiver2, ControlWorkerLane::tuner_receiver3,
++        ControlWorkerLane::tuner_receiver4, ControlWorkerLane::tuner_receiver5,
++        ControlWorkerLane::tuner_receiver6, ControlWorkerLane::tuner_receiver7,
+         ControlWorkerLane::card};
+     for (std::size_t index = 0U; index < lane_ids.size(); ++index) {
+         if (options.fail_lane == static_cast<int>(index)) {
+diff --git a/userland/src/control_workers.h b/userland/src/control_workers.h
+index 6d017df..a876024 100644
+--- a/userland/src/control_workers.h
++++ b/userland/src/control_workers.h
+@@ -27,11 +27,25 @@ struct ControlWorkerStartupOptions final {
+ #endif
+ 
+ enum class ControlWorkerLane : std::uint8_t {
+-    tuner_dev1,
+-    tuner_dev2,
++    tuner_receiver0,
++    tuner_receiver1,
++    tuner_receiver2,
++    tuner_receiver3,
++    tuner_receiver4,
++    tuner_receiver5,
++    tuner_receiver6,
++    tuner_receiver7,
+     card,
+ };
+ 
++static_assert(kReceiverCount == 8U, "update the per-receiver worker lane list");
++inline constexpr std::size_t kControlWorkerLaneCount = kReceiverCount + 1U;
++inline constexpr ControlWorkerLane tuner_lane_for_receiver(
++    std::uint8_t receiver) noexcept
++{
++    return static_cast<ControlWorkerLane>(receiver);
++}
++
+ enum class ControlWorkerOperation : std::uint8_t {
+     tuner_acquire,
+     tuner_release,
+diff --git a/userland/tests/control_workers_tests.cpp b/userland/tests/control_workers_tests.cpp
+index 645d93b..9b97d0a 100644
+--- a/userland/tests/control_workers_tests.cpp
++++ b/userland/tests/control_workers_tests.cpp
+@@ -78,6 +78,14 @@ public:
+             dev1_condition.notify_all();
+             while (block_dev1.load()) std::this_thread::yield();
+         }
++        if (receiver == 4U && block_receiver4.load()) {
++            {
++                std::lock_guard<std::mutex> lock(receiver4_mutex);
++                receiver4_started.store(true);
++            }
++            receiver4_condition.notify_all();
++            while (block_receiver4.load()) std::this_thread::yield();
++        }
+         ++open_calls[receiver];
+         return Result<void>::success();
+     }
+@@ -105,6 +113,10 @@ public:
+     std::atomic<bool> dev1_started{false};
+     std::mutex dev1_mutex;
+     std::condition_variable dev1_condition;
++    std::atomic<bool> block_receiver4{false};
++    std::atomic<bool> receiver4_started{false};
++    std::mutex receiver4_mutex;
++    std::condition_variable receiver4_condition;
+     std::array<std::atomic<std::size_t>, kReceiverCount> open_calls{};
+     std::array<std::atomic<std::size_t>, kReceiverCount> close_calls{};
+ };
+@@ -127,6 +139,22 @@ private:
+     bool active_ = true;
+ };
+ 
++class BlockedReceiver4Guard final {
++public:
++    explicit BlockedReceiver4Guard(TunerBackend& backend) noexcept
++        : backend_(backend) {}
++    ~BlockedReceiver4Guard() noexcept
++    {
++        if (!active_) return;
++        backend_.block_receiver4.store(false);
++        backend_.receiver4_condition.notify_all();
++    }
++
++private:
++    TunerBackend& backend_;
++    bool active_ = true;
++};
++
+ struct Fixture final {
+     CardBackend card_backend;
+     CardSession card_session;
+@@ -143,21 +171,21 @@ bool drain_until_stopped(ControlWorkerLanes& workers, std::size_t expected,
+     (void)workers.request_stop();
+     while (workers.live_thread_count() != 0U) {
+         ControlWorkerCompletion completion{};
+-        for (const ControlWorkerLane lane : {ControlWorkerLane::tuner_dev1,
+-                                             ControlWorkerLane::tuner_dev2,
+-                                             ControlWorkerLane::card}) {
++        for (std::uint8_t receiver = 0U; receiver < kReceiverCount; ++receiver) {
++            const auto lane = tuner_lane_for_receiver(receiver);
+             while (workers.try_pop(lane, completion)) ++observed;
+         }
++        while (workers.try_pop(ControlWorkerLane::card, completion)) ++observed;
+         pollfd descriptor{workers.wake_fd(), POLLIN, 0};
+         (void)::poll(&descriptor, 1U, 10);
+         workers.drain_wake();
+     }
+     ControlWorkerCompletion completion{};
+-    for (const ControlWorkerLane lane : {ControlWorkerLane::tuner_dev1,
+-                                         ControlWorkerLane::tuner_dev2,
+-                                         ControlWorkerLane::card}) {
++    for (std::uint8_t receiver = 0U; receiver < kReceiverCount; ++receiver) {
++        const auto lane = tuner_lane_for_receiver(receiver);
+         while (workers.try_pop(lane, completion)) ++observed;
+     }
++    while (workers.try_pop(ControlWorkerLane::card, completion)) ++observed;
+     CHECK(workers.join());
+     if (observed != expected) {
+         std::fprintf(stderr, "worker completions observed=%zu expected=%zu\n",
+@@ -169,7 +197,7 @@ bool drain_until_stopped(ControlWorkerLanes& workers, std::size_t expected,
+ 
+ bool test_startup_rollback(Fixture& fixture)
+ {
+-    for (int lane = -1; lane < 3; ++lane) {
++    for (int lane = -1; lane < static_cast<int>(kControlWorkerLaneCount); ++lane) {
+         const ControlWorkerStartupOptions options{false, lane};
+         if (lane < 0) continue;
+         const auto result = ControlWorkerLanes::create_for_test(
+@@ -192,13 +220,13 @@ bool test_fifo_and_wakeup(Fixture& fixture)
+         task.operation = ControlWorkerOperation::tuner_status;
+         task.client_id = 1U;
+         task.request_id = request;
+-        CHECK(workers->submit(ControlWorkerLane::tuner_dev1, task));
++        CHECK(workers->submit(ControlWorkerLane::tuner_receiver0, task));
+     }
+     std::array<std::uint32_t, 3U> ids{};
+     std::size_t count = 0U;
+     while (count < ids.size()) {
+         ControlWorkerCompletion completion{};
+-        if (!workers->try_pop(ControlWorkerLane::tuner_dev1, completion)) {
++        if (!workers->try_pop(ControlWorkerLane::tuner_receiver0, completion)) {
+             pollfd descriptor{workers->wake_fd(), POLLIN, 0};
+             CHECK(::poll(&descriptor, 1U, 1000) >= 0);
+             workers->drain_wake();
+@@ -224,7 +252,7 @@ bool test_dequeue_active_visibility(Fixture& fixture)
+     task.client_id = 11U;
+     task.request_id = 110U;
+     task.receiver = 0U;
+-    CHECK(workers->submit(ControlWorkerLane::tuner_dev1, task));
++    CHECK(workers->submit(ControlWorkerLane::tuner_receiver0, task));
+     BlockedDev1Guard blocked_guard(fixture.tuner_backend);
+     {
+         std::unique_lock<std::mutex> lock(fixture.tuner_backend.dev1_mutex);
+@@ -250,26 +278,26 @@ bool test_lane_routing(Fixture& fixture)
+     std::unique_ptr<ControlWorkerLanes> workers = std::move(created.value());
+     ControlWorkerTask card{};
+     card.operation = ControlWorkerOperation::card_status;
+-    CHECK(!workers->submit(ControlWorkerLane::tuner_dev1, card) &&
++    CHECK(!workers->submit(ControlWorkerLane::tuner_receiver0, card) &&
+           workers->submit(ControlWorkerLane::card, card));
+     ControlWorkerTask receiver{};
+     receiver.operation = ControlWorkerOperation::tuner_acquire;
+     receiver.client_id = 12U;
+ 
+     receiver.receiver = 8U;
+-    const auto invalid_eight = workers->submit(ControlWorkerLane::tuner_dev2, receiver);
++    const auto invalid_eight = workers->submit(ControlWorkerLane::card, receiver);
+     CHECK(!invalid_eight && invalid_eight.error() == Error::INVALID_ARGUMENT);
+     receiver.receiver = 255U;
+-    const auto invalid_255 = workers->submit(ControlWorkerLane::tuner_dev2, receiver);
++    const auto invalid_255 = workers->submit(ControlWorkerLane::card, receiver);
+     CHECK(!invalid_255 && invalid_255.error() == Error::INVALID_ARGUMENT);
+ 
+     receiver.receiver = 4U;
+-    CHECK(!workers->submit(ControlWorkerLane::tuner_dev1, receiver) &&
+-          workers->submit(ControlWorkerLane::tuner_dev2, receiver));
++    CHECK(!workers->submit(ControlWorkerLane::tuner_receiver0, receiver) &&
++          workers->submit(ControlWorkerLane::tuner_receiver4, receiver));
+     ControlWorkerTask status{};
+     status.operation = ControlWorkerOperation::tuner_status;
+     CHECK(!workers->submit(ControlWorkerLane::card, status) &&
+-          workers->submit(ControlWorkerLane::tuner_dev1, status));
++          workers->submit(ControlWorkerLane::tuner_receiver0, status));
+     std::size_t observed = 0U;
+     CHECK(drain_until_stopped(*workers, 3U, observed));
+     CHECK(fixture.tuner.disconnect_client(12U));
+@@ -290,7 +318,7 @@ bool test_independent_lanes_and_backpressure(Fixture& fixture)
+     slow.client_id = 1U;
+     slow.request_id = 100U;
+     slow.receiver = 0U;
+-    CHECK(workers->submit(ControlWorkerLane::tuner_dev1, slow));
++    CHECK(workers->submit(ControlWorkerLane::tuner_receiver0, slow));
+     {
+         std::unique_lock<std::mutex> lock(fixture.tuner_backend.dev1_mutex);
+         CHECK(fixture.tuner_backend.dev1_condition.wait_for(
+@@ -307,7 +335,7 @@ bool test_independent_lanes_and_backpressure(Fixture& fixture)
+     card.operation = ControlWorkerOperation::card_status;
+     card.client_id = 3U;
+     card.request_id = 301U;
+-    CHECK(workers->submit(ControlWorkerLane::tuner_dev2, dev2));
++    CHECK(workers->submit(ControlWorkerLane::tuner_receiver4, dev2));
+     CHECK(workers->submit(ControlWorkerLane::card, card));
+     bool dev2_done = false;
+     bool card_done = false;
+@@ -315,7 +343,7 @@ bool test_independent_lanes_and_backpressure(Fixture& fixture)
+                                      std::chrono::seconds(10);
+     while ((!dev2_done || !card_done) &&
+            std::chrono::steady_clock::now() < completion_deadline) {
+-        for (const ControlWorkerLane lane : {ControlWorkerLane::tuner_dev2,
++        for (const ControlWorkerLane lane : {ControlWorkerLane::tuner_receiver4,
+                                              ControlWorkerLane::card}) {
+             ControlWorkerCompletion completion{};
+             while (workers->try_pop(lane, completion)) {
+@@ -339,7 +367,7 @@ bool test_independent_lanes_and_backpressure(Fixture& fixture)
+         task.client_id = 4U;
+         task.request_id = static_cast<std::uint32_t>(400U + attempt);
+         task.receiver = 0U;
+-        const auto submitted = workers->submit(ControlWorkerLane::tuner_dev1, task);
++        const auto submitted = workers->submit(ControlWorkerLane::tuner_receiver0, task);
+         if (submitted) ++accepted;
+         else {
+             CHECK(submitted.error() == Error::BUSY);
+@@ -356,6 +384,61 @@ bool test_independent_lanes_and_backpressure(Fixture& fixture)
+     return true;
+ }
+ 
++bool test_same_device_receivers_have_independent_workers(Fixture& fixture)
++{
++    fixture.tuner_backend.receiver4_started.store(false);
++    fixture.tuner_backend.block_receiver4.store(true);
++    auto created = ControlWorkerLanes::create(fixture.card, fixture.tuner);
++    CHECK(created);
++    std::unique_ptr<ControlWorkerLanes> workers = std::move(created.value());
++    BlockedReceiver4Guard blocked_guard(fixture.tuner_backend);
++
++    ControlWorkerTask slow{};
++    slow.operation = ControlWorkerOperation::tuner_acquire;
++    slow.client_id = 31U;
++    slow.request_id = 310U;
++    slow.receiver = 4U;
++    CHECK(workers->submit(tuner_lane_for_receiver(4U), slow));
++    {
++        std::unique_lock<std::mutex> lock(fixture.tuner_backend.receiver4_mutex);
++        CHECK(fixture.tuner_backend.receiver4_condition.wait_for(
++            lock, std::chrono::seconds(10), [&]() {
++                return fixture.tuner_backend.receiver4_started.load();
++            }));
++    }
++
++    ControlWorkerTask sibling{};
++    sibling.operation = ControlWorkerOperation::tuner_acquire;
++    sibling.client_id = 32U;
++    sibling.request_id = 320U;
++    sibling.receiver = 5U;
++    CHECK(workers->submit(tuner_lane_for_receiver(5U), sibling));
++
++    bool sibling_completed_while_receiver4_blocked = false;
++    const auto deadline = std::chrono::steady_clock::now() +
++                          std::chrono::seconds(2);
++    while (std::chrono::steady_clock::now() < deadline) {
++        ControlWorkerCompletion completion{};
++        while (workers->try_pop(tuner_lane_for_receiver(5U), completion)) {
++            if (completion.request_id == 320U)
++                sibling_completed_while_receiver4_blocked = true;
++        }
++        if (sibling_completed_while_receiver4_blocked) break;
++        pollfd ready{workers->wake_fd(), POLLIN, 0};
++        (void)::poll(&ready, 1U, 10);
++        workers->drain_wake();
++    }
++
++    fixture.tuner_backend.block_receiver4.store(false);
++    fixture.tuner_backend.receiver4_condition.notify_all();
++    std::size_t observed = 0U;
++    CHECK(drain_until_stopped(*workers, 1U, observed));
++    CHECK(sibling_completed_while_receiver4_blocked);
++    CHECK(fixture.tuner.disconnect_client(31U));
++    CHECK(fixture.tuner.disconnect_client(32U));
++    return true;
++}
++
+ bool test_completion_ring_backpressure(Fixture& fixture)
+ {
+     auto created = ControlWorkerLanes::create(fixture.card, fixture.tuner);
+@@ -366,20 +449,20 @@ bool test_completion_ring_backpressure(Fixture& fixture)
+         task.operation = ControlWorkerOperation::tuner_status;
+         task.client_id = 5U;
+         task.request_id = static_cast<std::uint32_t>(index + 1U);
+-        CHECK(workers->submit(ControlWorkerLane::tuner_dev1, task));
++        CHECK(workers->submit(ControlWorkerLane::tuner_receiver0, task));
+     }
+     pollfd descriptor{workers->wake_fd(), POLLIN, 0};
+     CHECK(::poll(&descriptor, 1U, 1000) == 1);
+     CHECK((descriptor.revents & POLLIN) != 0);
+     const auto deadline = std::chrono::steady_clock::now() +
+                           std::chrono::seconds(10);
+-    while (workers->pending_completions_for_test(ControlWorkerLane::tuner_dev1) !=
++    while (workers->pending_completions_for_test(ControlWorkerLane::tuner_receiver0) !=
+                kControlWorkerQueueCapacity &&
+            std::chrono::steady_clock::now() < deadline) {
+         pollfd ready{workers->wake_fd(), POLLIN, 0};
+         (void)::poll(&ready, 1U, 5);
+     }
+-    CHECK(workers->pending_completions_for_test(ControlWorkerLane::tuner_dev1) ==
++    CHECK(workers->pending_completions_for_test(ControlWorkerLane::tuner_receiver0) ==
+           kControlWorkerQueueCapacity);
+     workers->drain_wake();
+     // stop_and_join is the safe shutdown path when completions are not needed
+@@ -396,5 +479,6 @@ bool run_control_workers_tests()
+     return test_startup_rollback(*fixture) && test_fifo_and_wakeup(*fixture) &&
+            test_dequeue_active_visibility(*fixture) && test_lane_routing(*fixture) &&
+            test_independent_lanes_and_backpressure(*fixture) &&
++           test_same_device_receivers_have_independent_workers(*fixture) &&
+            test_completion_ring_backpressure(*fixture);
+ }

@@ -15,8 +15,6 @@
 
     <!-- About Section Items -->
     <string name="about_app_version_title">アプリバージョン</string>
-    <string name="about_build_number_title">ビルド番号</string>
-    <string name="about_source_commit_title">ソースコミット</string>
     <string name="about_mirakc_version_title">同梱 mirakc</string>
     <string name="about_driver_versions_title">同梱ドライバ</string>
     <string name="about_licenses_title">オープンソースライセンス</string>
@@ -28,7 +26,6 @@
     <string name="licenses_title">オープンソースライセンス</string>
     <string name="licenses_subtitle">使用されているオープンソースソフトウェアおよびライセンス通知</string>
     <string name="about_metadata_unavailable">ビルド情報を取得できません</string>
-    <string name="about_source_open_failed">GitHub リンクを開けません</string>
     <string name="licenses_metadata_unavailable">このAPKにライセンス情報が含まれていません。</string>
     <string name="licenses_file_unavailable">ライセンス本文を読み込めません: %1$s</string>
     <string name="licenses_component_heading">%1$s %2$s</string>
@@ -46,8 +43,9 @@
     <string name="setting_scan_desc">物理ch 13〜62を順番に探索</string>
     <string name="setting_usb_title">USB権限を要求</string>
     <string name="setting_usb_desc">接続中のデバイスの権限を要求します</string>
-    <string name="setting_restart_title">mirakcを再起動</string>
-    <string name="setting_restart_desc">設定を反映してmirakcを再起動します</string>
+    <string name="setting_restart_title">mirakcを起動</string>
+    <string name="setting_restart_desc">スキャン済みの設定で公開サーバーを起動します</string>
+    <string name="setting_restart_pending_desc">保存したチャンネルは再起動するとmirakcに反映します</string>
     <string name="setting_stop_title">mirakcを停止</string>
     <string name="setting_stop_desc">サービスとHTTP APIを停止します</string>
     <string name="setting_update_title">アップデートを確認</string>
@@ -69,10 +67,9 @@
     <string name="error_channels">物理チャンネルを確認してください</string>
 
     <!-- Toasts -->
-    <string name="toast_scan_completed">全探索が完了し、検出した物理chを保存しました</string>
     <string name="toast_epg_saved">更新間隔を%1$s分に保存しました。再起動後に適用します。</string>
     <string name="toast_channels_saved">地上波設定を保存しました。再起動後に適用します。</string>
-    <string name="toast_restarting">mirakcを再起動して設定を適用します</string>
+    <string name="toast_starting_server">mirakcを起動しています</string>
     <string name="toast_update_available">新しい版 %1$s があります</string>
     <string name="toast_already_up_to_date">Already up to date (%1$s)</string>
 </resources>

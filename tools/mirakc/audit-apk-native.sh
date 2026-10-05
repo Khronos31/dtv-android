@@ -37,7 +37,7 @@ while IFS= read -r entry || [ -n "$entry" ]; do
     esac
 done <"$entries_file"
 
-expected_names='libmirakc.so libmirakc-arib.so libsiano-ts.so libpx4d.so libpx4-ts.so libpx4ctl.so libusb_process.so libmirakc-siano-adapter.so libmirakc-b25-filter.so libmirakc-px4-adapter.so libmirakc-px4-fwtool.so'
+expected_names='libmirakc.so libmirakc-arib.so libsiano-ts.so libpx4d.so libpx4-ts.so libpx4ctl.so libusb_process.so libmirakc-siano-adapter.so libmirakc-b25-filter.so libmirakc-px4-adapter.so'
 abis='arm64-v8a armeabi-v7a'
 
 is_expected_name() {

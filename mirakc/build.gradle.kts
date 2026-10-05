@@ -52,6 +52,10 @@ val b25FilterSource = layout.projectDirectory.file("src/main/cpp/b25_filter_main
 val b25FilterCmake = layout.projectDirectory.file("src/main/cpp/CMakeLists.txt")
 val b25FilterVerifier = layout.projectDirectory.file("../tools/mirakc/verify-android-elf.sh")
 val px4AdapterSource = layout.projectDirectory.file("src/main/cpp/px4_adapter.cpp")
+val px4ConcurrencyPatch = layout.projectDirectory.file(
+    "../tools/mirakc/patches/px4-userland-receiver-control-concurrency.patch"
+)
+val px4PatchedSourceDir = project.rootDir.resolve(".work/px4-userland-receiver-control")
 val px4TunePlanSource = layout.projectDirectory.file("src/main/cpp/px4_tune_plan.cpp")
 val px4TunePlanHeader = layout.projectDirectory.file("src/main/cpp/px4_tune_plan.h")
 val px4TunePlanTests = layout.projectDirectory.file("src/main/cpp/tests/px4_tune_plan_test.cpp")
@@ -88,14 +92,6 @@ val runPx4RuntimeSocketPathHostTests = tasks.register<Exec>("runPx4RuntimeSocket
     })
 }
 
-val px4DrvDir = providers.gradleProperty("px4DrvDir")
-    .orElse("/config/GitHub/px4_drv")
-val px4DrvPinnedRef = "2b3f79b5bc5db56e8556bb28397f7d8f74b2adeb"
-val px4FwtoolBinaries = listOf(
-    nativeOutputDir.file("arm64-v8a/libmirakc-px4-fwtool.so"),
-    nativeOutputDir.file("armeabi-v7a/libmirakc-px4-fwtool.so")
-)
-val px4FwtoolGeneratedAssets = layout.buildDirectory.dir("generated/px4-fwtool-assets")
 val androidNdkRoot = providers.environmentVariable("ANDROID_NDK_HOME")
     .orElse(providers.environmentVariable("ANDROID_NDK_ROOT"))
     .orElse("/config/.tools/android-sdk/ndk/$configuredNdkVersion")
@@ -321,14 +317,18 @@ val preparePx4AdapterBinaries = tasks.register("preparePx4AdapterBinaries") {
             val sourceRoot = file(directoryName).resolve("userland/src")
             listOf(
                 sourceRoot.resolve("control_client.cpp"),
+                sourceRoot.resolve("control_server.cpp"),
+                sourceRoot.resolve("control_workers.cpp"),
                 sourceRoot.resolve("error.cpp"),
                 sourceRoot.resolve("ipc.cpp"),
                 sourceRoot.resolve("pcsc_ifd_adapter.cpp"),
-                sourceRoot.resolve("posix_ipc.cpp")
+                sourceRoot.resolve("posix_ipc.cpp"),
+                sourceRoot.resolve("q3u4_frontend.cpp")
             )
         }
     )
     inputs.dir(px4UserlandDir.map { file(it).resolve("userland/include/px4") })
+    inputs.files(px4ConcurrencyPatch)
     outputs.files(
         nativeOutputDir.file("arm64-v8a/libmirakc-px4-adapter.so"),
         nativeOutputDir.file("armeabi-v7a/libmirakc-px4-adapter.so")
@@ -350,7 +350,7 @@ val preparePx4AdapterBinaries = tasks.register("preparePx4AdapterBinaries") {
                     "-DANDROID_ABI=$abi", "-DANDROID_PLATFORM=android-24",
                     "-DANDROID_STL=c++_static",
                     "-DMIRAKC_BUILD_PX4_ADAPTER=ON",
-                    "-DPX4_USERLAND_DIR=${file(px4UserlandDir.get()).absolutePath}"
+                    "-DPX4_USERLAND_DIR=${px4PatchedSourceDir.absolutePath}"
                 )
             }
             project.exec {
@@ -374,110 +374,8 @@ val preparePx4AdapterBinaries = tasks.register("preparePx4AdapterBinaries") {
         buildAbi("armeabi-v7a")
     }
 }
-
-val preparePx4FwtoolBinaries = tasks.register("preparePx4FwtoolBinaries") {
-    inputs.property("px4DrvDir", px4DrvDir)
-    inputs.property("px4DrvPinnedRef", px4DrvPinnedRef)
-    inputs.files(px4AdapterCmake, px4AdapterVerifier)
-    inputs.files(
-        px4DrvDir.map { directoryName ->
-            val root = file(directoryName)
-            listOf(
-                root.resolve("fwtool/fwtool.c"),
-                root.resolve("fwtool/tsv.c"),
-                root.resolve("fwtool/tsv.h"),
-                root.resolve("fwtool/crc32.c"),
-                root.resolve("fwtool/crc32.h"),
-                root.resolve("fwtool/fwinfo.tsv"),
-                root.resolve("LICENSE")
-            )
-        }
-    )
-    outputs.files(px4FwtoolBinaries)
-    outputs.dir(px4FwtoolGeneratedAssets)
-
-    doLast {
-        val sourceRoot = file(px4DrvDir.get())
-        if (!sourceRoot.isDirectory) {
-            throw GradleException("px4_drv checkout not found at $sourceRoot")
-        }
-        val head = gitOutput(sourceRoot, "rev-parse", "HEAD")
-        if (head.first != 0 || head.second != px4DrvPinnedRef) {
-            throw GradleException(
-                "px4_drv HEAD mismatch at $sourceRoot: expected $px4DrvPinnedRef, " +
-                    "found ${head.second.ifBlank { "unavailable" }}"
-            )
-        }
-        if (gitOutput(sourceRoot, "diff", "--quiet").first != 0 ||
-            gitOutput(sourceRoot, "diff", "--cached", "--quiet").first != 0
-        ) {
-            throw GradleException("px4_drv checkout is dirty at $sourceRoot")
-        }
-        val required = listOf(
-            sourceRoot.resolve("fwtool/fwtool.c"),
-            sourceRoot.resolve("fwtool/tsv.c"),
-            sourceRoot.resolve("fwtool/tsv.h"),
-            sourceRoot.resolve("fwtool/crc32.c"),
-            sourceRoot.resolve("fwtool/crc32.h"),
-            sourceRoot.resolve("fwtool/fwinfo.tsv"),
-            sourceRoot.resolve("LICENSE")
-        )
-        required.filterNot { it.isFile }.firstOrNull()?.let {
-            throw GradleException("px4_drv checkout is missing $it")
-        }
-        val ndk = file(androidNdkRoot.get())
-        if (!ndk.isDirectory) throw GradleException("Android NDK not found at $ndk")
-        fun buildAbi(abi: String) {
-            val buildDir = project.rootDir.resolve(".work/build-px4-fwtool-$abi")
-            val destination = nativeOutputDir.dir(abi)
-                .file("libmirakc-px4-fwtool.so").asFile
-            project.exec {
-                workingDir(project.rootDir)
-                commandLine(
-                    "cmake", "-S", px4AdapterSource.asFile.parent,
-                    "-B", buildDir.absolutePath, "-G", "Ninja",
-                    "-DCMAKE_BUILD_TYPE=Release",
-                    "-DCMAKE_TOOLCHAIN_FILE=${ndk.resolve("build/cmake/android.toolchain.cmake")}",
-                    "-DANDROID_ABI=$abi", "-DANDROID_PLATFORM=android-24",
-                    "-DANDROID_STL=c++_static",
-                    "-DMIRAKC_BUILD_PX4_FWTOOL=ON",
-                    "-DPX4_DRV_DIR=${sourceRoot.absolutePath}"
-                )
-            }
-            project.exec {
-                workingDir(project.rootDir)
-                commandLine("ninja", "-C", buildDir.absolutePath, "px4_fwtool")
-            }
-            val built = buildDir.resolve("libmirakc-px4-fwtool.so")
-            if (!built.isFile) throw GradleException("PX4 fwtool build produced no $built")
-            destination.parentFile.mkdirs()
-            built.copyTo(destination, overwrite = true)
-            destination.setExecutable(true, false)
-            project.exec {
-                commandLine(
-                    ndk.resolve("toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip").absolutePath,
-                    "--strip-unneeded", destination.absolutePath
-                )
-            }
-            project.exec {
-                commandLine("/bin/sh", px4AdapterVerifier.asFile.absolutePath, destination.absolutePath, abi)
-            }
-        }
-        buildAbi("arm64-v8a")
-        buildAbi("armeabi-v7a")
-
-        val assetDir = px4FwtoolGeneratedAssets.get().asFile
-        assetDir.deleteRecursively()
-        val packagedAssetDir = assetDir.resolve("px4-fwtool")
-        packagedAssetDir.mkdirs()
-        sourceRoot.resolve("fwtool/fwinfo.tsv").copyTo(packagedAssetDir.resolve("fwinfo.tsv"), overwrite = true)
-        sourceRoot.resolve("LICENSE").copyTo(packagedAssetDir.resolve("LICENSE"), overwrite = true)
-        packagedAssetDir.resolve("SOURCE.txt").writeText(
-            "fwtool from nns779/px4_drv\n" +
-                "commit: $px4DrvPinnedRef\n" +
-                "license: GPL-2.0-only\n"
-        )
-    }
+tasks.named("preparePx4AdapterBinaries") {
+    dependsOn("preparePx4PatchedSource")
 }
 
 val mirakcSourceState = mirakcSourceDir.map { directoryName ->
@@ -580,6 +478,7 @@ val px4Binaries = listOf(
 )
 val px4PinnedRef = "cf38742618bb02db41a95def619fbff50e9eb0f3"
 val px4BuildScript = px4UserlandDir.map { file(it).resolve("scripts/build-android.sh") }
+val px4PinnedPatchSha256 = "c60214256a40b03f3469b5a508f149c12e599282edf103875a2170b816c4b697"
 
 fun gitOutput(directory: java.io.File, vararg args: String): Pair<Int, String> {
     val command = mutableListOf("git", "-C", directory.absolutePath)
@@ -650,11 +549,72 @@ val px4TrackedSourceFiles = px4UserlandDir.map { directoryName ->
     }
 }
 
+val preparePx4PatchedSource = tasks.register("preparePx4PatchedSource") {
+    inputs.property("px4UserlandDir", px4UserlandDir)
+    inputs.property("px4PinnedRef", px4PinnedRef)
+    inputs.files(px4TrackedSourceFiles, px4ConcurrencyPatch)
+    outputs.dir(px4PatchedSourceDir)
+
+    doLast {
+        val userlandDir = file(px4UserlandDir.get())
+        if (!userlandDir.isDirectory) {
+            throw GradleException("px4-userland directory not found at $userlandDir")
+        }
+        val head = gitOutput(userlandDir, "rev-parse", "HEAD")
+        if (head.first != 0 || head.second != px4PinnedRef) {
+            throw GradleException(
+                "px4-userland HEAD mismatch: expected $px4PinnedRef, found ${head.second}"
+            )
+        }
+        if (gitOutput(userlandDir, "diff", "--quiet").first != 0 ||
+            gitOutput(userlandDir, "diff", "--cached", "--quiet").first != 0
+        ) {
+            throw GradleException("px4-userland checkout must be clean before applying DTV patch")
+        }
+        val patch = px4ConcurrencyPatch.asFile
+        val actualPatchHash = MessageDigest.getInstance("SHA-256")
+            .digest(patch.readBytes())
+            .joinToString("") { byte: Byte -> "%02x".format(byte.toInt() and 0xff) }
+        if (actualPatchHash != px4PinnedPatchSha256) {
+            throw GradleException(
+                "px4-userland patch checksum mismatch: expected $px4PinnedPatchSha256, " +
+                    "found $actualPatchHash"
+            )
+        }
+
+        val archive = project.rootDir.resolve(".work/px4-userland-receiver-control.tar")
+        if (archive.exists()) archive.delete()
+        if (px4PatchedSourceDir.exists() && !px4PatchedSourceDir.deleteRecursively()) {
+            throw GradleException("cannot clear generated px4-userland source at $px4PatchedSourceDir")
+        }
+        px4PatchedSourceDir.mkdirs()
+        try {
+            project.exec {
+                commandLine(
+                    "git", "-C", userlandDir.absolutePath, "archive", "--format=tar",
+                    "--output", archive.absolutePath, px4PinnedRef
+                )
+            }
+            project.exec {
+                commandLine("tar", "-xf", archive.absolutePath, "-C", px4PatchedSourceDir.absolutePath)
+            }
+            project.exec {
+                workingDir(px4PatchedSourceDir)
+                commandLine("patch", "--batch", "--forward", "-p1", "-i", patch.absolutePath)
+            }
+        } finally {
+            archive.delete()
+        }
+    }
+}
+
 val preparePx4Binaries = tasks.register("preparePx4Binaries") {
+    dependsOn(preparePx4PatchedSource)
     inputs.property("px4UserlandDir", px4UserlandDir)
     inputs.property("px4PinnedRef", px4PinnedRef)
     inputs.property("px4SourceState", px4SourceState)
     inputs.files(px4BuildScript)
+    inputs.file(px4ConcurrencyPatch)
     inputs.files(px4TrackedSourceFiles)
     outputs.files(px4Binaries)
 
@@ -666,7 +626,7 @@ val preparePx4Binaries = tasks.register("preparePx4Binaries") {
                     "Set -Ppx4UserlandDir=/path/to/px4-userland."
             )
         }
-        val script = userlandDir.resolve("scripts/build-android.sh")
+        val script = px4PatchedSourceDir.resolve("scripts/build-android.sh")
         if (!script.isFile) {
             throw GradleException(
                 "px4-userland build script not found at $script. " +
@@ -713,10 +673,11 @@ val preparePx4Binaries = tasks.register("preparePx4Binaries") {
             val outputDir = project.rootDir.resolve(".work/px4-userland-android-$abi")
             outputDir.mkdirs()
             project.exec {
-                workingDir(userlandDir)
+                workingDir(px4PatchedSourceDir)
                 commandLine("/bin/sh", script.absolutePath, "--abi", abi, "--output", outputDir.absolutePath)
                 environment("ANDROID_NDK_HOME", ndkRoot)
                 environment("ANDROID_ABI", abi)
+                environment("PX4_ANDROID_BUILD_JOBS", "1")
             }
 
             for (binary in listOf("px4d", "px4-ts", "px4ctl")) {
@@ -943,12 +904,12 @@ val apkSourceMetadataMirakcLicenses = apkMetadataLicenseInputs(mirakcSourceDir)
 val apkSourceMetadataMirakcAribLicenses = apkMetadataLicenseInputs(mirakcAribSourceDir)
 val apkSourceMetadataSianoLicenses = apkMetadataLicenseInputs(sianoUserlandDir)
 val apkSourceMetadataPx4Licenses = apkMetadataLicenseInputs(px4UserlandDir)
-val apkSourceMetadataPx4DrvLicenses = apkMetadataLicenseInputs(px4DrvDir)
 val apkSourceMetadataDtvFiles = apkSourceMetadataDtvRoot.map { directoryName ->
     listOf(
         "LICENSE", "mirakc/VERSION", "mirakc/build.gradle.kts",
         "tools/mirakc/generate-apk-metadata.py", "tools/mirakc/audit-apk-metadata.py",
         "tools/mirakc/audit-source.py", "tools/mirakc/build-android.sh",
+        "tools/mirakc/patches/px4-userland-receiver-control-concurrency.patch",
         "tools/mirakc-arib/build-android.sh", "tools/mirakc-arib/bootstrap-autotools.sh",
         "tools/mirakc-arib/android.toolchain.cmake", "tools/mirakc-arib/patches/tsduck-android.patch"
     ).map { relative -> file(directoryName).resolve(relative) }
@@ -974,8 +935,7 @@ val generateApkSourceMetadata = tasks.register("generateApkSourceMetadata") {
         apkSourceMetadataMirakcLicenses,
         apkSourceMetadataMirakcAribLicenses,
         apkSourceMetadataSianoLicenses,
-        apkSourceMetadataPx4Licenses,
-        apkSourceMetadataPx4DrvLicenses
+        apkSourceMetadataPx4Licenses
     )
     inputs.files(apkSourceMetadataLibusb)
     outputs.dir(apkSourceMetadataDir)
@@ -991,7 +951,6 @@ val generateApkSourceMetadata = tasks.register("generateApkSourceMetadata") {
                 "--arib-root", file(mirakcAribSourceDir.get()).absolutePath,
                 "--siano-root", file(sianoUserlandDir.get()).absolutePath,
                 "--px4-root", file(px4UserlandDir.get()).absolutePath,
-                "--px4-drv-root", file(px4DrvDir.get()).absolutePath,
                 "--arib25-root", layout.projectDirectory.dir("src/main/cpp/arib25").asFile.absolutePath,
                 "--libusb-archive", file(apkSourceMetadataLibusb.get()).absolutePath
             )
@@ -1006,7 +965,6 @@ plugins.withId("com.android.application") {
             dependsOn(prepareSianoAdapterBinaries)
             dependsOn(prepareB25FilterBinaries)
             dependsOn(preparePx4AdapterBinaries)
-            dependsOn(preparePx4FwtoolBinaries)
             dependsOn(prepareMirakcAribBinaries)
             dependsOn(preparePx4Binaries)
             dependsOn(prepareMirakcBinary)
@@ -1022,6 +980,8 @@ val releaseKeystore = providers.environmentVariable("KEYSTORE_FILE").orNull
 android {
     namespace = "dev.khronos31.mirakc"
     compileSdk = 34
+    buildFeatures { compose = true }
+    composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
     ndkVersion = configuredNdkVersion
 
     defaultConfig {
@@ -1071,13 +1031,13 @@ android {
         cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" }
     }
 
-    sourceSets.getByName("main").assets.srcDir(px4FwtoolGeneratedAssets)
     sourceSets.getByName("main").assets.srcDir(apkSourceMetadataDir)
 
     packagingOptions {
         doNotStrip("**/*.so")
         jniLibs {
             useLegacyPackaging = true
+            excludes += "**/libmirakc-px4-fwtool.so"
         }
     }
 }
@@ -1085,6 +1045,10 @@ android {
 dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.24")
     implementation(project(":updater"))
-    implementation("androidx.leanback:leanback:1.0.0")
+    implementation(project(":mirakc-ui-contract"))
+    implementation(project(":mirakc-tv-ui"))
+    implementation("androidx.activity:activity-compose:1.9.0")
+    implementation("androidx.compose.runtime:runtime:1.6.8")
+    implementation("androidx.compose.ui:ui:1.6.8")
     testImplementation("junit:junit:4.13.2")
 }

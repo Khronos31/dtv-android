@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Base Leanback TV Theme -->
-    <style name="AppTheme" parent="Theme.Leanback">
+    <!-- Compose TV renderer owns the app surface and navigation. -->
+    <style name="AppTheme" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:windowBackground">@color/tv_bg_dark</item>
         <item name="android:colorBackground">@color/tv_bg_dark</item>
         <item name="android:colorPrimary">@color/tv_rail_bg</item>

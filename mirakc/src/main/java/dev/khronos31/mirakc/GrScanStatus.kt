@@ -19,6 +19,12 @@ internal data class GrScanStatus(
     val isApplicable: Boolean
         get() = state == State.COMPLETE && failedChannels == 0 && foundChannels.isNotEmpty()
 
+    fun asInterrupted(errorCode: String): GrScanStatus = copy(
+        state = State.INTERRUPTED,
+        currentChannel = null,
+        errorCode = errorCode
+    )
+
     fun summary(): String = when (state) {
         State.QUEUED -> "スキャン待機中"
         State.RUNNING -> "探索中: $completed/$total${currentChannel?.let { "（物理ch $it）" } ?: ""}・検出 ${foundChannels.size}ch"
@@ -28,8 +34,45 @@ internal data class GrScanStatus(
         State.INTERRUPTED -> "探索を中断しました。既存設定は維持します"
     }
 
+    fun toFileContents(): String = buildString {
+        append(state.name.lowercase()).append('\n')
+        append(completed).append('\n')
+        append(total).append('\n')
+        append(currentChannel ?: "").append('\n')
+        append(foundChannels.joinToString(",")).append('\n')
+        append(failedChannels).append('\n')
+        append(scanId).append('\n')
+        append(errorCode ?: "NONE").append('\n')
+    }
+
     companion object {
         private const val EXPECTED_TOTAL = 50
+
+        fun queued(scanId: Long): GrScanStatus = GrScanStatus(
+            State.QUEUED, 0, EXPECTED_TOTAL, null, emptyList(), 0, scanId, null
+        )
+
+        fun failed(scanId: Long, errorCode: String): GrScanStatus = GrScanStatus(
+            State.FAILED, 0, EXPECTED_TOTAL, null, emptyList(), 0, scanId, errorCode
+        )
+
+        fun interrupted(scanId: Long): GrScanStatus = GrScanStatus(
+            State.INTERRUPTED, 0, EXPECTED_TOTAL, null, emptyList(), 0, scanId, "CANCELED"
+        )
+
+        /** Retain the last same-request native progress when a running scan is canceled. */
+        fun canceledFromNative(
+            scanId: Long,
+            stoppedStatus: GrScanStatus?,
+            statusBeforeStop: GrScanStatus?
+        ): GrScanStatus {
+            val progress = sequenceOf(stoppedStatus, statusBeforeStop)
+                .filterNotNull()
+                .firstOrNull {
+                    it.scanId == scanId && (it.isRunning || it.state == State.INTERRUPTED)
+                }
+            return progress?.asInterrupted("CANCELED") ?: interrupted(scanId)
+        }
 
         /** Bounded line format written atomically by the pinned mirakc process. */
         fun parse(contents: String): GrScanStatus? {

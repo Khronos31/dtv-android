@@ -1,4 +1,5 @@
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -12,6 +13,7 @@
 #include <vector>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <android/log.h>
 
 #include "arib_std_b25.h"
 #include "b_cas_card.h"
@@ -20,11 +22,129 @@
 #include "px4_receiver_retry.h"
 
 #include <algorithm>
+#include <atomic>
 #include <px4/error.h>
 #include <px4/pcsc_ifd_adapter.h>
 
-extern "C" int b25_stdio_filter_with_card(B_CAS_CARD* bcas);
+using B25InputObserver = void (*)(void*, std::uint64_t);
+extern "C" int b25_stdio_filter_with_card(B_CAS_CARD* bcas,
+                                           std::uint64_t* input_bytes,
+                                           B25InputObserver observer,
+                                           void* observer_context);
 namespace {
+
+constexpr char kScanDiagnosticTag[] = "MirakcGRScan";
+
+bool parse_int(const std::string& text, int* value);
+
+bool is_manual_gr_channel(const std::string& value, int* channel) {
+    return channel != nullptr && parse_int(value, channel) &&
+           *channel >= 13 && *channel <= 62;
+}
+
+const char* scan_attempt_stage(int child_exit_code,
+                               std::uint64_t input_bytes,
+                               std::uint64_t output_bytes) {
+    if (child_exit_code == 4) return "busy";
+    if (child_exit_code == 5) return "px4-timeout";
+    if (child_exit_code == 8) return "stream-integrity";
+    if (child_exit_code != 0) return "px4-ts-error";
+    if (output_bytes != 0U) return "ts-forwarded";
+    if (input_bytes != 0U) return "input-no-output";
+    return "no-input";
+}
+
+std::uint64_t elapsed_since(std::chrono::steady_clock::time_point started) {
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started)
+            .count());
+}
+
+void log_scan_event(const char* stage,
+                    int channel,
+                    int receiver,
+                    int attempt,
+                    std::uint64_t bytes,
+                    std::uint64_t elapsed_ms) {
+    __android_log_print(
+        ANDROID_LOG_INFO, kScanDiagnosticTag,
+        "stage=%s channel=%d receiver=%d attempt=%d bytes=%llu elapsed_ms=%llu",
+        stage, channel, receiver, attempt,
+        static_cast<unsigned long long>(bytes),
+        static_cast<unsigned long long>(elapsed_ms));
+}
+
+struct ScanInputEventContext {
+    int channel;
+    int receiver;
+    int attempt;
+    std::chrono::steady_clock::time_point started;
+    std::atomic<bool>* logged;
+};
+
+void log_scan_event_once(std::atomic<bool>* logged,
+                         const char* stage,
+                         int channel,
+                         int receiver,
+                         int attempt,
+                         std::uint64_t bytes,
+                         std::chrono::steady_clock::time_point started) {
+    if (logged == nullptr) return;
+    bool expected = false;
+    if (!logged->compare_exchange_strong(expected, true, std::memory_order_relaxed)) return;
+    log_scan_event(stage, channel, receiver, attempt, bytes, elapsed_since(started));
+}
+
+void observe_raw_ts(void* opaque, std::uint64_t bytes) {
+    auto* context = static_cast<ScanInputEventContext*>(opaque);
+    if (context == nullptr) return;
+    log_scan_event_once(context->logged, "first-raw-ts", context->channel,
+                        context->receiver, context->attempt, bytes, context->started);
+}
+
+void log_scan_child_exit(int channel,
+                         int receiver,
+                         int attempt,
+                         int child_exit_code,
+                         int b25_result,
+                         int filter_result,
+                         bool card_error,
+                         std::uint64_t input_bytes,
+                         std::uint64_t output_bytes,
+                         std::uint64_t elapsed_ms) {
+    __android_log_print(
+        ANDROID_LOG_INFO, kScanDiagnosticTag,
+        "stage=child-exit channel=%d receiver=%d attempt=%d child_exitcode=%d b25_result=%d filter_result=%d card_error=%d input_bytes=%llu output_bytes=%llu elapsed_ms=%llu",
+        channel, receiver, attempt, child_exit_code, b25_result, filter_result,
+        card_error ? 1 : 0,
+        static_cast<unsigned long long>(input_bytes),
+        static_cast<unsigned long long>(output_bytes),
+        static_cast<unsigned long long>(elapsed_ms));
+}
+
+void log_scan_result(int channel,
+                     int receiver,
+                     int attempts,
+                     const char* stage,
+                     int child_exit_code,
+                     int b25_result,
+                     int filter_result,
+                     std::uint64_t input_bytes,
+                     std::uint64_t output_bytes,
+                     std::uint64_t elapsed_ms,
+                     int busy_retries,
+                     int empty_retries,
+                     bool card_error) {
+    __android_log_print(
+        ANDROID_LOG_INFO, kScanDiagnosticTag,
+        "stage=%s channel=%d receiver=%d attempts=%d child_exitcode=%d b25_result=%d filter_result=%d input_bytes=%llu output_bytes=%llu elapsed_ms=%llu busy_retries=%d empty_retries=%d card_error=%d",
+        stage, channel, receiver, attempts, child_exit_code, b25_result, filter_result,
+        static_cast<unsigned long long>(input_bytes),
+        static_cast<unsigned long long>(output_bytes),
+        static_cast<unsigned long long>(elapsed_ms), busy_retries, empty_retries,
+        card_error ? 1 : 0);
+}
 
 bool consume_option(int argc, char** argv, int* index, const char* option, std::string* value) {
     const std::string argument(argv[*index]);
@@ -142,11 +262,20 @@ void card_close(void* opaque) {
     }
 }
 
-int pass_through(int input_fd) {
+int pass_through(int input_fd,
+                 std::uint64_t* input_bytes,
+                 B25InputObserver observer,
+                 void* observer_context) {
     std::uint8_t buffer[64 * 1024];
     while (true) {
         const ssize_t count = read(input_fd, buffer, sizeof(buffer));
         if (count <= 0) break;
+        if (input_bytes != nullptr) {
+            *input_bytes += static_cast<std::uint64_t>(count);
+        }
+        if (observer != nullptr && observer_context != nullptr) {
+            observer(observer_context, static_cast<std::uint64_t>(count));
+        }
         std::size_t offset = 0;
         while (offset < static_cast<std::size_t>(count)) {
             const ssize_t written = write(STDOUT_FILENO, buffer + offset,
@@ -254,7 +383,7 @@ int main(int argc, char** argv) {
     }
     const std::optional<px4_adapter::ReceiverMap> parsed_receiver_map =
         px4_adapter::receiver_map_for_model(model_text);
-    if (!parsed_receiver_map.has_value()) return fail("--model must be q3u4, mlt5, m1ur or s1ur");
+    if (!parsed_receiver_map.has_value()) return fail("--model is not a supported PX4 profile");
     const px4_adapter::ReceiverMap receiver_map = *parsed_receiver_map;
     if (!px4_adapter::base_serial_matches_model(receiver_map, base_serial)) {
         return fail("--device serial length does not match --model");
@@ -310,6 +439,20 @@ int main(int argc, char** argv) {
     // detected and retried.
     const int real_stdout = dup(STDOUT_FILENO);
     if (real_stdout < 0) return fail("cannot dup stdout");
+    int scan_channel = 0;
+    const bool log_scan = tune_plan.system == px4_adapter::BroadcastSystem::kIsdbT &&
+                          is_manual_gr_channel(channel_text, &scan_channel);
+    const auto scan_started = std::chrono::steady_clock::now();
+    std::atomic<bool> raw_ts_logged{false};
+    std::atomic<bool> downstream_ts_logged{false};
+    std::uint64_t input_bytes_total = 0U;
+    std::uint64_t output_bytes_total = 0U;
+    int busy_retries = 0;
+    int empty_retries = 0;
+    bool card_error_seen = false;
+    if (log_scan) {
+        log_scan_event("started", scan_channel, receiver, 0, 0U, 0U);
+    }
 
     // The previous mirakc tuner session on the same receiver can still hold
     // the px4d lease for a short while after mirakc stops it.  px4-ts then
@@ -370,6 +513,12 @@ int main(int argc, char** argv) {
                         close(count_pipe[0]);
                         return;
                     }
+                    if (log_scan) {
+                        log_scan_event_once(
+                            &downstream_ts_logged, "first-downstream-ts", scan_channel,
+                            receiver, attempt + 1,
+                            static_cast<std::uint64_t>(written), scan_started);
+                    }
                     offset += static_cast<std::size_t>(written);
                     forwarded += static_cast<std::uint64_t>(written);
                 }
@@ -387,14 +536,25 @@ int main(int argc, char** argv) {
         close(count_pipe[1]);
 
         int exit_code = 1;
+        int child_exit_code = 1;
+        int filter_result = 0;
+        int b25_result = -1;
+        std::uint64_t input_bytes = 0U;
+        bool card_error = false;
+        ScanInputEventContext input_event_context{
+            scan_channel, receiver, attempt + 1, scan_started,
+            log_scan ? &raw_ts_logged : nullptr};
         auto client = factory.connect(endpoint);
         if (!client) {
-            const int result = pass_through(output_pipe[0]);
+            filter_result = pass_through(
+                output_pipe[0], &input_bytes, log_scan ? observe_raw_ts : nullptr,
+                log_scan ? &input_event_context : nullptr);
             close(output_pipe[0]);
             int child_status = 0;
             const int reap_result = reap_child(child, &child_status);
             if (reap_result < 0) return 1;
-            exit_code = result != 0 ? result : child_result(child_status);
+            child_exit_code = child_result(child_status);
+            exit_code = filter_result != 0 ? filter_result : child_exit_code;
         } else {
             Px4CardContext card;
             card.client = std::move(client.value());
@@ -416,7 +576,11 @@ int main(int argc, char** argv) {
                 }
                 close(output_pipe[0]);
             }
-            const int result = b25_stdio_filter_with_card(bcas);
+            b25_result = b25_stdio_filter_with_card(
+                bcas, &input_bytes, log_scan ? observe_raw_ts : nullptr,
+                log_scan ? &input_event_context : nullptr);
+            filter_result = b25_result;
+            card_error = card.failed;
             if (bcas == nullptr) card_close(&card);
             // Closing the duplicated read end is required before waiting:
             // otherwise a failed downstream write can leave px4-ts blocked on
@@ -425,11 +589,19 @@ int main(int argc, char** argv) {
             int child_status = 0;
             const int reap_result = reap_child(child, &child_status);
             if (reap_result < 0) return 1;
-            exit_code = result != 0 ? result : (card.failed ? 1 : child_result(child_status));
+            child_exit_code = child_result(child_status);
+            exit_code = filter_result != 0 ? filter_result
+                                           : (card.failed ? 1 : child_exit_code);
         }
 
         close(STDOUT_FILENO);
         copier.join();
+        if (log_scan) {
+            log_scan_child_exit(scan_channel, receiver, attempt + 1,
+                                child_exit_code, b25_result, filter_result,
+                                card_error, input_bytes, forwarded,
+                                elapsed_since(scan_started));
+        }
         // Keep fds 0 and 1 valid so the next attempt's pipe2 never returns
         // STDIN or STDOUT as a pipe endpoint.
         const int null_fd = open("/dev/null", O_RDWR);
@@ -439,8 +611,28 @@ int main(int argc, char** argv) {
             if (null_fd > STDOUT_FILENO) close(null_fd);
         }
 
+        input_bytes_total += input_bytes;
+        output_bytes_total += forwarded;
+        card_error_seen = card_error_seen || card_error;
         const bool tune_failed = exit_code == 0 && forwarded == 0;
-        if ((exit_code != 4 && !tune_failed) || attempt == 49) return exit_code;
+        const bool busy = exit_code == 4;
+        const bool exhausted = attempt == 49 && (busy || tune_failed);
+        const bool finished = (exit_code != 4 && !tune_failed) || attempt == 49;
+        if (busy && !exhausted) ++busy_retries;
+        if (tune_failed && !exhausted) ++empty_retries;
+        if (finished && log_scan) {
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - scan_started).count();
+            log_scan_result(
+                scan_channel, receiver, attempt + 1,
+                scan_attempt_stage(child_exit_code, input_bytes_total,
+                                   output_bytes_total),
+                child_exit_code, b25_result, filter_result,
+                input_bytes_total, output_bytes_total,
+                static_cast<std::uint64_t>(elapsed), busy_retries, empty_retries,
+                card_error_seen);
+        }
+        if (finished) return exit_code;
         usleep(500 * 1000);
     }
     return 1;

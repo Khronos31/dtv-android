@@ -27,6 +27,11 @@ CARGO_VENDOR_CONFIG = (
 )
 SWAGGER_UI_ARCHIVE = "third_party/swagger-ui/swagger-ui-5.17.14.zip"
 SWAGGER_UI_ARCHIVE_SHA256 = "481244d0812097b11fbaeef79f71d942b171617f9c9f9514e63acbe13e71ccdc"
+PX4_ANDROID_PATCH_PATH = (
+    "sources/dtv-android/tools/mirakc/patches/"
+    "px4-userland-receiver-control-concurrency.patch"
+)
+PX4_ANDROID_PATCH_SHA256 = "c60214256a40b03f3469b5a508f149c12e599282edf103875a2170b816c4b697"
 
 
 def fail(message: str) -> None:
@@ -126,6 +131,11 @@ EXPECTED = {
             "sources/dtv-android/tools/mirakc/test-source-package.sh",
             "sources/dtv-android/tools/mirakc/test-source-native-rebuild.sh",
             "sources/dtv-android/tools/mirakc/build-android.sh",
+            "sources/dtv-android/mirakc-ui-contract/build.gradle.kts",
+            "sources/dtv-android/mirakc-ui-contract/src/main/kotlin/dev/khronos31/mirakc/ui/contract/MirakcUiContract.kt",
+            "sources/dtv-android/mirakc-tv-ui/build.gradle.kts",
+            "sources/dtv-android/mirakc-tv-ui/src/main/java/dev/khronos31/mirakc/ui/MirakcTvScreen.kt",
+            PX4_ANDROID_PATCH_PATH,
             "sources/dtv-android/tools/mirakc-arib/build-android.sh",
             "sources/dtv-android/rust-toolchain.toml",
         ),
@@ -425,6 +435,17 @@ def audit_source_archive(path: Path, expected_dtv_commit: str | None = None) -> 
     for required_path in EXPECTED["dtv-android"]["required_paths"]:
         if required_path not in members:
             fail(f"required DTV packaging path is missing: {required_path}")
+    px4_component = by_name["px4-userland"]
+    expected_px4_patch = {
+        "path": PX4_ANDROID_PATCH_PATH,
+        "sha256": PX4_ANDROID_PATCH_SHA256,
+        "upstream_commit": EXPECTED["px4-userland"]["commit"],
+    }
+    if px4_component.get("android_build_patch") != expected_px4_patch:
+        fail("px4-userland Android patch provenance is missing or mismatched")
+    if PX4_ANDROID_PATCH_PATH not in members or \
+            sha256_bytes(member_bytes(path, PX4_ANDROID_PATCH_PATH)) != PX4_ANDROID_PATCH_SHA256:
+        fail("px4-userland Android patch is missing or mismatched")
     for item in inventory:
         if not isinstance(item, dict) or item.get("sha256") != sha256_bytes(member_bytes(path, item.get("path", ""))):
             fail("license inventory digest mismatch")

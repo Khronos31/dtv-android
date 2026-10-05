@@ -13,14 +13,25 @@ namespace px4_adapter {
 
 inline std::optional<ReceiverMap> receiver_map_for_model(std::string_view model) {
     if (model == "q3u4") return ReceiverMap::kPxQ3u4;
+    if (model == "w3u4") return ReceiverMap::kPxW3u4;
     if (model == "mlt5") return ReceiverMap::kPxMlt5;
+    if (model == "w3pe4") return ReceiverMap::kPxW3pe4;
+    if (model == "w3pe5") return ReceiverMap::kPxW3pe5;
+    if (model == "q3pe4") return ReceiverMap::kPxQ3pe4;
+    if (model == "q3pe5") return ReceiverMap::kPxQ3pe5;
+    if (model == "mlt8pe3") return ReceiverMap::kPxMlt8pe3;
+    if (model == "mlt8pe5") return ReceiverMap::kPxMlt8pe5;
+    if (model == "dtv02a4tsp") return ReceiverMap::kDtv02a4tsP;
     if (model == "m1ur") return ReceiverMap::kPxM1ur;
     if (model == "s1ur") return ReceiverMap::kPxS1ur;
+    if (model == "dtv03a1tu") return ReceiverMap::kDtv03a1tu;
+    if (model == "dtv021t1su") return ReceiverMap::kDtv021t1sU;
+    if (model == "dtv02a1t1su") return ReceiverMap::kDtv02a1t1sU;
     return std::nullopt;
 }
 
 inline bool base_serial_matches_model(ReceiverMap model, std::string_view serial) {
-    const std::size_t expected_length = model == ReceiverMap::kPxQ3u4 ? 14U : 15U;
+    const std::size_t expected_length = bridge_count_for_model(model) == 2 ? 14U : 15U;
     if (serial.size() != expected_length) return false;
     return std::all_of(serial.begin(), serial.end(), [](char value) {
         return value >= '0' && value <= '9';
@@ -28,11 +39,14 @@ inline bool base_serial_matches_model(ReceiverMap model, std::string_view serial
 }
 
 inline std::vector<int> receiver_pool(ReceiverMap model, BroadcastSystem system) {
-    if (model == ReceiverMap::kPxMlt5) return {0, 1, 2, 3, 4};
-    if (model == ReceiverMap::kPxM1ur || model == ReceiverMap::kPxS1ur) return {0};
-    return system == BroadcastSystem::kIsdbT
-        ? std::vector<int>{2, 3, 6, 7}
-        : std::vector<int>{0, 1, 4, 5};
+    std::vector<int> pool;
+    for (int receiver = 0; receiver < receiver_count_for_model(model); ++receiver) {
+        const bool supported = system == BroadcastSystem::kIsdbT
+            ? receiver_supports_terrestrial(model, receiver)
+            : receiver_supports_satellite(model, receiver);
+        if (supported) pool.push_back(receiver);
+    }
+    return pool;
 }
 
 inline std::optional<int> receiver_for_attempt(
@@ -40,15 +54,16 @@ inline std::optional<int> receiver_for_attempt(
     BroadcastSystem system,
     int selected_receiver,
     std::size_t attempt) {
+    (void)attempt;
     const std::vector<int> pool = receiver_pool(model, system);
     if (std::find(pool.begin(), pool.end(), selected_receiver) == pool.end()) {
         return std::nullopt;
     }
-    std::vector<int> order{selected_receiver};
-    for (const int receiver : pool) {
-        if (receiver != selected_receiver) order.push_back(receiver);
-    }
-    return order[attempt % order.size()];
+    // `selected_receiver` belongs to one mirakc TunerManager lease. Retrying
+    // its child on another physical receiver would bypass that lease and can
+    // contend with a different logical tuner. Retries may wait for this same
+    // receiver to become available, but must never retarget another lease.
+    return selected_receiver;
 }
 
 // This mutates the exact argv storage passed to execv by px4_adapter.cpp.

@@ -180,6 +180,21 @@ internal class TerrestrialChannelSettingsStore(private val values: StringSetting
         values.put(PENDING_KEY, TerrestrialChannelSettings.serialize(channels))
     }
 
+    /** Save advanced edits as the effective settings in one durable transaction. */
+    fun savePreparedChannels(input: String) {
+        require(isSetupPrepared()) { "channel setup must complete before editing channels" }
+        val channels = TerrestrialChannelSettings.parseInput(input)
+        val serialized = TerrestrialChannelSettings.serialize(channels)
+        values.transaction(
+            mapOf(
+                ACTIVE_KEY to serialized,
+                LAST_KNOWN_GOOD_KEY to serialized,
+                PENDING_KEY to null,
+                APPLYING_KEY to null
+            )
+        )
+    }
+
     /** Atomically stage one complete scan result, and never apply it twice. */
     fun applyScanResult(scanId: Long, channelNumbers: List<Int>): Boolean {
         require(scanId > 0) { "scan id must be positive" }
@@ -196,6 +211,41 @@ internal class TerrestrialChannelSettingsStore(private val values: StringSetting
         )
         return true
     }
+
+    /** Atomically commits a successful setup scan as the effective configuration. */
+    fun completeScan(scanId: Long, channelNumbers: List<Int>, allowEmptySetup: Boolean): Boolean {
+        require(scanId > 0) { "scan id must be positive" }
+        require(channelNumbers.all { it in 13..62 }) { "scan result contains an invalid physical channel" }
+        if (values.get(LAST_APPLIED_SCAN_KEY) == scanId.toString()) return false
+        val wasPrepared = isSetupPrepared()
+        val empty = channelNumbers.isEmpty()
+        if (empty && wasPrepared) {
+            values.transaction(mapOf(LAST_APPLIED_SCAN_KEY to scanId.toString()))
+            return true
+        }
+        if (empty && !allowEmptySetup) return false
+        val channels = channelNumbers.distinct().sorted().map { TerrestrialChannel(it, "GR-$it") }
+        val changes = linkedMapOf<String, String?>(
+            LAST_APPLIED_SCAN_KEY to scanId.toString(),
+            SETUP_PREPARED_KEY to "true",
+            PENDING_KEY to null,
+            APPLYING_KEY to null
+        )
+        if (!empty || !wasPrepared) {
+            changes[ACTIVE_KEY] = TerrestrialChannelSettings.serialize(channels)
+            changes[LAST_KNOWN_GOOD_KEY] = if (wasPrepared) {
+                TerrestrialChannelSettings.serialize(snapshot().active.channels)
+            } else {
+                // The first committed result is the recovery fallback too;
+                // a malformed active value must never silently restore Kanto.
+                TerrestrialChannelSettings.serialize(channels)
+            }
+        }
+        values.transaction(changes)
+        return true
+    }
+
+    fun isSetupPrepared(): Boolean = values.get(SETUP_PREPARED_KEY) == "true"
 
     fun activatePending() {
         val pendingRaw = values.get(PENDING_KEY) ?: throw IllegalStateException("no pending terrestrial settings")
@@ -255,8 +305,15 @@ internal class TerrestrialChannelSettingsStore(private val values: StringSetting
         const val LAST_KNOWN_GOOD_KEY = "terrestrial_channels_last_known_good"
         const val APPLYING_KEY = "terrestrial_channels_apply_in_progress"
         const val LAST_APPLIED_SCAN_KEY = "terrestrial_channels_last_applied_scan"
+        const val SETUP_PREPARED_KEY = "terrestrial_setup_prepared"
     }
 }
+
+/** Persist a complete non-empty GR scan once, leaving activation to the explicit restart action. */
+internal fun registerCompletedGrScan(
+    settings: TerrestrialChannelSettingsStore,
+    status: GrScanStatus
+): Boolean = status.isApplicable && settings.applyScanResult(status.scanId, status.foundChannels)
 
 /**
  * Select the value shown in the editor without making an invalid pending value

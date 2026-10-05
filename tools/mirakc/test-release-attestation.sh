@@ -61,9 +61,9 @@ with tempfile.TemporaryDirectory(prefix="mirakc-release-attestation-") as tempor
         "candidate": {"build": {"kind": "candidate", "candidate_run_id": "123", "git_ref": "main", "git_head": "a" * 40, "version": "0.3.3", "unsigned_apk_sha256": "f" * 64}, "signed_apk_sha256": candidate_hash, "certificate_sha256": module.CERT},
     }))
     (directory / "candidate-info.txt").write_text("kind=candidate\ncandidate_run_id=123\ngit_ref=main\ngit_head=" + "a" * 40 + "\nversion=0.3.3\nunsigned_apk_sha256=" + "f" * 64 + "\n")
-    result = module.verify_inputs(candidate, build_info, "a" * 40)
+    result = module.verify_inputs(candidate, build_info, "a" * 40, "0.3.3")
     assert module.parse_message(result["message"]) == result["values"]
-    result = module.verify_inputs(candidate, build_info, "b" * 40)
+    result = module.verify_inputs(candidate, build_info, "b" * 40, "0.3.3")
     assert result["values"]["candidate_git_head"] == "a" * 40
     stale_build_info = directory / "stale-BUILD_INFO.json"
     stale_build_info.write_text(json.dumps({
@@ -72,7 +72,7 @@ with tempfile.TemporaryDirectory(prefix="mirakc-release-attestation-") as tempor
         "unknown": {"build": {"kind": "unknown", "version": "0.3.3"}, "signed_apk_sha256": "c" * 64, "certificate_sha256": module.CERT},
     }))
     try:
-        module.verify_inputs(candidate, stale_build_info, "a" * 40)
+        module.verify_inputs(candidate, stale_build_info, "a" * 40, "0.3.3")
     except module.AttestationError:
         pass
     else:
@@ -84,13 +84,13 @@ with tempfile.TemporaryDirectory(prefix="mirakc-release-attestation-") as tempor
     (artifact / "SHA256SUMS").write_text(
         f"{candidate_hash}  mirakc-signed-candidate.apk\n"
     )
-    checked = artifact_module.verify(artifact, "a" * 40, "123")
+    checked = artifact_module.verify(artifact, "a" * 40, "123", "0.3.3")
     assert checked["candidate_apk_sha256"] == candidate_hash
     combined_data = json.loads((artifact / "BUILD_INFO.json").read_text())
     combined_data["candidate"]["build"]["git_head"] = "b" * 40
     (artifact / "BUILD_INFO.json").write_text(json.dumps(combined_data))
     try:
-        artifact_module.verify(artifact, "a" * 40, "123")
+        artifact_module.verify(artifact, "a" * 40, "123", "0.3.3")
     except artifact_module.ArtifactError:
         pass
     else:
@@ -98,11 +98,67 @@ with tempfile.TemporaryDirectory(prefix="mirakc-release-attestation-") as tempor
     (artifact / "BUILD_INFO.json").write_text(build_info.read_text())
     (artifact / "extra").write_text("reject")
     try:
-        artifact_module.verify(artifact, "a" * 40, "123")
+        artifact_module.verify(artifact, "a" * 40, "123", "0.3.3")
     except artifact_module.ArtifactError:
         pass
     else:
         raise AssertionError("extra artifact was accepted")
+
+    new_candidate = directory / "candidate-040.apk"
+    new_candidate.write_bytes(b"candidate-040")
+    new_candidate_hash = sha256(new_candidate.read_bytes()).hexdigest()
+    new_build = {
+        "kind": "candidate",
+        "candidate_run_id": "456",
+        "git_ref": "release/0.4.0",
+        "git_head": "c" * 40,
+        "version": "0.4.0",
+        "px4_userland_ref": artifact_module.PX4_USERLAND_REF,
+        "px4_userland_patch_sha256": artifact_module.PX4_USERLAND_PATCH_SHA256,
+        "unsigned_apk_sha256": "e" * 64,
+    }
+    new_build_info = directory / "BUILD_INFO-040.json"
+    new_build_info.write_text(json.dumps({
+        "schema": 1,
+        "candidate": {
+            "build": new_build,
+            "signed_apk_sha256": new_candidate_hash,
+            "certificate_sha256": module.CERT,
+        },
+    }))
+    (directory / "candidate-info-040.txt").write_text(
+        "kind=candidate\ncandidate_run_id=456\ngit_ref=release/0.4.0\n"
+        + "git_head=" + "c" * 40 + "\nversion=0.4.0\n"
+        + "px4_userland_ref=" + artifact_module.PX4_USERLAND_REF + "\n"
+        + "px4_userland_patch_sha256=" + artifact_module.PX4_USERLAND_PATCH_SHA256 + "\n"
+        + "unsigned_apk_sha256=" + "e" * 64 + "\n"
+    )
+    new_attestation = module.verify_inputs(
+        new_candidate, new_build_info, "c" * 40, "0.4.0"
+    )
+    assert new_attestation["values"]["candidate_run_id"] == "456"
+    new_artifact = directory / "artifact-040"
+    new_artifact.mkdir()
+    for source, name in (
+        (new_candidate, "mirakc-signed-candidate.apk"),
+        (directory / "candidate-info-040.txt", "CANDIDATE_BUILD_INFO.txt"),
+        (new_build_info, "BUILD_INFO.json"),
+    ):
+        (new_artifact / name).write_bytes(source.read_bytes())
+    (new_artifact / "SHA256SUMS").write_text(
+        f"{new_candidate_hash}  mirakc-signed-candidate.apk\n"
+    )
+    checked = artifact_module.verify(new_artifact, "c" * 40, "456", "0.4.0")
+    assert checked["candidate_apk_sha256"] == new_candidate_hash
+    bad_build = json.loads(new_build_info.read_text())
+    bad_build["candidate"]["build"]["px4_userland_patch_sha256"] = "0" * 64
+    (new_artifact / "BUILD_INFO.json").write_text(json.dumps(bad_build))
+    try:
+        artifact_module.verify(new_artifact, "c" * 40, "456", "0.4.0")
+    except artifact_module.ArtifactError:
+        pass
+    else:
+        raise AssertionError("0.4.0 artifact with the wrong PX4 patch provenance was accepted")
 
 print("release attestation host self-test: PASS")
 PY

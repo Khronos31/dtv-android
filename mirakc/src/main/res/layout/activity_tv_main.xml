@@ -532,7 +532,7 @@
                 android:layout_marginTop="18dp"
                 android:layout_marginBottom="16dp" />
 
-            <!-- About Item 1: Application Version -->
+            <!-- About Item: Application Version -->
             <LinearLayout
                 android:id="@+id/card_about_app_version"
                 android:layout_width="match_parent"
@@ -544,7 +544,8 @@
                 android:paddingHorizontal="@dimen/tv_card_padding_horizontal"
                 android:paddingVertical="@dimen/tv_card_padding_vertical"
                 android:layout_marginBottom="@dimen/tv_card_margin_bottom"
-                android:focusable="false">
+                android:focusable="true"
+                android:clickable="false">
 
                 <TextView
                     android:id="@+id/about_app_version_label"
@@ -575,93 +576,7 @@
                 </LinearLayout>
             </LinearLayout>
 
-            <!-- About Item 2: Build Number -->
-            <LinearLayout
-                android:id="@+id/card_about_build_number"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:minHeight="@dimen/tv_card_min_height"
-                android:orientation="horizontal"
-                android:gravity="center_vertical"
-                android:background="@drawable/card_background"
-                android:paddingHorizontal="@dimen/tv_card_padding_horizontal"
-                android:paddingVertical="@dimen/tv_card_padding_vertical"
-                android:layout_marginBottom="@dimen/tv_card_margin_bottom"
-                android:focusable="false">
-
-                <TextView
-                    android:id="@+id/about_build_number_label"
-                    android:layout_width="@dimen/tv_card_title_width"
-                    android:layout_height="wrap_content"
-                    android:text="@string/about_build_number_title"
-                    android:textSize="@dimen/tv_text_card_title"
-                    android:textStyle="bold"
-                    android:textColor="@color/tv_text_primary"
-                    android:fontFamily="sans-serif-medium" />
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical"
-                    android:gravity="center_vertical"
-                    android:paddingStart="16dp"
-                    android:paddingEnd="16dp">
-
-                    <TextView
-                        android:id="@+id/about_build_number"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:textSize="@dimen/tv_text_card_summary"
-                        android:textColor="@color/tv_text_secondary"
-                        android:fontFamily="sans-serif" />
-                </LinearLayout>
-            </LinearLayout>
-
-            <!-- About Item 3: Source Commit -->
-            <LinearLayout
-                android:id="@+id/card_about_source_commit"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:minHeight="@dimen/tv_card_min_height"
-                android:orientation="horizontal"
-                android:gravity="center_vertical"
-                android:background="@drawable/card_background"
-                android:paddingHorizontal="@dimen/tv_card_padding_horizontal"
-                android:paddingVertical="@dimen/tv_card_padding_vertical"
-                android:layout_marginBottom="@dimen/tv_card_margin_bottom"
-                android:focusable="false">
-
-                <TextView
-                    android:id="@+id/about_source_commit_label"
-                    android:layout_width="@dimen/tv_card_title_width"
-                    android:layout_height="wrap_content"
-                    android:text="@string/about_source_commit_title"
-                    android:textSize="@dimen/tv_text_card_title"
-                    android:textStyle="bold"
-                    android:textColor="@color/tv_text_primary"
-                    android:fontFamily="sans-serif-medium" />
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical"
-                    android:gravity="center_vertical"
-                    android:paddingStart="16dp"
-                    android:paddingEnd="16dp">
-
-                    <TextView
-                        android:id="@+id/about_source_commit"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:textSize="@dimen/tv_text_card_summary"
-                        android:textColor="@color/tv_text_secondary"
-                        android:fontFamily="sans-serif" />
-                </LinearLayout>
-            </LinearLayout>
-
-            <!-- About Item 4: Bundled mirakc Version -->
+            <!-- About Item: Bundled mirakc Version -->
             <LinearLayout
                 android:id="@+id/card_about_mirakc_version"
                 android:layout_width="match_parent"
@@ -673,7 +588,8 @@
                 android:paddingHorizontal="@dimen/tv_card_padding_horizontal"
                 android:paddingVertical="@dimen/tv_card_padding_vertical"
                 android:layout_marginBottom="@dimen/tv_card_margin_bottom"
-                android:focusable="false">
+                android:focusable="true"
+                android:clickable="false">
 
                 <TextView
                     android:id="@+id/about_mirakc_version_label"
@@ -704,7 +620,7 @@
                 </LinearLayout>
             </LinearLayout>
 
-            <!-- About Item 5: Bundled Driver Versions -->
+            <!-- About Item: Bundled Driver Versions -->
             <LinearLayout
                 android:id="@+id/card_about_driver_versions"
                 android:layout_width="match_parent"
@@ -716,7 +632,8 @@
                 android:paddingHorizontal="@dimen/tv_card_padding_horizontal"
                 android:paddingVertical="@dimen/tv_card_padding_vertical"
                 android:layout_marginBottom="@dimen/tv_card_margin_bottom"
-                android:focusable="false">
+                android:focusable="true"
+                android:clickable="false">
 
                 <TextView
                     android:id="@+id/about_driver_versions_label"
@@ -747,7 +664,7 @@
                 </LinearLayout>
             </LinearLayout>
 
-            <!-- About Item 6: Focusable Licenses Row -->
+            <!-- About Item: Focusable Licenses Row -->
             <LinearLayout
                 android:id="@+id/card_about_licenses"
                 android:layout_width="match_parent"
@@ -792,7 +709,7 @@
                 </LinearLayout>
             </LinearLayout>
 
-            <!-- About Item 7: Focusable GitHub Source Row -->
+            <!-- About Item: Focusable GitHub Source Row -->
             <LinearLayout
                 android:id="@+id/card_about_github"
                 android:layout_width="match_parent"
@@ -805,7 +722,7 @@
                 android:paddingVertical="@dimen/tv_card_padding_vertical"
                 android:layout_marginBottom="@dimen/tv_card_margin_bottom"
                 android:focusable="true"
-                android:clickable="true">
+                android:clickable="false">
 
                 <TextView
                     android:id="@+id/about_github_title"

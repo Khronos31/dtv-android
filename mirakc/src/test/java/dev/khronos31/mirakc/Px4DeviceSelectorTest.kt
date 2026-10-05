@@ -187,6 +187,106 @@ class Px4DeviceSelectorTest {
             mlt5.adapterArguments(4))
     }
 
+    @Test
+    fun everyPinnedPx4ProductIdMapsToItsExactEnclosureAndReceiverProfile() {
+        val expectedProducts = mapOf(
+            0x084a to Px4DeviceModel.Q3U4,
+            0x083f to Px4DeviceModel.W3U4,
+            0x024e to Px4DeviceModel.MLT5,
+            0x924e to Px4DeviceModel.MLT5,
+            0x023f to Px4DeviceModel.W3PE4,
+            0x073f to Px4DeviceModel.W3PE5,
+            0x024a to Px4DeviceModel.Q3PE4,
+            0x074a to Px4DeviceModel.Q3PE5,
+            0x0252 to Px4DeviceModel.MLT8PE3,
+            0x0253 to Px4DeviceModel.MLT8PE5,
+            0x0254 to Px4DeviceModel.DTV02A4TSP,
+            0x0854 to Px4DeviceModel.M1UR,
+            0x0855 to Px4DeviceModel.S1UR,
+            0x0052 to Px4DeviceModel.DTV03A1TU,
+            0x004b to Px4DeviceModel.DTV021T1SU,
+            0x084b to Px4DeviceModel.DTV02A1T1SU
+        )
+        val expectedProductIds = expectedProducts.keys
+        expectedProductIds.forEach { productId ->
+            assertEquals(expectedProducts[productId], Px4DeviceSelector.modelForProductId(productId))
+        }
+
+        assertEquals(expectedProductIds, Px4DeviceModel.entries.flatMap { it.productIds }.toSet())
+        assertNull(Px4DeviceSelector.modelForProductId(0x7777))
+
+        val profileCases = listOf(
+            Px4DeviceModel.Q3U4 to (2 to (8 to listOf(false to true, false to true, true to false,
+                true to false, false to true, false to true, true to false, true to false))),
+            Px4DeviceModel.Q3PE4 to (2 to (8 to listOf(false to true, false to true, true to false,
+                true to false, false to true, false to true, true to false, true to false))),
+            Px4DeviceModel.Q3PE5 to (2 to (8 to listOf(false to true, false to true, true to false,
+                true to false, false to true, false to true, true to false, true to false))),
+            Px4DeviceModel.W3U4 to (1 to (4 to listOf(false to true, false to true, true to false, true to false))),
+            Px4DeviceModel.W3PE4 to (1 to (4 to listOf(false to true, false to true, true to false, true to false))),
+            Px4DeviceModel.W3PE5 to (1 to (4 to listOf(false to true, false to true, true to false, true to false))),
+            Px4DeviceModel.MLT5 to (1 to (5 to List(5) { true to true })),
+            Px4DeviceModel.MLT8PE3 to (1 to (3 to List(3) { true to true })),
+            Px4DeviceModel.MLT8PE5 to (1 to (5 to List(5) { true to true })),
+            Px4DeviceModel.DTV02A4TSP to (1 to (4 to List(4) { true to true })),
+            Px4DeviceModel.M1UR to (1 to (1 to listOf(true to true))),
+            Px4DeviceModel.S1UR to (1 to (1 to listOf(true to false))),
+            Px4DeviceModel.DTV03A1TU to (1 to (1 to listOf(true to false))),
+            Px4DeviceModel.DTV021T1SU to (1 to (1 to listOf(true to true))),
+            Px4DeviceModel.DTV02A1T1SU to (1 to (1 to listOf(true to true)))
+        ).toMap()
+        assertEquals(Px4DeviceModel.entries.toSet(), profileCases.keys)
+        profileCases.forEach { (model, shape) ->
+            val (bridgeCount, receiverDetails) = shape
+            val (receiverCount, expectedCapabilities) = receiverDetails
+            assertEquals(bridgeCount, model.bridgeCount)
+            assertEquals(receiverCount, model.receiverCount)
+            assertEquals(expectedCapabilities.size, receiverCount)
+            expectedCapabilities.forEachIndexed { receiver, (terrestrial, satellite) ->
+                val actual = model.capabilitiesFor(receiver)
+                assertEquals(terrestrial to satellite, actual?.let { it.terrestrial to it.satellite })
+            }
+            assertNull(model.capabilitiesFor(receiverCount))
+            assertNull(model.capabilitiesFor(-1))
+        }
+
+        val identities = Px4DeviceModel.entries.flatMapIndexed { index, model ->
+            val base = "%014d".format(index + 1)
+            val serial = if (model.bridgeCount == 2) null else "%015d".format(index + 100)
+            if (model.bridgeCount == 2) {
+                listOf(
+                    identity("${model.adapterArgument}-1", "${base}1", model.productIds.first()),
+                    identity("${model.adapterArgument}-2", "${base}2", model.productIds.first())
+                )
+            } else {
+                listOf(identity(model.adapterArgument, serial!!, model.productIds.first()))
+            }
+        }
+        val plan = Px4DeviceSelector.plan(identities)
+
+        assertTrue(plan.rejections.isEmpty())
+        assertEquals(Px4DeviceModel.entries.size, plan.enclosures.size)
+        assertEquals(profileCases.values.sumOf { it.second.first }, plan.tuners.size)
+        assertEquals(Px4DeviceModel.entries.toSet(), plan.enclosures.map { it.model }.toSet())
+        plan.enclosures.forEach { enclosure ->
+            assertEquals(enclosure.model.bridgeCount, enclosure.devices.size)
+            assertEquals(enclosure.model.receiverCount,
+                plan.tuners.count { it.instanceToken == enclosure.instanceToken })
+        }
+    }
+
+    @Test
+    fun twoBridgeProductsNeverPairAcrossDifferentProfiles() {
+        val base = "12345678901234"
+        val plan = Px4DeviceSelector.plan(listOf(
+            identity("q3-u4", "${base}1", Px4DeviceSelector.Q3U4_PRODUCT_ID),
+            identity("q3-pe4", "${base}2", Px4DeviceModel.Q3PE4.productIds.single())
+        ))
+
+        assertTrue(plan.enclosures.isEmpty())
+        assertEquals(2, plan.rejections.size)
+    }
+
     private fun identity(name: String, serial: String, productId: Int) =
         Px4DeviceIdentity(name, serial, productId)
 }

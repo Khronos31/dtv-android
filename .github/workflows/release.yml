@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Exact component release tag (mirakc-v0.3.3 or epgstation-server-vX.Y.Z)
+        description: Exact component release tag (mirakc-v0.4.0 or epgstation-server-vX.Y.Z)
         required: true
         type: string
 
@@ -67,8 +67,8 @@ jobs:
           tag_target="$(git rev-parse "refs/tags/$tag^{commit}")"
           if [[ "$component" == mirakc ]]; then
             [[ "$tag_type" == tag ]] || { echo "mirakc release tags must be annotated" >&2; exit 1; }
-            [[ "$version" == 0.3.3 && "$(cat mirakc/VERSION)" == 0.3.3 ]] || {
-              echo "mirakc promotion is only defined for version 0.3.3" >&2; exit 1;
+            [[ "$version" == 0.4.0 && "$(cat mirakc/VERSION)" == 0.4.0 ]] || {
+              echo "mirakc promotion is only defined for version 0.4.0" >&2; exit 1;
             }
             git for-each-ref --format='%(contents)' "refs/tags/$tag" > "$RUNNER_TEMP/mirakc-attestation.txt"
             parsed="$(python3 tools/mirakc/release-attestation.py parse --message "$RUNNER_TEMP/mirakc-attestation.txt")"
@@ -172,6 +172,7 @@ jobs:
       TAG_TARGET: ${{ needs.prepare.outputs.tag_target }}
       CANDIDATE_RUN_ID: ${{ needs.prepare.outputs.candidate_run_id }}
       CANDIDATE_GIT_HEAD: ${{ needs.prepare.outputs.candidate_git_head }}
+      VERSION: ${{ needs.prepare.outputs.version }}
       RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
     steps:
       - uses: actions/checkout@v5
@@ -194,7 +195,9 @@ jobs:
           rm -rf artifact
           mkdir artifact
           gh run download "$CANDIDATE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name mirakc-signed-candidate --dir artifact
-          python3 tools/mirakc/verify-release-artifact.py artifact --expected-head "$CANDIDATE_GIT_HEAD" --expected-run "$CANDIDATE_RUN_ID"
+          python3 tools/mirakc/verify-release-artifact.py artifact \
+            --expected-head "$CANDIDATE_GIT_HEAD" --expected-run "$CANDIDATE_RUN_ID" \
+            --expected-version "$VERSION"
       - name: Verify APKs, source metadata, and annotated acceptance
         env:
           EXPECTED_CANDIDATE_SHA: ${{ needs.prepare.outputs.candidate_apk_sha256 }}
@@ -206,7 +209,7 @@ jobs:
           apksigner="$(find "$sdkroot/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner -print | sort -V | tail -n 1)"
           test -x "$aapt2" -a -x "$apksigner"
           candidate_metadata="$($aapt2 dump badging artifact/mirakc-signed-candidate.apk | sed -n "s/^package: name='\([^']*\)' versionCode='\([^']*\)' versionName='\([^']*\)'.*/\1 \2 \3/p")"
-          test "$candidate_metadata" = "dev.khronos31.mirakc 303 0.3.3"
+          test "$candidate_metadata" = "dev.khronos31.mirakc 400 0.4.0"
           candidate_cert="$($apksigner verify --print-certs artifact/mirakc-signed-candidate.apk | awk -F': ' '/certificate SHA-256 digest/ { print $NF; exit }' | tr -d ':' | tr '[:upper:]' '[:lower:]')"
           test "$candidate_cert" = "1fd02c94f29a5756ed1d560ac4ecb6813fa0b2e634473a6f31da210ffd5223c4"
           tools/mirakc/audit-apk.sh artifact/mirakc-signed-candidate.apk "$CANDIDATE_GIT_HEAD"
@@ -216,10 +219,10 @@ jobs:
             '.schema == 1 and .kind == "mirakc-release-acceptance" and .candidate_apk_sha256 == $c' \
             acceptance.json >/dev/null
           mkdir -p out
-          cp artifact/mirakc-signed-candidate.apk out/mirakc-0.3.3.apk
-          cp acceptance.json out/mirakc-0.3.3-acceptance.json
-          sha256sum out/mirakc-0.3.3.apk out/mirakc-0.3.3-acceptance.json > out/SHA256SUMS
-          test "$(sha256sum out/mirakc-0.3.3.apk | cut -d' ' -f1)" = "$EXPECTED_CANDIDATE_SHA"
+          cp artifact/mirakc-signed-candidate.apk out/mirakc-0.4.0.apk
+          cp acceptance.json out/mirakc-0.4.0-acceptance.json
+          (cd out && sha256sum mirakc-0.4.0.apk mirakc-0.4.0-acceptance.json > SHA256SUMS)
+          test "$(sha256sum out/mirakc-0.4.0.apk | cut -d' ' -f1)" = "$EXPECTED_CANDIDATE_SHA"
       - uses: actions/upload-artifact@v4
         with:
           name: apk-mirakc
@@ -242,7 +245,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$COMPONENT" == mirakc ]]; then
-            wanted='SHA256SUMS mirakc-0.3.3-acceptance.json mirakc-0.3.3.apk'
+            wanted='SHA256SUMS mirakc-0.4.0-acceptance.json mirakc-0.4.0.apk'
           else
             wanted="$(printf '%s\n' "${COMPONENT}-${VERSION}.apk" SHA256SUMS | sort | tr '\n' ' ' | sed 's/ $//')"
           fi
@@ -256,8 +259,8 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$COMPONENT" == mirakc ]]; then
-            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "$RELEASE_TAG" \
-              dist/mirakc-0.3.3.apk dist/mirakc-0.3.3-acceptance.json dist/SHA256SUMS
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --generate-notes --title "$RELEASE_TAG" \
+              dist/mirakc-0.4.0.apk dist/mirakc-0.4.0-acceptance.json dist/SHA256SUMS
           else
             gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "$RELEASE_TAG" \
               "dist/${COMPONENT}-${{ needs.prepare.outputs.version }}.apk" dist/SHA256SUMS

@@ -46,6 +46,9 @@ trap cleanup EXIT HUP INT TERM
 
 mkdir "$temporary/dtv"
 git -C "$root" archive HEAD | tar -x -C "$temporary/dtv"
+mkdir -p "$temporary/dtv/tools/mirakc/patches"
+cp "$root/tools/mirakc/patches/px4-userland-receiver-control-concurrency.patch" \
+    "$temporary/dtv/tools/mirakc/patches/"
 (
     cd "$temporary/dtv"
     git init -q
@@ -107,13 +110,13 @@ with zipfile.ZipFile(destination, "w") as archive:
 PY
 python3 "$auditor" --expected-dtv-commit "$dtv_commit" "$temporary/good.apk" >/dev/null
 
-python3 - "$temporary/good.apk" "$temporary/manifest-mutated.apk" "$temporary/pin-mutated.apk" "$temporary/firmware-mutated.apk" <<'PY'
+python3 - "$temporary/good.apk" "$temporary/manifest-mutated.apk" "$temporary/pin-mutated.apk" "$temporary/firmware-mutated.apk" "$temporary/px4-patch-provenance-mutated.apk" <<'PY'
 import json
 from pathlib import Path
 import sys
 import zipfile
 
-source, manifest_out, pin_out, firmware_out = map(Path, sys.argv[1:])
+source, manifest_out, pin_out, firmware_out, px4_patch_out = map(Path, sys.argv[1:])
 with zipfile.ZipFile(source) as original:
     entries = {info.filename: original.read(info) for info in original.infolist()}
 
@@ -135,11 +138,18 @@ changed = dict(entries)
 changed["assets/source-metadata/manifest.json"] = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
 write(pin_out, changed)
 
+manifest = json.loads(entries["assets/source-metadata/manifest.json"])
+px4 = next(component for component in manifest["components"] if component["name"] == "px4-userland")
+px4["source_inputs"][0]["sha256"] = "0" * 64
+changed = dict(entries)
+changed["assets/source-metadata/manifest.json"] = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
+write(px4_patch_out, changed)
+
 changed = dict(entries)
 changed["assets/isdbt_rio.inp"] = b"bad firmware"
 write(firmware_out, changed)
 PY
-for apk in "$temporary/manifest-mutated.apk" "$temporary/pin-mutated.apk" "$temporary/firmware-mutated.apk"; do
+for apk in "$temporary/manifest-mutated.apk" "$temporary/pin-mutated.apk" "$temporary/firmware-mutated.apk" "$temporary/px4-patch-provenance-mutated.apk"; do
     if python3 "$auditor" --expected-dtv-commit "$dtv_commit" "$apk" >/dev/null 2>&1; then
         printf '%s\n' "APK metadata auditor accepted mutation: $apk" >&2
         exit 1

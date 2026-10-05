@@ -85,9 +85,64 @@ class Px4DaemonSupervisorTest {
         supervisor.stop()
     }
 
+    @Test
+    fun allUpstreamProfilesRunAsSeparateOwnersAndDetachIsolatesOnlyMatchingEnclosure() {
+        val identities = Px4DeviceModel.entries.flatMapIndexed { index, model ->
+            val base = "%014d".format(index + 1)
+            if (model.bridgeCount == 2) {
+                listOf(
+                    Px4DeviceIdentity("${model.adapterArgument}-1", "${base}1", model.productIds.first()),
+                    Px4DeviceIdentity("${model.adapterArgument}-2", "${base}2", model.productIds.first())
+                )
+            } else {
+                listOf(Px4DeviceIdentity(
+                    model.adapterArgument,
+                    "%015d".format(index + 100),
+                    model.productIds.first()
+                ))
+            }
+        }
+        val events = mutableListOf<String>()
+        val runners = mutableListOf<FakeRunner>()
+        val supervisor = Px4DaemonSupervisor(
+            executable = { File("/unused/px4d") },
+            firmware = { File("/unused/firmware") },
+            identities = { identities },
+            openDevice = { error("fake owners must not open Android USB") },
+            runtimeDir = File("/tmp/px4-all-profile-owner-test"),
+            onStateChanged = {},
+            onDaemonFailure = {},
+            testOwnerFactory = { enclosure ->
+                FakeRunner(runners.size, enclosure, events).also(runners::add)
+            }
+        )
+
+        val generations = supervisor.startAllOrGet()
+
+        assertEquals(Px4DeviceModel.entries.size, generations.size)
+        assertEquals(Px4DeviceModel.entries.size, runners.size)
+        assertEquals(Px4DeviceModel.entries.toSet(), generations.map { it.model }.toSet())
+        generations.forEach { generation ->
+            assertEquals(generation.model.receiverCount, generation.tuners.size)
+        }
+        val target = runners.single { it.enclosure.model == Px4DeviceModel.MLT8PE3 }
+        val otherOwners = runners.filter { it !== target }
+        val targetUsbPath = target.enclosure.first.deviceName
+
+        supervisor.invalidateDetachedDevice(targetUsbPath)
+
+        assertTrue(target.invalidated)
+        assertTrue(otherOwners.none { it.invalidated || it.stopped })
+        assertEquals(Px4DeviceModel.entries.size, supervisor.startAllOrGet().size)
+        assertTrue(target.stopped)
+        assertTrue(otherOwners.none { it.stopped })
+        assertEquals(Px4DeviceModel.entries.size + 1, runners.size)
+        supervisor.stop()
+    }
+
     private class FakeRunner(
         private val id: Int,
-        private val enclosure: Px4Enclosure,
+        val enclosure: Px4Enclosure,
         private val events: MutableList<String>
     ) : Px4EnclosureRunner {
         var invalidated = false

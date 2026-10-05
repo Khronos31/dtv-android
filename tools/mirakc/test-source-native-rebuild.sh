@@ -3,7 +3,7 @@
 #
 # Clean-room native relink slice for the aggregate corresponding-source
 # archive. This covers the Siano/PX4 static-libusb consumers; the complete
-# 22-payload APK rebuild remains a separate gate.
+# 20-payload APK rebuild remains a separate gate.
 set -eu
 
 archive=${1:-}
@@ -34,7 +34,7 @@ case "$revision" in
 *) printf '%s\n' "NDK 27.0.12077973 is required, got ${revision:-unknown}" >&2; exit 1 ;;
 esac
 
-for tool in python3 tar sha256sum strings make cmake ninja; do
+for tool in python3 tar sha256sum strings make cmake ninja patch; do
     command -v "$tool" >/dev/null 2>&1 || {
         printf '%s\n' "$tool is required for the clean-room relink slice" >&2
         exit 1
@@ -56,7 +56,6 @@ archived_audit=$source_root/sources/dtv-android/tools/mirakc/audit-source.py
 python3 "$archived_audit" "$archive" >/dev/null
 siano=$source_root/sources/siano-userland
 px4=$source_root/sources/px4-userland
-px4_drv=$source_root/sources/px4_drv
 mirakc=$source_root/sources/mirakc
 arib=$source_root/sources/mirakc-arib
 dtv=$source_root/sources/dtv-android
@@ -85,6 +84,35 @@ done
     printf '%s\n' 'archived Android build scripts must be executable' >&2
     exit 1
 }
+
+px4_upstream=$px4
+px4_patch=$dtv/tools/mirakc/patches/px4-userland-receiver-control-concurrency.patch
+px4_patch_sha256=$(sha256sum "$px4_patch" | awk '{print $1}')
+python3 - "$source_root/source-manifest.json" "$px4_patch" "$px4_patch_sha256" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+manifest_path, patch_path, patch_sha = sys.argv[1:]
+manifest_root = Path(manifest_path).parent
+manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+component = next(item for item in manifest["components"] if item["name"] == "px4-userland")
+provenance = component.get("android_build_patch")
+if not isinstance(provenance, dict):
+    raise SystemExit("source archive has no PX4 Android patch provenance")
+if provenance.get("upstream_commit") != component.get("commit"):
+    raise SystemExit("PX4 patch provenance does not match its upstream source commit")
+if provenance.get("sha256") != patch_sha:
+    raise SystemExit("PX4 patch bytes do not match source-manifest provenance")
+expected_path = "sources/dtv-android/tools/mirakc/patches/px4-userland-receiver-control-concurrency.patch"
+if provenance.get("path") != expected_path or Path(patch_path).resolve() != manifest_root / expected_path:
+    raise SystemExit("PX4 patch path does not match source-manifest provenance")
+print(f"clean-room PX4 provenance: upstream={provenance['upstream_commit']} patch_sha256={patch_sha}")
+PY
+px4=$work/px4-userland-patched
+cp -a "$px4_upstream" "$px4"
+patch --batch --fuzz=0 --forward -p1 -d "$px4" -i "$px4_patch"
 
 # Basename clients are covered by the guarded PATH below. Absolute clients,
 # PATH-changing env invocations, and command -p/busybox bypasses would evade
@@ -298,7 +326,7 @@ build_px4() {
     abi=$2
     source_input=$3
     output=$4
-    run_guarded env ANDROID_NDK_HOME="$ndk" PATH="$guard_path" \
+    run_guarded env ANDROID_NDK_HOME="$ndk" PX4_ANDROID_BUILD_JOBS=1 PATH="$guard_path" \
         "$tree/scripts/build-android.sh" --abi "$abi" --output "$output" \
         --libusb-source "$source_input"
 }
@@ -386,11 +414,6 @@ if [ "$full_gate" -eq 1 ]; then
     arib_source=$dtv/.work/mirakc-arib-0.24.38
     mkdir -p "$dtv/.work"
     cp -a "$mirakc" "$mirakc_source"
-    [ -d "$px4_drv/fwtool" ] || {
-        printf '%s\n' 'archive is missing px4_drv fwtool source' >&2
-        exit 1
-    }
-
     cargo_home=$work/cargo-home
     mkdir -p "$cargo_home" "$mirakc_source/.cargo"
     # The archive auditor already checked this file; point the copied build
@@ -485,6 +508,10 @@ if [ "$full_gate" -eq 1 ]; then
             exit 1
         }
         cp -f "$built" "$destination"
+        if [ "$kind" = pie ]; then
+            "$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" \
+                --strip-unneeded "$destination"
+        fi
         "$dtv/tools/mirakc/verify-android-elf.sh" "$destination" "$abi" "$kind"
     }
 
@@ -496,8 +523,6 @@ if [ "$full_gate" -eq 1 ]; then
             -DMIRAKC_BUILD_B25_FILTER=ON
         build_cmake_native "$abi" px4_adapter libmirakc-px4-adapter.so pie \
             -DMIRAKC_BUILD_PX4_ADAPTER=ON -DPX4_USERLAND_DIR="$px4"
-        build_cmake_native "$abi" px4_fwtool libmirakc-px4-fwtool.so pie \
-            -DMIRAKC_BUILD_PX4_FWTOOL=ON -DPX4_DRV_DIR="$px4_drv"
     done
 
     rebuilt_apk=$work/clean-room-native.apk
@@ -509,14 +534,40 @@ import zipfile
 root = Path(sys.argv[1])
 output = Path(sys.argv[2])
 paths = sorted(path for path in root.rglob("*") if path.is_file())
-if len(paths) != 22:
-    raise SystemExit(f"clean-room native inventory has {len(paths)} files, expected 22")
+if len(paths) != 20:
+    raise SystemExit(f"clean-room native inventory has {len(paths)} files, expected 20")
 with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as archive:
     for path in paths:
         archive.writestr(path.relative_to(root).as_posix(), path.read_bytes())
 PY
     "$dtv/tools/mirakc/audit-apk-native.sh" "$rebuilt_apk"
     "$dtv/tools/mirakc/audit-apk-native.sh" "$ordinary_apk"
+    python3 - "$ordinary_apk" "$rebuilt_apk" <<'PY'
+import hashlib
+import sys
+import zipfile
+
+names = (
+    "libpx4d.so",
+    "libpx4-ts.so",
+    "libpx4ctl.so",
+    "libmirakc-px4-adapter.so",
+)
+for abi in ("arm64-v8a", "armeabi-v7a"):
+    for name in names:
+        member = f"lib/{abi}/{name}"
+        digests = []
+        for apk in sys.argv[1:]:
+            with zipfile.ZipFile(apk) as archive:
+                try:
+                    data = archive.read(member)
+                except KeyError as error:
+                    raise SystemExit(f"PX4 payload is missing from {apk}: {member}") from error
+                digests.append(hashlib.sha256(data).hexdigest())
+        if digests[0] != digests[1]:
+            raise SystemExit(f"clean-room PX4 rebuild differs from APK: {member}")
+print("clean-room PX4 binaries and adapter match APK bytes for both ABIs")
+PY
     python3 - "$ordinary_apk" "$rebuilt_apk" <<'PY'
 from collections import Counter
 from pathlib import Path
@@ -527,7 +578,7 @@ expected_names = {
     "libmirakc.so", "libmirakc-arib.so", "libsiano-ts.so", "libpx4d.so",
     "libpx4-ts.so", "libpx4ctl.so", "libusb_process.so",
     "libmirakc-siano-adapter.so", "libmirakc-b25-filter.so",
-    "libmirakc-px4-adapter.so", "libmirakc-px4-fwtool.so",
+    "libmirakc-px4-adapter.so",
 }
 expected = {
     f"lib/{abi}/{name}"
@@ -540,7 +591,9 @@ for raw in sys.argv[1:]:
     counts = Counter(entries)
     if set(counts) != expected or any(count != 1 for count in counts.values()):
         raise SystemExit(f"native inventory mismatch in {raw}")
-print("clean-room native inventory matches ordinary APK: 22 payloads")
+    if any(name.endswith("/libmirakc-px4-fwtool.so") for name in entries):
+        raise SystemExit(f"removed PX4 fwtool payload is present in {raw}")
+print("clean-room native inventory matches ordinary APK: 20 payloads; PX4 fwtool absent")
 PY
     printf '%s\n' 'clean-room complete native inventory gate: PASS'
 fi

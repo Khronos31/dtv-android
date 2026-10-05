@@ -50,7 +50,7 @@ NATIVE_NAMES = (
     "libmirakc.so", "libmirakc-arib.so", "libsiano-ts.so", "libpx4d.so",
     "libpx4-ts.so", "libpx4ctl.so", "libusb_process.so",
     "libmirakc-siano-adapter.so", "libmirakc-b25-filter.so",
-    "libmirakc-px4-adapter.so", "libmirakc-px4-fwtool.so",
+    "libmirakc-px4-adapter.so",
 )
 CHECKS = (
     "candidate_binding", "service_api", "ten_cycles", "descriptor_ownership",

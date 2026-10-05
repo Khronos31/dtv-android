@@ -28,14 +28,32 @@ mirakc APK は上流の mirakc `3.4.86` を Android 向けに移植して組み�
 | | |
 | --- | --- |
 | 本体 | Android TV / Google TV（Google TV Streamer で動作確認） |
-| チューナー | PLEX PX-S1UD／同じ Siano チップの USB チューナー、PX-Q3U4、PX-MLT5PE、DTV02A-5TS-P、PX-M1UR、PX-S1UR |
+| チューナー | PLEX PX-S1UD／同じ Siano チップの USB チューナー、下表のPX4系チューナー |
 | カードリーダー | CCID 対応の USB カードリーダー（Identive/SCM SCR33xx v2.0 で動作確認） |
 | カード | B-CAS カード |
 | その他 | USB ハブ（本体のポートが1つしかないため）、録画用の USB ストレージ（任意・exFAT） |
 
+mirakc APK は、px4-userland v0.1.9 が扱う16種類のUSB製品IDに対応します。ここに載っていることは、その機種の受信やカード利用を実機で確認済みという意味ではありません。実機未検証の機種は、Android でも未検証です。
+
+| 機種 | USB ID | USBブリッジ数 | 受信機数 | 地上波/衛星 |
+|---|---|---:|---:|---|
+| PX-Q3U4 | `0511:084a` | 2 | 8 | 固定: 0,1,4,5 がBS/CS、2,3,6,7 が地上波 |
+| PX-W3U4 | `0511:083f` | 1 | 4 | 固定: 0,1 がBS/CS、2,3 が地上波 |
+| PX-MLT5PE / DTV02A-5TS-P | `0511:024e` / `0511:924e` | 1 | 5 | 各受信機で地上波/BS/CS |
+| PX-W3PE4 / PX-W3PE5 | `0511:023f` / `0511:073f` | 1 | 4 | 固定: 0,1 がBS/CS、2,3 が地上波 |
+| PX-Q3PE4 / PX-Q3PE5 | `0511:024a` / `0511:074a` | 2 | 8 | 固定: 0,1,4,5 がBS/CS、2,3,6,7 が地上波 |
+| PX-MLT8PE3 | `0511:0252` | 1 | 3 | 各受信機で地上波/BS/CS |
+| PX-MLT8PE5 | `0511:0253` | 1 | 5 | 各受信機で地上波/BS/CS |
+| DTV02A-4TS-P | `0511:0254` | 1 | 4 | 各受信機で地上波/BS/CS |
+| PX-M1UR | `0511:0854` | 1 | 1 | 地上波/BS/CS; 衛星はLNB 0V |
+| PX-S1UR | `0511:0855` | 1 | 1 | 地上波のみ |
+| DTV03A-1TU | `0511:0052` | 1 | 1 | 地上波のみ |
+| DTV02-1T1S-U | `0511:004b` | 1 | 1 | 地上波/BS/CS; 衛星はLNB 0V |
+| DTV02A-1T1S-U | `0511:084b` | 1 | 1 | 地上波/BS/CS; 衛星はLNB 0V |
+
 カードリーダーとカードが無くても 1seg 用の経路はありますが、画質は 320x180 です。
-12seg のフル HD にはカードが要ります。なお、PX-S1UD の 12seg 動作はこの移行で
-再検証済みとはしていません。
+12seg のフル HD にはカードが要ります。PX-S1UD の 12seg 復号は以前の実装で確認済みですが、
+0.4.0 の移行後に実機で再確認していません。
 
 ## 導入
 
@@ -54,11 +72,12 @@ mirakc APK は上流の mirakc `3.4.86` を Android 向けに移植して組み�
    インストールを許可する必要があります。
 3. チューナーとカードリーダーを USB ハブ経由でテレビに挿します。
 
-PX4 を使う場合、初回起動時にアプリが公式PLEX HTTPS配布物から必要なSYSを
-取得し、同梱のGPL-2.0 `px4_drv/fwtool`（v0.2.1固定）で
-`it930x-firmware.bin`を生成します。ZIP、SYS、生成済みfirmwareはAPKに含めず、
-アプリ専用外部ファイル領域へ検証後に原子的にキャッシュします。既存の有効な
-キャッシュはネットワークなしで再利用できます。取得や生成に失敗した場合はPX4
+PX4 を使う場合、チャンネルスキャン時の準備処理で、未キャッシュならアプリが公式PLEX HTTPS配布物を取得します。固定した
+ZIPとSYSのサイズ・SHA-256を確認し、PX-W3U4 BDA 1.0のsegment tableからKotlinで
+firmware領域を独立抽出します。segment種別・長さ・CRC32と生成物のサイズ・SHA-256も
+検証します。ZIP、SYS、生成済みfirmwareはAPKに含めず、アプリ専用外部ファイル領域へ
+検証後に原子的にキャッシュします。既存の有効なキャッシュはネットワークなしで
+再利用できます。取得や生成に失敗した場合はPX4
 だけを無効化し、Sianoとmirakcは継続します。手動のfirmware provisionは不要です。
 PX4対応機種のうち、M1UR/S1UR、MLT5系および複数筐体の同時利用はソフトウェア上の
 識別・adapter試験を行った候補段階で、受入完了を意味しません。接続実機での
@@ -66,17 +85,28 @@ PX4対応機種のうち、M1UR/S1UR、MLT5系および複数筐体の同時利�
 
 ## 使い方
 
-### 1. mirakc を起動して USB を許可する
+### 1. チャンネルを準備して mirakc を起動する
 
-**mirakc** を開くと1枚の画面が出ます。USB 権限、B-CAS リーダー、待ち受け、
-上流 mirakc/PX4 の状態、直近のエラーを確認できます。
+**mirakc** を開くと Android TV の十字キーで操作できる画面が出ます。画面を開いただけでは
+公開サーバーは起動しません。初回は **チャンネルスキャン** を選び、表示されたチューナーと
+B-CAS カードリーダーの USB 許可を行ってください。必要な許可が揃うと、スキャン操作が
+自動的に続きます。PX4 を使う場合は必要なファームウェアを先に準備します。
 
-**Request USB permission** を押すと、Android の許可ダイアログが出ます。
-チューナーとカードリーダーの分が続けて出るので、両方許可してください。
-`B-CAS:` の行にリーダー名が出れば認識できています。
+地上波チューナーがある場合、アプリはスキャン専用の mirakc を loopback
+`127.0.0.1:40773` だけで起動し、実際の探索状況を表示します。探索結果はチャンネル設定として
+保存されます。空振り、失敗、キャンセルでは以前に保存したチャンネル設定を残します。
+手動スキャンは利用可能な地上波 receiver 数に応じて最大8並列で探索します。PX-Q3U4では
+地上波用4 receiverを使い、スキャン専用のため視聴用receiverの予約は行いません。
+初回に地上波チューナーがなく衛星チューナーがある場合は、検出結果を偽装せず、同梱の
+BS 26 チャンネルと CS 12 チャンネルを準備します。
 
-許可後のサービス起動と番組表更新は、上流 mirakc が設定したジョブで行います。
-手動の EPG スキャン操作はありません。
+チャンネル設定の準備ができたら **mirakc を起動** を選びます。通常の公開サーバーは
+`0.0.0.0:40772` で起動します。停止するときは同じ画面の停止操作を使います。設定済みチャンネルは
+EPG間隔（1〜1440分）の更新ジョブと一緒に保存され、アプリから再編集できます。
+
+「詳細設定」の **USB権限を要求** は、チャンネルスキャンを始めずに、接続済みチューナーや
+カードリーダーのUSB許可だけを要求するときに使います。接続機器一覧には対応チューナーと
+その許可状態が表示されます。
 
 ### 2. EPGStation Server を起動する
 
@@ -94,10 +124,11 @@ USB ストレージをおすすめします。
 
 ### APKを手動で更新する
 
-各アプリの画面に **CHECK UPDATE** ボタンがあります。押したときだけ、そのアプリ
-専用のGitHub Releasesを確認し、更新があればAPKをダウンロードしてAndroidの
-インストール確認画面を開きます。初回だけ、設定からそのアプリに「不明なアプリの
-インストール」を許可してください。起動時やバックグラウンドでは確認しません。
+mirakc の「アプリ情報」にある **アップデートを確認** を押したときだけ GitHub Releases を
+確認し、新しい版があるか、最新か、確認に失敗したかを通知します。APKのダウンロードや
+インストールは自動では行いません。起動時やバックグラウンドでは確認しません。
+
+EPGStation Server の更新操作は同アプリの画面から行います。自動更新はしません。
 
 ### 3. スマホや PC から番組表を開く
 
@@ -117,8 +148,9 @@ USB ストレージをおすすめします。
 
 ### 再起動したら
 
-どちらの APK も自動では起動しません。テレビを再起動したあとは、mirakc と
-EPGStation Server をもう一度開いてください。一度開けば常駐します。
+テレビの再起動後にどちらの APK も自動では開きません。mirakc の画面を開いてください。
+mirakc の公開サーバーはチャンネル設定の準備後に、ユーザーが明示的に起動した場合だけ動きます。
+EPGStation Server も必要なときに開いてください。
 
 ## あわせて使いたいもの
 
@@ -147,9 +179,10 @@ EPGStation Server をもう一度開いてください。一度開けば常駐�
 
 ### mirakc
 
-`connectedDevice` のフォアグラウンドサービスが本体です。操作は通常の
-フォーカス可能な Android のボタンなので、十字キーの移動が Leanback の
-行構造に依存しません。
+`connectedDevice` のフォアグラウンドサービスが実行状態を管理し、画面はCompose製の
+Android TV 向けUIです。スキャン用の一時実行と公開サーバーは別の runtime/cache を使います。
+スキャン中は上流の自動EPGジョブを無効にし、loopbackだけで探索します。スキャンの完了後に
+そのプロセスを終了してから、保存済み設定で公開サーバーを起動します。
 
 USB 権限を要求する Siano の ID は次の3つです。
 
@@ -158,10 +191,10 @@ USB 権限を要求する Siano の ID は次の3つです。
 * `187f:0302`
 
 Siano の USB ディスクリプタは Android 側の broker が世代ごとに管理し、上流 mirakc
-の tuner command には専用の Siano adapter 経由で渡します。PX-Q3U4、PX-MLT5PE、
-DTV02A-5TS-P、PX-M1UR、PX-S1UR は機器ごとの `px4d` instance と PX4 adapter が
-管理します。Q3U4 は同じ14桁baseのUSBシリアル末尾 `1`/`2` のペア、その他の対応機種は
-15桁シリアルの単一USBデバイスとして識別します。
+の tuner command には専用の Siano adapter 経由で渡します。上表の各 PX4 product profile
+は機器ごとの `px4d` instance と PX4 adapter が管理します。2ブリッジ機種は同じ14桁baseの
+USBシリアル末尾 `1`/`2` のペア、1ブリッジ機種は15桁シリアルの単一USBデバイスとして
+識別します。各 enclosure に1つの `px4d` と1本または2本の Android 管理FDを割り当てます。
 
 対応チューナーの接続・切断では、生成済みの tuner 構成を反映するため上流
 mirakc を再起動します。この間は配信や録画ジョブが中断する場合があります。
@@ -176,9 +209,9 @@ PX4切断通知では再構成を待たずに該当筐体の旧USB世代を無�
 siano-ts --channel N --firmware <filesDir>/isdbt_rio.inp --fd 3
 ```
 
-待ち受けは上流 mirakc の `0.0.0.0:40772` で認証はありません。地上波の
-チャンネルは T16、T21〜T27、T30、T31、T32 を設定してあり、HAOS の mirakc
-アドオンと揃えてあります。
+公開待ち受けは上流 mirakc の `0.0.0.0:40772` で認証はありません。地上波チャンネルは
+スキャンで見つかったものを保存します。衛星の BS 26 チャンネルと CS 12 チャンネルは
+同梱設定を使います。初期設定として固定の関東地上波チャンネルを勝手に有効化しません。
 ファームウェアは linux-firmware の `isdbt_rio.inp`
 （MD5 `9b762c1808fd8da81bbec3e24ddb04a3`）をビルド時に取得してチェックサムを
 検証したもので、`LICENCE.siano` を隣に置いて同梱しています。`.so` には
@@ -189,8 +222,8 @@ siano-ts --channel N --firmware <filesDir>/isdbt_rio.inp --fd 3
 HTTP API、チャンネル・サービス・番組情報、ライブストリーム、イベント通知は
 上流 mirakc `3.4.86` が提供します。EPG のサービススキャン、時刻同期、番組表更新、
 ストリームのサービス／番組フィルターは、固定した mirakc-arib `0.24.38` の
-コマンドを上流ジョブから呼び出します。APK 独自の旧 HTTP サーバー、TS の SI
-パーサー、手動スキャン処理は含みません。
+コマンドを上流ジョブから呼び出します。手動の初期GR探索も上流 mirakc の tuner scan APIを
+使うため、APK独自の旧 HTTP サーバーや TS の SI パーサーは含みません。
 
 #### B-CAS による復号
 
@@ -200,7 +233,8 @@ native libarib25 filter に渡します。PX4 adapter のカード経路も同�
 [libarib25](https://github.com/stz2012/libarib25)（stz2012 版・Apache-2.0）を
 共有します。pcscd は使わず、Android の USB 権限を得たネイティブ処理系がカード
 リーダーを扱います。外付けリーダー1台につき Siano stream は同時に1本です。
-PX-S1UD の 12seg 復号は、実機での再検証を完了しています。
+PX-S1UD の 12seg 復号は以前の実装で実機確認済みですが、mirakc 0.4.0 では
+移行後の再検証をしていません。
 
 手元のリーダー（Identive/SCM SCR33xx v2.0）は `dwFeatures=0x000100ba` で交換
 レベルが TPDU だったため、ネイティブ CCID transport は T=1 のブロック層
@@ -242,9 +276,9 @@ APKに別プロセスとして同梱する `siano-userland` の `siano-ts` は
 GPL-2.0-or-later であり、対応するソースとライセンスは
 [siano-userland](https://github.com/Khronos31/siano-userland) v0.1.9
 （commit `d1f4e42810d5a2023ff4a6c31f798cb381026693`）にあります。
-PX4 firmware生成器`fwtool`は`nns779/px4_drv` v0.2.1
-(commit `2b3f79b5bc5db56e8556bb28397f7d8f74b2adeb`)由来のGPL-2.0-onlyです。
-対応するLICENSEとsource provenanceはAPKの`px4-fwtool/`に含まれます。
+PX4 tuner codeはGPL-2.0-onlyの [px4-userland](https://github.com/Khronos31/px4-userland)
+由来で、同プロジェクトのprovenance記録には `nns779/px4_drv` からの派生元と
+ライセンスが記載されています。PX4 firmware抽出器はアプリのKotlin実装です。
 
 ## ビルド
 
@@ -271,14 +305,18 @@ JDK 17 と Android NDK r26 以降が要ります。Gradle タスクは SDK の `
 `tools/mirakc/build-android.sh`、mirakc-arib には `tools/mirakc-arib/build-android.sh`
 を使います。
 
-PX-Q3U4（`0511:084a`、2 デバイス）、PX-MLT5PE（`0511:024e`）、DTV02A-5TS-P（`0511:924e`）、PX-M1UR（`0511:0854`）、PX-S1UR（`0511:0855`、後者4機種はいずれも1デバイス）の `px4d` は pinned な
-[px4-userland](https://github.com/Khronos31/px4-userland) v0.1.9
-（commit `cf38742618bb02db41a95def619fbff50e9eb0f3`）を使います。PX4 firmware
-生成器のビルドには [nns779/px4_drv](https://github.com/nns779/px4_drv) v0.2.1
-（commit `2b3f79b5bc5db56e8556bb28397f7d8f74b2adeb`）の detached checkout も必要です。
-それぞれ `-Ppx4UserlandDir` と `-Ppx4DrvDir` で渡せます（既定値は作者の環境の
-`/config/GitHub/px4-userland` と `/config/GitHub/px4_drv`）。両方とも指定した
-commit の clean checkout にしてください。Android APKで許可しているのは上記5 model familiesのみ。
+px4-userland v0.1.9 にある全16種類のUSB製品IDをAndroid側でも扱い、
+固定したソースから `px4d` / `px4-ts` / `px4ctl` を作ります。ブリッジを2つ使うQ3系はUSB機器を2つ、
+それ以外は1つ渡して起動します。固定したソースは
+[px4-userland](https://github.com/Khronos31/px4-userland) commit
+`cf38742618bb02db41a95def619fbff50e9eb0f3` です。製品IDの対応付け、オフラインテスト、APKへの同梱は、
+その機種での受信・カード利用・複数台同時利用を実証するものではありません。実機での確認状況は
+px4-userland の README と検証表に従い、Androidで確認していない機種の動作は未確認として扱います。
+
+px4-userland の pinned source checkout は `-Ppx4UserlandDir` で渡せます（既定値は作者の環境の
+`/config/GitHub/px4-userland`）。指定したcommitの clean checkoutにしてください。
+PX4 firmware抽出に `px4_drv/fwtool` のビルドは不要です。Android APKで許可しているのは
+上表の16 product IDsです。
 複数の異なる筐体は、それぞれ独立した `--instance` token・runtime directory・`px4d` processを持ちます。
 
 ```sh
@@ -286,7 +324,6 @@ export JAVA_HOME=/path/to/jdk17
 export ANDROID_NDK_HOME=/path/to/android-sdk/ndk/27.0.12077973
 ./gradlew -PsianoUserlandDir=/path/to/siano-userland \
     -Ppx4UserlandDir=/path/to/px4-userland-v0.1.9 \
-    -Ppx4DrvDir=/path/to/px4_drv-v0.2.1 \
     :mirakc:assembleDebug :epgstation-server:assembleDebug
 ```
 

@@ -9,9 +9,12 @@ Replace the Kotlin Mirakurun-compatible server in the `mirakc` APK with an
 Android port of upstream mirakc, while keeping Android-specific lifecycle and
 USB-permission handling in a thin Kotlin/JNI supervisor. Package the latest
 stable releases of both tuner backends so one APK can operate Siano RIO devices
-and multiple PX4 enclosures without a kernel driver. The Android-supported PX4
-matrix is PX-Q3U4, PX-MLT5PE / DTV02A-5TS-P, PX-M1UR, and PX-S1UR; this does not
-enable every model compiled into px4-userland.
+and multiple PX4 enclosures without a kernel driver. The Android software
+profile matrix covers every USB `DeviceProfile` in the pinned px4-userland
+source: all 16 products listed in its v0.1.9 `identity.cpp` table, including
+the DTV/e-Better counterparts. This is a software mapping scope, not a claim
+that every model has passed Android hardware validation. The upstream README
+and its per-model validation evidence remain authoritative for hardware status.
 
 The pinned inputs for the first port are:
 
@@ -54,7 +57,10 @@ moving branch.
 6. With a Siano tuner and external CCID B-CAS reader, service scan produces at
    least one service and EPGStation can play a service stream.  A captured
    12-seg stream is descrambled and accepted by `ffprobe`.
-7. With a PX-Q3U4, Android grants both bridge permissions, one `px4d` owns both
+7. Offline regression tests map every pinned PX4 product ID to its exact
+   enclosure shape, serial rules, receiver count and T/S capabilities; each
+   complete enclosure receives one independent owner. This verifies software
+   mapping only. With a PX-Q3U4, Android grants both bridge permissions, one `px4d` owns both
    descriptors, mirakc exposes eight tuners (four GR and four BS/CS), and at
    least one GR and one BS service stream pass MPEG-TS integrity checks. The
    built-in card path descrambles 12-seg content. Verified on the connected
@@ -95,8 +101,8 @@ moving branch.
   mirakc command adapters; mirakc itself receives no device descriptor.  Owner
   death or USB detach invalidates the IPC generation and triggers bounded
   teardown/reacquisition rather than reusing a stale descriptor.
-- `px4d` is the only owner of one PX4 enclosure (the Q3U4 bridge pair, or one
-  single-USB device). Each enclosure has a stable model/product/serial-derived
+- `px4d` is the only owner of one PX4 enclosure (a two-bridge Q3-family pair,
+  or one single-USB device). Each enclosure has a stable model/product/serial-derived
   `--instance` token and a private runtime directory. mirakc tuner commands and
   PC/SC use that same token with px4-userland's versioned local IPC.
 - The full upstream mirakc-arib command set is the baseline.  Size or feature
@@ -195,38 +201,93 @@ concurrency evidence that GR, satellite and EPG jobs share each active px4d
 owner correctly. The host parser test can be run with
 `./tools/mirakc/test-px4-tune-plan.sh`.
 
-### PX4 enclosure fleet support (2026-10-03)
+### Android PX4 profile coverage (2026-10-04)
 
-The Android USB filter and tuner planner now support the exact device matrix
-already present in the pinned source: PX-Q3U4 (`0511:084a`), PX-MLT5PE
-(`0511:024e`), DTV02A-5TS-P (`0511:924e`), PX-M1UR (`0511:0854`), and PX-S1UR
-(`0511:0855`). Other devices compiled into px4-userland remain unsupported by
-the APK. Q3U4 bridge devices pair only by a shared 14-digit base and suffix
-`1`/`2`; each complete pair is one enclosure. MLT5 variants, M1UR and S1UR each
-use their full 15-digit serial as the device identity. Repeated serial/product
-identities or duplicate Android USB paths are rejected. M1UR and S1UR may have
-the same serial because model and product ID also participate in the identity.
+Android maps all 16 product IDs in the pinned px4-userland v0.1.9
+`DeviceProfile` table (`cf38742618bb02db41a95def619fbff50e9eb0f3`): Q3U4
+`084a`, W3U4 `083f`, MLT5PE / DTV02A-5TS-P `024e` / `924e`, W3PE4/5
+`023f` / `073f`, Q3PE4/5 `024a` / `074a`, MLT8PE3/5 `0252` / `0253`,
+DTV02A-4TS-P `0254`, M1UR `0854`, S1UR `0855`, DTV03A-1TU `0052`,
+DTV02-1T1S-U `004b`, and DTV02A-1T1S-U `084b` (all IDs use vendor `0511`).
+The pinned source is the authority for USB profile identity and per-profile
+bridge/receiver/T/S properties. Its README and validation table identify which
+hardware profiles are verified or unverified; APK mapping does not upgrade
+those statuses or claim Android hardware operation.
 
-Every enclosure receives a deterministic, runtime-token-safe `--instance`
-derived from model, USB product ID and serial, a separate app-private runtime
-directory, and one owning `px4d`. Commands pass that same token to both
-`px4-ts` and the PX4 card endpoint. Receiver profiles are Q3U4 GR `2,3,6,7`
-and BS/CS `0,1,4,5`; MLT5 five dual-system receivers `0..4`; M1UR receiver 0
-dual-system (satellite LNB remains 0V); S1UR receiver 0 GR only. The retry pool
-is selected by model and broadcast system so a candidate is never substituted
-from another profile. Offline selector, receiver and tune-plan tests cover
-these rules. No M1UR/S1UR or multi-enclosure hardware verification is claimed.
-These extensions are candidate-stage software work only. Offline identity,
-receiver and IPC tests do not satisfy the PX-Q3U4 hardware acceptance gate in
-criterion 7 or establish reception, descrambling, concurrency, or multi-
-enclosure acceptance for MLT5, M1UR, S1UR, or simultaneous PX4 devices. Those
-checks remain pending separate device validation.
+Two-bridge Q3-family devices pair only within the exact same product profile,
+by matching 14-digit base serial and suffixes `1`/`2`. Each single-bridge
+profile uses its full 15-digit USB serial. Repeated same-profile serials,
+malformed/incomplete pairs and duplicate Android USB paths are rejected.
+MLT5PE and DTV02A-5TS-P deliberately retain the existing Android `mlt5` model
+and tuner identities; their product IDs remain in the enclosure token so
+runtime directories stay distinct.
 
-The Android adapter links directly against px4-userland v0.1.9 source at
-`cf38742618bb02db41a95def619fbff50e9eb0f3`; its FD startup accepts one USB FD
-for MLT5/M1UR/S1UR and two for Q3U4, and its `--instance`/PCSC interfaces are
-part of that pinned source contract. The Android wrapper does not copy source
-from the reference add-on or rely on a prebuilt Android adapter.
+Each complete enclosure receives one owning `px4d`, a model/product/serial-
+derived runtime-safe `--instance`, and a private app runtime directory. The
+generic JNI launcher passes one USB FD for single-bridge profiles, or two
+distinct FDs for Q3-family pairs, as `--fd 3 [--fd 4]`. Pinned px4-userland
+derives the daemon hardware profile from those opened USB descriptors. The
+Android adapter's separate `--model` argument selects local tune validation
+and retry capabilities; it is not forwarded to `px4-ts` or `px4d`. The same
+instance token is used for `px4-ts` and the PX4 card endpoint.
+
+The receiver map covers fixed-system Q3 (8) and W3 (4) layouts, 3/4/5-way
+dual-system MLT profiles, single dual-system M1UR/DTV02 profiles and
+terrestrial-only S1UR/DTV03 profiles. M1UR and DTV02 single-receiver satellite
+requests remain limited to 0 V; S1UR/DTV03 satellite requests are rejected.
+Retries stay within the selected model's receivers that support the requested
+broadcast system; a failed/busy receiver is never silently replaced by another
+physical receiver inside the adapter. Native PX4 control requests use one
+bounded FIFO worker lane per logical receiver, plus the separate card lane, so
+independent receivers can progress concurrently while one receiver's requests
+remain serialized. Regression coverage must enumerate all 16 IDs, their exact
+receiver counts/capabilities and bridge counts, invalid pair/serial cases,
+mixed independent enclosures and detach isolation. These offline checks prove
+only software mapping. Profile-specific Android reception, card operation,
+descrambling and simultaneous-enclosure hardware validation remain separate,
+explicitly unverified evidence; criterion 7 retains its PX-Q3U4 hardware gate.
+
+### Android TV setup and runtime split (2026-10-05; 0.4.0)
+
+The mirakc APK opens a Compose-based Android TV screen without starting the
+public listener or native tuner stack. Initial terrestrial setup is an explicit
+**Channel Scan** action. It requests permissions for detected tuners and CCID
+readers, resumes the requested scan after grants, prepares any required PX4
+firmware, then owns a scan-only mirakc runtime bound to
+`127.0.0.1:40773`. That runtime uses separate cache/runtime paths and disables
+the regular EPG startup jobs; native GR scan progress is persisted and shown in
+the UI. It does not replace tuner scheduling, scan services, or SI parsing in
+upstream mirakc.
+
+Successful scan results are committed as prepared channel settings. An empty,
+failed, canceled, or interrupted rescan preserves the prior good channel set.
+If the first setup has no GR-capable tuner but does have a satellite tuner, the
+app prepares the bundled BS 26 / CS 12 channels without fabricating a GR scan.
+Manual GR scan concurrency is capped at the lesser of eight workers and the
+number of enabled GR-capable receivers. A PX-Q3U4 therefore scans on four GR
+receivers; the scan-only runtime has no viewing workload and reserves none for
+viewing. Device capabilities and native tuner leases determine the available
+receivers; model-name special cases do not assign the work.
+After settings are prepared, the user explicitly starts the public runtime on
+`0.0.0.0:40772`; that runtime owns the configured EPG jobs. The scan-only
+process and its children are torn down before the public runtime is admitted.
+EPGStation continues to use its existing default
+`http://127.0.0.1:40772/` endpoint and its implementation is unchanged.
+
+The Compose screen renders immutable typed state and dispatches typed actions
+through the Android service/controller. Kotlin owns permission prompts,
+firmware preparation, setup persistence and process lifecycle. Upstream mirakc
+continues to own the HTTP/API surface, tuner leases, scan job, channel/service
+discovery, SI parsing, EPG jobs and streams. The screen does not implement a
+second tuner scheduler or scan engine.
+
+These setup and lifecycle behaviors are implemented and covered by offline
+controller, state-recovery, USB permission, and runtime-owner tests. The
+connected-device scan-only proof reached 50/50 GR scan entries and preserved
+the resulting settings, but public stream/recording workflows, process-kill
+child cleanup, init-failure recovery, and the separate PX4 profile hardware
+matrix remain explicit hardware acceptance gates. Television reboot does not
+launch the APK automatically.
 
 USB lifecycle broadcasts reconfigure upstream mirakc for supported Siano/PX4
 tuners and CCID-reader attach/detach or permission changes. For a newly

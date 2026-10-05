@@ -40,6 +40,8 @@ FIRMWARE_SHA256 = EXPECTED["linux-firmware-siano"]["sha256"]
 FIRMWARE_LICENSE_URL = EXPECTED["linux-firmware-siano"]["license_url"]
 FIRMWARE_LICENSE_SHA256 = EXPECTED["linux-firmware-siano"]["license_sha256"]
 CARGO_CONFIG = audit_module.CARGO_VENDOR_CONFIG
+PX4_ANDROID_PATCH_PATH = audit_module.PX4_ANDROID_PATCH_PATH
+PX4_ANDROID_PATCH_SHA256 = audit_module.PX4_ANDROID_PATCH_SHA256
 
 
 def fail(message: str) -> None:
@@ -361,6 +363,12 @@ def build_manifest(stage: Path, commits: dict[str, str], normalized: list[dict[s
             component["commit"] = commits.get(name, expected.get("commit", ""))
             if name == "dtv-android":
                 component["tree"] = dtv_tree
+            if name == "px4-userland":
+                component["android_build_patch"] = {
+                    "path": PX4_ANDROID_PATCH_PATH,
+                    "sha256": PX4_ANDROID_PATCH_SHA256,
+                    "upstream_commit": expected["commit"],
+                }
             if name == "libarib25":
                 component["commit"] = "vendored-tree-sha256:" + tree_identity(stage, files)
             component["files"] = files

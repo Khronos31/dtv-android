@@ -15,6 +15,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 PACKAGE = "dev.khronos31.mirakc"
 CERT = "1fd02c94f29a5756ed1d560ac4ecb6813fa0b2e634473a6f31da210ffd5223c4"
+PX4_USERLAND_REF = "cf38742618bb02db41a95def619fbff50e9eb0f3"
+PX4_USERLAND_PATCH_SHA256 = "c60214256a40b03f3469b5a508f149c12e599282edf103875a2170b816c4b697"
+VERSION_PATTERN = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 HEADER = "MIRAKC-ATTESTATION-V1"
 FIELDS = (
     "candidate_run_id",
@@ -95,6 +98,7 @@ def verify_inputs(
     candidate: Path,
     build_info: Path,
     expected_tag_target: str | None = None,
+    expected_version: str | None = None,
 ) -> dict[str, object]:
     require_regular(candidate, "candidate APK")
     build = parse_info(build_info)
@@ -104,8 +108,19 @@ def verify_inputs(
     candidate_record = candidate_build.get("build")
     if not isinstance(candidate_record, dict):
         raise AttestationError("BUILD_INFO.json nested candidate build record is missing")
-    if candidate_record.get("kind") != "candidate" or candidate_record.get("version") != "0.3.3":
+    version = candidate_record.get("version")
+    if not isinstance(version, str) or VERSION_PATTERN.fullmatch(version) is None:
+        raise AttestationError("candidate build-info version is malformed")
+    if expected_version is not None and version != expected_version:
+        raise AttestationError("candidate build-info version does not match expected version")
+    if candidate_record.get("kind") != "candidate":
         raise AttestationError("candidate build-info identity mismatch")
+    version_parts = tuple(int(part) for part in VERSION_PATTERN.fullmatch(version).groups())
+    if version_parts >= (0, 4, 0):
+        if candidate_record.get("px4_userland_ref") != PX4_USERLAND_REF:
+            raise AttestationError("candidate PX4 upstream source ref mismatch")
+        if candidate_record.get("px4_userland_patch_sha256") != PX4_USERLAND_PATCH_SHA256:
+            raise AttestationError("candidate PX4 patch digest mismatch")
     candidate_head = candidate_record.get("git_head")
     if not isinstance(candidate_head, str) or re.fullmatch(r"[0-9a-f]{40}", candidate_head) is None:
         raise AttestationError("candidate git_head is malformed")
@@ -136,6 +151,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--candidate")
     parser.add_argument("--build-info")
     parser.add_argument("--tag-target")
+    parser.add_argument("--expected-version", help="expected version of the candidate build")
     parser.add_argument("--message", help="attestation text for verify, or output file for generate")
     parser.add_argument("--acceptance-output")
     args = parser.parse_args(argv)
@@ -156,7 +172,11 @@ def main(argv: list[str] | None = None) -> int:
         if missing:
             raise AttestationError("missing required arguments: " + ", ".join(missing))
         if args.command == "generate":
-            result = verify_inputs(Path(args.candidate), Path(args.build_info), args.tag_target)
+            if args.expected_version is None:
+                raise AttestationError("--expected-version is required for generate")
+            result = verify_inputs(
+                Path(args.candidate), Path(args.build_info), args.tag_target, args.expected_version
+            )
             if args.message:
                 Path(args.message).write_text(result["message"], encoding="utf-8")
             else:
@@ -166,9 +186,13 @@ def main(argv: list[str] | None = None) -> int:
         else:
             if not args.message:
                 raise AttestationError("--message is required for verify")
+            if args.expected_version is None:
+                raise AttestationError("--expected-version is required for verify")
             message = Path(args.message).read_text(encoding="utf-8")
             parsed = parse_message(message)
-            result = verify_inputs(Path(args.candidate), Path(args.build_info), args.tag_target)
+            result = verify_inputs(
+                Path(args.candidate), Path(args.build_info), args.tag_target, args.expected_version
+            )
             if parsed != result["values"]:
                 raise AttestationError("attestation fields do not match verified evidence")
             print(json.dumps(result["acceptance"], sort_keys=True))

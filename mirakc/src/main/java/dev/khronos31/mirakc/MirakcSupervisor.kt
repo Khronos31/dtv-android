@@ -11,28 +11,17 @@ import java.nio.charset.StandardCharsets
 internal const val MIRAKC_JOB_FILTER_ARGS =
     "{{#sids}} --sids={{{.}}}{{/sids}}{{#xsids}} --xsids={{{.}}}{{/xsids}}"
 
-internal fun renderMirakcJobCommands(
-    aribPath: String,
-    epgIntervalMinutes: Int = EpgUpdateIntervalSettings.DEFAULT_MINUTES
-): String {
-    require(epgIntervalMinutes in EpgUpdateIntervalSettings.MIN_MINUTES..EpgUpdateIntervalSettings.MAX_MINUTES) {
-        "EPG interval must be ${EpgUpdateIntervalSettings.MIN_MINUTES}..${EpgUpdateIntervalSettings.MAX_MINUTES} minutes"
-    }
-    return buildString {
-        append("  scan-services:\n")
-        append("    command: /system/bin/timeout 30 $aribPath scan-services")
-        append(MIRAKC_JOB_FILTER_ARGS)
-        append("\n    disabled: false\n")
-        append("  sync-clocks:\n")
-        append("    command: /system/bin/timeout 30 $aribPath sync-clocks")
-        append(MIRAKC_JOB_FILTER_ARGS)
-        append("\n    disabled: false\n")
-        append("  update-schedules:\n")
-        append("    command: /system/bin/timeout 600 $aribPath collect-eits")
-        append(MIRAKC_JOB_FILTER_ARGS)
-        append("\n    schedule: '@every ${epgIntervalMinutes}m'\n    disabled: false")
-    }
+internal enum class MirakcObservedPhase {
+    STOPPED, STARTING_SCAN, SCANNING, SCAN_READY, STARTING_PUBLIC, RUNNING_PUBLIC,
+    RESTARTING, FINISHING_SCAN, STOPPING, ERROR
 }
+
+internal data class MirakcSupervisorSnapshot(
+    val phase: MirakcObservedPhase,
+    val mode: MirakcRuntimeMode,
+    val detail: String,
+    val scan: GrScanStatus?
+)
 
 /** Owns the upstream mirakc process, but not tuner or smart-card descriptors. */
 internal class MirakcSupervisor(
@@ -46,9 +35,11 @@ internal class MirakcSupervisor(
     private val openPx4: (Px4DeviceIdentity) -> Px4UsbHandle,
     private val px4Firmware: () -> File,
     private val onStateChanged: () -> Unit,
-    private val onStartupResult: (Boolean) -> Boolean
+    private val onStartupResult: (Boolean) -> Boolean,
+    private val onGrScanStatus: (GrScanStatus) -> Unit = {}
 ) {
-    private val lock = Any()
+    private val lock = java.lang.Object()
+    private val ownerGate = RuntimeOwnerGate()
     private val runtimeDir = File(context.filesDir, "mirakc-runtime")
     private val epgDir = File(context.filesDir, "epg")
     private var process: NativeUsbProcess.StartedMirakc? = null
@@ -59,72 +50,184 @@ internal class MirakcSupervisor(
     private var crashRestart: Thread? = null
     private var crashRestartCount = 0
     private var reconfigurePending = false
+    private var reconfigureHandoff = false
     private var stopping = false
+    private var runtimeMode = MirakcRuntimeMode.PUBLIC
+    private val ownerWorkers = linkedSetOf<Thread>()
+    private var pendingScanCompletion: Pair<NativeUsbProcess.StartedMirakc, GrScanStatus>? = null
     @Volatile private var state = "stopped"
-    private val broker = SianoTunerBroker(
-        sianoExecutable = { File(context.applicationInfo.nativeLibraryDir, "libsiano-ts.so") },
-        firmware = firmware,
-        tunerDevices = tunerDevices,
-        openTuner = openTuner,
-        openReader = openReader
-    )
-    private val px4 = Px4DaemonSupervisor(
-        executable = { File(context.applicationInfo.nativeLibraryDir, "libpx4d.so") },
-        firmware = px4Firmware,
-        identities = px4Devices,
-        openDevice = openPx4,
-        runtimeDir = File(context.filesDir, "p4"),
-        onStateChanged = onStateChanged,
-        onDaemonFailure = {
-            Log.e(TAG, "PX4 daemon failed; scheduling mirakc reconfigure")
-            reconfigure()
-        }
-    )
+    private var observedPhase = MirakcObservedPhase.STOPPED
+    private val grScanRequests = GrScanRequestLifecycle()
+    private var registeredScanId: Long? = null
+    private var registeringScanId: Long? = null
+    private data class RuntimeAdapters(val broker: SianoTunerBroker, val px4: Px4DaemonSupervisor)
+    private val runtimeAdapters = RuntimeResourceCycle(createRuntimeAdapters(), ::createRuntimeAdapters)
+    private val broker: SianoTunerBroker get() = runtimeAdapters.current().broker
+    private val px4: Px4DaemonSupervisor get() = runtimeAdapters.current().px4
 
-    fun start() {
-        synchronized(lock) {
-            if (process != null || startup?.isAlive == true) return
-            stopping = false
-            crashRestartCount = 0
-            setStateLocked("starting")
-            startup = Thread({ startOnWorker() }, "mirakc-supervisor-start").also {
-                it.isDaemon = true
-                it.start()
+    private fun createRuntimeAdapters(): RuntimeAdapters {
+        lateinit var created: RuntimeAdapters
+        val broker = SianoTunerBroker(
+            sianoExecutable = { File(context.applicationInfo.nativeLibraryDir, "libsiano-ts.so") },
+            firmware = firmware,
+            tunerDevices = tunerDevices,
+            openTuner = openTuner,
+            openReader = openReader
+        )
+        val px4 = Px4DaemonSupervisor(
+            executable = { File(context.applicationInfo.nativeLibraryDir, "libpx4d.so") },
+            firmware = px4Firmware,
+            identities = px4Devices,
+            openDevice = openPx4,
+            runtimeDir = File(context.filesDir, "p4"),
+            onStateChanged = onStateChanged,
+            onDaemonFailure = {
+                synchronized(lock) {
+                    if (runtimeAdapters.current() === created) {
+                        Log.e(TAG, "PX4 daemon failed; scheduling mirakc reconfigure")
+                        reconfigure()
+                    }
+                }
             }
+        )
+        created = RuntimeAdapters(broker, px4)
+        return created
+    }
+
+    /** Caller holds lock; resources are renewed only when the prior owner fully retired. */
+    private fun renewRuntimeAdaptersIfTerminalLocked() {
+        runtimeAdapters.replaceAfterQuiescence(
+            quiescent = !stopping && process == null && ownerWorkers.isEmpty() &&
+                ownerGate.mayStart() && ownerGate.isQuiescent()
+        )
+    }
+
+    private fun closeRuntimeAdapters() {
+        val adapters = runtimeAdapters.current()
+        adapters.broker.close()
+        adapters.px4.stop()
+        runtimeAdapters.markTerminallyClosed(adapters)
+    }
+
+    fun start(): Boolean = start(MirakcRuntimeMode.PUBLIC)
+
+    fun startScanOnly(): Boolean = start(MirakcRuntimeMode.SCAN_ONLY)
+
+    private fun start(mode: MirakcRuntimeMode): Boolean {
+        return synchronized(lock) {
+            if (stopping || !ownerGate.mayStart()) return@synchronized false
+            if (process != null || ownerWorkers.isNotEmpty() || startup?.isAlive == true ||
+                monitor?.isAlive == true || restart?.isAlive == true || crashRestart?.isAlive == true
+            ) return@synchronized runtimeMode == mode && process != null
+            renewRuntimeAdaptersIfTerminalLocked()
+            stopping = false
+            runtimeMode = mode
+            crashRestartCount = 0
+            setStateLocked(
+                if (mode == MirakcRuntimeMode.SCAN_ONLY) "starting scan runtime" else "starting public server",
+                if (mode == MirakcRuntimeMode.SCAN_ONLY) MirakcObservedPhase.STARTING_SCAN
+                else MirakcObservedPhase.STARTING_PUBLIC
+            )
+            startup = launchOwnerWorkerLocked("mirakc-supervisor-start-${mode.name.lowercase()}") {
+                startOnWorker(mode)
+            }
+            true
         }
     }
 
     fun stop() {
         val current: NativeUsbProcess.StartedMirakc?
+        val workers: List<Thread>
         synchronized(lock) {
+            if (stopping) return
             stopping = true
-            startup?.interrupt()
-            startup = null
-            monitor?.interrupt()
-            monitor = null
+            ownerGate.beginStop()
+            setStateLocked("stopping", MirakcObservedPhase.STOPPING)
+            workers = ownerWorkers.toList()
+            workers.forEach(Thread::interrupt)
             // Invalidate an in-flight USB reconfiguration before closing the
             // broker. Its worker must never reopen the abstract socket after
             // shutdown has completed.
-            restart?.interrupt()
-            restart = null
-            crashRestart?.interrupt()
-            crashRestart = null
             reconfigurePending = false
+            reconfigureHandoff = false
+            markGrScanInterruptedIfRunning()
+            grScanRequests.clear()
             current = process
+        }
+        // nativeStop terminates the complete process group.  Do this outside
+        // the lock so a state callback cannot ever wait on process teardown.
+        current?.let {
+            stopStarted(it, "service-stop")
+            synchronized(lock) { if (process?.pid == it.pid) process = null }
+        }
+        closeRuntimeAdapters()
+        workers.filter { it !== Thread.currentThread() }.forEach { worker ->
+            try {
+                worker.join(STOP_WORKER_TIMEOUT_MS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
+        val stillActive = workers.filter { it !== Thread.currentThread() && it.isAlive }
+        if (stillActive.isNotEmpty()) {
+            Thread({
+                stillActive.forEach { worker ->
+                    try {
+                        worker.join()
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        return@Thread
+                    }
+                }
+                finishStop()
+            }, "mirakc-supervisor-stop-barrier").also {
+                it.isDaemon = true
+                it.start()
+            }
+            return
+        }
+        finishStop()
+    }
+
+    /**
+     * Wait until process and worker ownership has really drained, including a
+     * deferred stop barrier. Call only from a background teardown worker.
+     */
+    fun awaitQuiescent(timeoutMillis: Long): Boolean {
+        val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
+        synchronized(lock) {
+            while (process != null || ownerWorkers.isNotEmpty() || stopping || !ownerGate.mayStart()) {
+                val remainingNanos = deadline - System.nanoTime()
+                if (remainingNanos <= 0L) return false
+                val millis = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(remainingNanos).coerceAtLeast(1L)
+                lock.wait(millis)
+            }
+            return true
+        }
+    }
+
+    private fun finishStop() {
+        val lateProcess = synchronized(lock) { process }
+        lateProcess?.let { stopStarted(it, "stop-barrier") }
+        closeRuntimeAdapters()
+        synchronized(lock) {
             process = null
+            startup = null
+            monitor = null
+            restart = null
+            crashRestart = null
             try {
                 clearUpdateSchedulesTrigger()
                 clearGrScanTriggers()
             } catch (error: IOException) {
                 Log.e(TAG, "acceptance trigger cleanup failed during stop", error)
             }
-            setStateLocked("stopped")
+            setStateLocked("stopped", MirakcObservedPhase.STOPPED)
+            stopping = false
+            ownerGate.finishStop()
+            pendingScanCompletion = null
+            lock.notifyAll()
         }
-        // nativeStop terminates the complete process group.  Do this outside
-        // the lock so a state callback cannot ever wait on process teardown.
-        current?.let { stopStarted(it, "service-stop") }
-        broker.close()
-        px4.stop()
     }
 
     fun reconfigure() {
@@ -149,12 +252,9 @@ internal class MirakcSupervisor(
                 return
             }
             if (process == null) return
-            setStateLocked("restarting for USB change")
+            setStateLocked("restarting for USB change", MirakcObservedPhase.RESTARTING)
             Log.i(TAG, "breadcrumb reconfigure scheduled")
-            restart = Thread({ restartOnWorker() }, "mirakc-supervisor-restart").also {
-                it.isDaemon = true
-                it.start()
-            }
+            restart = launchOwnerWorkerLocked("mirakc-supervisor-restart") { restartOnWorker() }
         }
     }
 
@@ -164,11 +264,7 @@ internal class MirakcSupervisor(
             if (stopping) return
             if (process == null) {
                 if (startup?.isAlive != true) {
-                    setStateLocked("starting")
-                    startup = Thread({ startOnWorker() }, "mirakc-supervisor-start").also {
-                        it.isDaemon = true
-                        it.start()
-                    }
+                    start(MirakcRuntimeMode.PUBLIC)
                 } else {
                     reconfigurePending = true
                 }
@@ -178,15 +274,16 @@ internal class MirakcSupervisor(
                 reconfigurePending = true
                 return
             }
-            setStateLocked("restarting for terrestrial configuration")
-            restart = Thread({ restartOnWorker() }, "mirakc-supervisor-config-restart").also {
-                it.isDaemon = true
-                it.start()
-            }
+            setStateLocked("restarting for terrestrial configuration", MirakcObservedPhase.RESTARTING)
+            restart = launchOwnerWorkerLocked("mirakc-supervisor-config-restart") { restartOnWorker() }
         }
     }
 
     fun status(): String = state
+
+    fun snapshot(): MirakcSupervisorSnapshot = synchronized(lock) {
+        MirakcSupervisorSnapshot(observedPhase, runtimeMode, state, grScanStatus())
+    }
 
     fun px4Status(): String = px4.status()
 
@@ -211,56 +308,114 @@ internal class MirakcSupervisor(
     }
 
     /** Queue the range scan; upstream JobManager takes the low-priority tuner lease. */
-    fun requestGrScan(): Boolean {
-        synchronized(lock) {
+    fun requestGrScan(scanId: Long = System.currentTimeMillis().coerceAtLeast(1L)): Boolean {
+        return synchronized(lock) {
             val parent = grScanTrigger.parentFile ?: return false
-            if (stopping || process == null || !parent.isDirectory || grScanTrigger.exists() ||
-                grScanStatus()?.isRunning == true
-            ) return false
-            return try {
-                if (grScanCancelTrigger.exists() && !grScanCancelTrigger.delete()) {
-                    throw IOException("cannot clear stale GR cancellation marker")
+            if (stopping || runtimeMode != MirakcRuntimeMode.SCAN_ONLY) return false
+            val startupActive = startup?.isAlive == true || restart?.isAlive == true ||
+                crashRestart?.isAlive == true || reconfigurePending || reconfigureHandoff
+            val processReady = process != null && parent.isDirectory && !startupActive
+            val existingStatus = grScanStatus()?.takeIf { processReady }
+            when (val decision = grScanRequests.request(
+                processReady, startupActive, existingStatus, requestedScanId = scanId
+            )) {
+                GrScanRequestLifecycle.Decision.Busy,
+                GrScanRequestLifecycle.Decision.Unavailable -> return false
+                is GrScanRequestLifecycle.Decision.WaitForStartup -> true
+                is GrScanRequestLifecycle.Decision.Execute -> {
+                    if (queueGrScanLocked(decision.status)) {
+                        grScanRequests.activated(decision.status.scanId)
+                        true
+                    } else {
+                        grScanRequests.triggerFailed(decision.status.scanId)
+                        false
+                    }
                 }
-                val scanId = System.currentTimeMillis().coerceAtLeast(1L)
-                val previousState = grScanStateFile.takeIf { it.isFile && it.length() <= MAX_SCAN_STATUS_BYTES }
-                    ?.readText(StandardCharsets.UTF_8)
-                writeGrScanState("queued\n0\n50\n\n\n0\n$scanId\nNONE\n")
-                if (!grScanTrigger.createNewFile()) {
-                    previousState?.let { writeGrScanState(it) }
-                    return false
-                }
-                true
-            } catch (error: IOException) {
-                Log.e(TAG, "GR scan trigger failed", error)
-                false
             }
         }
     }
 
     /** Cancellation takes effect between channels, after the current tuner lease is released. */
     fun cancelGrScan(): Boolean {
+        var cancellationAccepted = false
+        var queuedCancellation: GrScanStatus? = null
         synchronized(lock) {
             val parent = grScanCancelTrigger.parentFile ?: return false
-            if (stopping || process == null || !parent.isDirectory || grScanStatus()?.isRunning != true) return false
-            return try {
-                grScanCancelTrigger.exists() || grScanCancelTrigger.createNewFile()
+            if (stopping) return false
+            if (grScanRequests.cancelPending()) {
+                cancellationAccepted = true
+                queuedCancellation = grScanStatus()
+            }
+            if (cancellationAccepted) {
+                markGrScanInterruptedIfRunning()
+            } else {
+            if (process == null || runtimeMode != MirakcRuntimeMode.SCAN_ONLY ||
+                !parent.isDirectory || grScanStatus()?.isRunning != true
+            ) return false
+            cancellationAccepted = true
+            try {
+                if (!grScanCancelTrigger.exists()) grScanCancelTrigger.createNewFile()
             } catch (error: IOException) {
                 Log.e(TAG, "GR scan cancellation trigger failed", error)
-                false
+                return false
+            }
             }
         }
+        // Killing the isolated scan process group releases a potentially
+        // blocked tuner lease promptly. No public service work shares it.
+        stop()
+        queuedCancellation?.let { status ->
+            try {
+                val parent = grScanStateFile.parentFile ?: throw IOException("scan state has no parent directory")
+                mkdir(parent)
+                writeGrScanState(status.toFileContents())
+            } catch (error: IOException) {
+                Log.e(TAG, "unable to persist queued scan cancellation", error)
+            }
+        }
+        return true
     }
 
     fun grScanStatus(): GrScanStatus? {
-        if (!grScanStateFile.isFile || grScanStateFile.length() > MAX_SCAN_STATUS_BYTES) return null
-        return try {
-            GrScanStatus.parse(grScanStateFile.readText(StandardCharsets.UTF_8))
-        } catch (_: IOException) {
-            null
+        synchronized(lock) {
+            val persisted = if (!grScanStateFile.isFile || grScanStateFile.length() > MAX_SCAN_STATUS_BYTES) {
+                null
+            } else {
+                try {
+                    GrScanStatus.parse(grScanStateFile.readText(StandardCharsets.UTF_8))
+                } catch (_: IOException) {
+                    null
+                }
+            }
+            return grScanRequests.visibleStatus(persisted)
         }
     }
 
-    private fun startOnWorker() {
+    /** Write the queued state before making the JobManager trigger visible. */
+    private fun queueGrScanLocked(status: GrScanStatus): Boolean {
+        if (stopping || process == null || grScanTrigger.parentFile?.isDirectory != true || grScanTrigger.exists()) {
+            return false
+        }
+        return try {
+            val previousState = grScanStateFile.takeIf { it.isFile && it.length() <= MAX_SCAN_STATUS_BYTES }
+                ?.readText(StandardCharsets.UTF_8)
+            if (grScanCancelTrigger.exists() && !grScanCancelTrigger.delete()) {
+                throw IOException("cannot clear stale GR cancellation marker")
+            }
+            writeGrScanState(status.toFileContents())
+            if (!grScanTrigger.createNewFile()) {
+                previousState?.let { writeGrScanState(it) }
+                false
+            } else {
+                true
+            }
+        } catch (error: IOException) {
+            Log.e(TAG, "GR scan trigger failed", error)
+            false
+        }
+    }
+
+    private fun startOnWorker(mode: MirakcRuntimeMode = MirakcRuntimeMode.PUBLIC) {
         var started: NativeUsbProcess.StartedMirakc? = null
         try {
             synchronized(lock) {
@@ -270,19 +425,19 @@ internal class MirakcSupervisor(
             val executable = nativeDir.resolve("libmirakc.so")
             if (!executable.isFile) throw IOException("upstream mirakc is not packaged: $executable")
 
-            // Keep one stable app-private runtime tree.  The EPG tree is
-            // intentionally separate and persistent across process restarts.
-            mkdir(runtimeDir)
-            mkdir(epgDir)
-            val cacheDir = epgDir.resolve("cache")
-            val recordingDir = epgDir.resolve("recordings")
-            mkdir(cacheDir)
-            mkdir(recordingDir)
+            // Public and discovery runtimes have isolated cache/config/listener
+            // ownership. Both use the same broker and PX4 device adapters.
+            val layout = mirakcRuntimeLayout(context.filesDir, mode)
+            mkdir(layout.runtimeDirectory)
+            mkdir(layout.cacheDirectory)
+            mkdir(layout.recordingDirectory)
             // A marker is meaningful only while this exact upstream process
             // is alive; never carry one across a crash/restart.
-            clearUpdateSchedulesTrigger()
-            clearGrScanTriggers()
-            markGrScanInterruptedIfRunning()
+            if (mode == MirakcRuntimeMode.SCAN_ONLY) {
+                clearUpdateSchedulesTrigger()
+                clearGrScanTriggers()
+                markGrScanInterruptedIfRunning()
+            }
             synchronized(lock) {
                 if (stopping) return
             }
@@ -292,17 +447,17 @@ internal class MirakcSupervisor(
             if (abortAfterBrokerStart) {
                 // stop() may have raced with broker.start(); do not leave a
                 // newly-created abstract socket behind after shutdown.
-                broker.close()
+                closeRuntimeAdapters()
                 return
             }
-            val strings = runtimeDir.resolve("strings.yml")
+            val strings = layout.runtimeDirectory.resolve("strings.yml")
             context.assets.open("mirakc-strings.yml").use { input ->
                 strings.outputStream().use { output -> input.copyTo(output) }
             }
-            val config = runtimeDir.resolve("config.yml")
+            val config = layout.runtimeDirectory.resolve("config.yml")
             val temporaryConfig = config.resolveSibling("config.yml.tmp")
             temporaryConfig.writeText(
-                buildConfig(cacheDir, recordingDir, strings, generation, px4Generation),
+                buildConfig(layout, strings, generation, px4Generation, mode),
                 StandardCharsets.UTF_8
             )
             if (!temporaryConfig.renameTo(config)) {
@@ -318,7 +473,11 @@ internal class MirakcSupervisor(
                     true
                 } else {
                     process = launched
-                    setStateLocked("probing (pid ${launched.pid})")
+                    setStateLocked(
+                        "probing (pid ${launched.pid})",
+                        if (mode == MirakcRuntimeMode.SCAN_ONLY) MirakcObservedPhase.STARTING_SCAN
+                        else MirakcObservedPhase.STARTING_PUBLIC
+                    )
                     false
                 }
             }
@@ -326,7 +485,7 @@ internal class MirakcSupervisor(
                 stopStarted(launched, "stop-during-startup")
                 return
             }
-            probeVersion(launched.pid)
+            probeVersion(launched.pid, layout.listenAddress.substringAfterLast(':').toInt())
             when (val result = NativeUsbProcess.pollMirakc(launched.pid)) {
                 NativeUsbProcess.PollResult.ALIVE -> Unit
                 is NativeUsbProcess.PollResult.EXITED ->
@@ -335,27 +494,35 @@ internal class MirakcSupervisor(
                     throw IOException("unable to poll mirakc after /api/version probe")
             }
             Log.i(TAG, "breadcrumb probe success pid=${launched.pid}")
-            val rerun = synchronized(lock) {
+            val (rerun, deferScanForReconfigure) = synchronized(lock) {
                 if (process?.pid != launched.pid || stopping) return
                 // Read and clear this while startup is still marked alive so
                 // a permission event cannot be lost between those operations.
                 val restartActive = restart?.isAlive == true
                 val pending = reconfigurePending
                 if (!restartActive) reconfigurePending = false
+                val rerun = pending && !restartActive
+                if (rerun) reconfigureHandoff = true
                 startup = null
-                setStateLocked("running (pid ${launched.pid})")
-                monitor = Thread({ monitor(launched) }, "mirakc-supervisor-monitor").also {
-                    it.isDaemon = true
-                    it.start()
-                }
+                setStateLocked(
+                    if (mode == MirakcRuntimeMode.SCAN_ONLY) "scan runtime ready (pid ${launched.pid})"
+                    else "running (pid ${launched.pid})",
+                    if (mode == MirakcRuntimeMode.SCAN_ONLY) MirakcObservedPhase.SCAN_READY
+                    else MirakcObservedPhase.RUNNING_PUBLIC
+                )
+                monitor = launchOwnerWorkerLocked("mirakc-supervisor-monitor") { monitor(launched, mode) }
                 // A restart worker leaves the flag for its finally block,
                 // which clears its marker before scheduling the follow-up.
-                pending && !restartActive
+                rerun to pending
             }
-            if (!rerun) onStartupResult(true)
+            activatePendingGrScan(deferForReconfigure = deferScanForReconfigure)
+            if (!rerun && mode == MirakcRuntimeMode.PUBLIC) onStartupResult(true)
             // A restart worker cannot recursively schedule itself while its
             // marker is alive; its finally block handles that coalesced event.
-            if (rerun && synchronized(lock) { restart?.isAlive != true }) reconfigure()
+            if (rerun) {
+                if (synchronized(lock) { restart?.isAlive != true }) reconfigure()
+                synchronized(lock) { reconfigureHandoff = false }
+            }
         } catch (error: Exception) {
             Log.e(TAG, "breadcrumb startup failure")
             started?.let { stopStarted(it, "startup-failure") }
@@ -366,17 +533,20 @@ internal class MirakcSupervisor(
             } catch (cleanupError: IOException) {
                 Log.e(TAG, "acceptance trigger cleanup failed after startup error", cleanupError)
             }
-            synchronized(lock) {
+            val scanStartupFailure = synchronized(lock) {
                 if (stopping) {
                     startup = null
                     return
                 }
+                val scanFailure = grScanRequests.startupFailed()
                 if (process?.pid == started?.pid) process = null
                 startup = null
-                setStateLocked("error (startup): ${error.message ?: error.javaClass.simpleName}")
+                setStateLocked("error (startup): ${error.message ?: error.javaClass.simpleName}", MirakcObservedPhase.ERROR)
+                scanFailure
             }
+            scanStartupFailure?.let(onGrScanStatus)
             val rollbackHandled = onStartupResult(false)
-            if (!rollbackHandled) {
+            if (!rollbackHandled && mode == MirakcRuntimeMode.PUBLIC) {
                 synchronized(lock) {
                     if (!stopping && crashRestart == null) launchRetryLocked()
                 }
@@ -405,15 +575,19 @@ internal class MirakcSupervisor(
             synchronized(lock) {
                 if (stopping) return
             }
-            startOnWorker()
+            startOnWorker(runtimeMode)
         } finally {
             val rerun = synchronized(lock) {
-                restart = null
                 val pending = reconfigurePending
                 reconfigurePending = false
+                reconfigureHandoff = pending
+                restart = null
                 pending
             }
-            if (rerun) reconfigure()
+            if (rerun) {
+                reconfigure()
+                synchronized(lock) { reconfigureHandoff = false }
+            }
         }
     }
 
@@ -435,11 +609,7 @@ internal class MirakcSupervisor(
     private fun markGrScanInterruptedIfRunning() {
         val status = grScanStatus()?.takeIf { it.isRunning } ?: return
         try {
-            writeGrScanState(
-                "interrupted\n${status.completed}\n${status.total}\n" +
-                    "${status.currentChannel ?: ""}\n${status.foundChannels.joinToString(",")}\n" +
-                    "${status.failedChannels}\n${status.scanId}\nINTERRUPTED\n"
-            )
+            writeGrScanState(status.asInterrupted("INTERRUPTED").toFileContents())
         } catch (error: IOException) {
             Log.e(TAG, "unable to mark interrupted GR scan", error)
         }
@@ -453,7 +623,55 @@ internal class MirakcSupervisor(
         }
     }
 
-    private fun probeVersion(pid: Int) {
+    /** Convert a scan requested while startup was probing into the real JobManager trigger. */
+    private fun activatePendingGrScan(deferForReconfigure: Boolean) {
+        synchronized(lock) {
+            grScanRequests.activateWhenReady(deferForReconfigure) { pending -> queueGrScanLocked(pending) }
+        }
+    }
+
+    /** Drain requests accepted during worker retirement after this PID becomes the stable generation. */
+    private fun activatePendingGrScanForStableProcess(started: NativeUsbProcess.StartedMirakc) {
+        synchronized(lock) {
+            if (stopping || process?.pid != started.pid || startup?.isAlive == true ||
+                restart?.isAlive == true || crashRestart?.isAlive == true ||
+                reconfigurePending || reconfigureHandoff
+            ) {
+                return
+            }
+            grScanRequests.activateWhenReady(deferForReconfigure = false) { pending -> queueGrScanLocked(pending) }
+        }
+    }
+
+    /** Apply a successful scan to persistent pending settings even when no TV Activity is visible. */
+    private fun observeCompletedGrScan(started: NativeUsbProcess.StartedMirakc) {
+        val completed = grScanStatus()?.takeIf {
+            it.state == GrScanStatus.State.EMPTY || it.isApplicable
+        } ?: return
+        val shouldRegister = synchronized(lock) {
+            if (process?.pid != started.pid || registeredScanId == completed.scanId ||
+                registeringScanId == completed.scanId
+            ) {
+                false
+            } else {
+                registeringScanId = completed.scanId
+                true
+            }
+        }
+        if (!shouldRegister) {
+            return
+        }
+        try {
+            onGrScanStatus(completed)
+            synchronized(lock) { registeredScanId = completed.scanId }
+        } catch (error: Exception) {
+            Log.e(TAG, "Unable to register completed GR scan", error)
+        } finally {
+            synchronized(lock) { if (registeringScanId == completed.scanId) registeringScanId = null }
+        }
+    }
+
+    private fun probeVersion(pid: Int, port: Int) {
         val deadline = System.nanoTime() + STARTUP_TIMEOUT_NS
         var lastError = "no response"
         while (!Thread.currentThread().isInterrupted && System.nanoTime() < deadline) {
@@ -464,7 +682,7 @@ internal class MirakcSupervisor(
                 NativeUsbProcess.PollResult.ERROR -> throw IOException("unable to poll mirakc during startup probe")
             }
             try {
-                val connection = URL("http://127.0.0.1:40772/api/version").openConnection() as HttpURLConnection
+                val connection = URL("http://127.0.0.1:$port/api/version").openConnection() as HttpURLConnection
                 connection.connectTimeout = PROBE_TIMEOUT_MS
                 connection.readTimeout = PROBE_TIMEOUT_MS
                 connection.requestMethod = "GET"
@@ -488,7 +706,7 @@ internal class MirakcSupervisor(
         throw IOException("mirakc /api/version probe timed out ($lastError)")
     }
 
-    private fun monitor(started: NativeUsbProcess.StartedMirakc) {
+    private fun monitor(started: NativeUsbProcess.StartedMirakc, mode: MirakcRuntimeMode) {
         while (!Thread.currentThread().isInterrupted) {
             try {
                 Thread.sleep(500)
@@ -496,7 +714,18 @@ internal class MirakcSupervisor(
                 return
             }
             when (val result = NativeUsbProcess.pollMirakc(started.pid)) {
-                NativeUsbProcess.PollResult.ALIVE -> continue
+                NativeUsbProcess.PollResult.ALIVE -> {
+                    if (mode == MirakcRuntimeMode.SCAN_ONLY) {
+                        val scanStatus = grScanStatus()
+                        if (scanStatus != null && !scanStatus.isRunning) {
+                            stopCompletedScanRuntime(started, scanStatus)
+                            return
+                        }
+                    }
+                    activatePendingGrScanForStableProcess(started)
+                    observeCompletedGrScan(started)
+                    continue
+                }
                 is NativeUsbProcess.PollResult.EXITED,
                 NativeUsbProcess.PollResult.ERROR -> {
                     // pollMirakc reaps an exited child; do not call
@@ -510,16 +739,26 @@ internal class MirakcSupervisor(
                         if (process?.pid != started.pid) return
                         process = null
                         monitor = null
-                        setStateLocked(
-                            if (result is NativeUsbProcess.PollResult.EXITED) {
-                                "crashed (pid ${started.pid}, ${describe(result)})"
-                            } else {
-                                "crashed (pid ${started.pid}, poll error)"
-                            }
-                        )
-                        launchRetryLocked()
+                        if (mode == MirakcRuntimeMode.SCAN_ONLY) {
+                            markGrScanInterruptedIfRunning()
+                            setStateLocked("scan runtime stopped unexpectedly", MirakcObservedPhase.ERROR)
+                        } else {
+                            setStateLocked(
+                                if (result is NativeUsbProcess.PollResult.EXITED) {
+                                    "crashed (pid ${started.pid}, ${describe(result)})"
+                                } else {
+                                    "crashed (pid ${started.pid}, poll error)"
+                                }, MirakcObservedPhase.ERROR
+                            )
+                            launchRetryLocked()
+                        }
                     }
                     finishDiagnostics(started)
+                    if (mode == MirakcRuntimeMode.SCAN_ONLY) {
+                        closeRuntimeAdapters()
+                        grScanStatus()?.takeIf { it.state == GrScanStatus.State.INTERRUPTED }
+                            ?.let(onGrScanStatus)
+                    }
                     return
                 }
             }
@@ -533,18 +772,24 @@ internal class MirakcSupervisor(
             synchronized(lock) {
                 if (stopping || process != null) return
                 startup = worker
-                setStateLocked("restarting after crash (attempt ${attempt + 1}/$MAX_CRASH_RESTARTS)")
+                setStateLocked(
+                    "restarting after crash (attempt ${attempt + 1}/$MAX_CRASH_RESTARTS)",
+                    MirakcObservedPhase.STARTING_PUBLIC
+                )
             }
             broker.rotateGeneration()
             synchronized(lock) {
                 if (stopping) return
             }
-            startOnWorker()
+            startOnWorker(runtimeMode)
         } catch (_: InterruptedException) {
             // stop() interrupts the bounded backoff during service teardown.
         } catch (error: Exception) {
             synchronized(lock) {
-                if (!stopping) setStateLocked("error (crash restart): ${error.message ?: error.javaClass.simpleName}")
+                if (!stopping) setStateLocked(
+                    "error (crash restart): ${error.message ?: error.javaClass.simpleName}",
+                    MirakcObservedPhase.ERROR
+                )
             }
         } finally {
             val rerun = synchronized(lock) {
@@ -554,29 +799,52 @@ internal class MirakcSupervisor(
                 if (wasRetryWorker && process == null) launchRetryLocked()
                 val pending = reconfigurePending
                 reconfigurePending = false
+                reconfigureHandoff = pending
                 pending
             }
-            if (rerun) reconfigure()
+            if (rerun) {
+                reconfigure()
+                synchronized(lock) { reconfigureHandoff = false }
+            }
         }
     }
 
     private fun launchRetryLocked() {
         if (stopping || crashRestart != null || crashRestartCount >= MAX_CRASH_RESTARTS) return
         val attempt = crashRestartCount++
-        crashRestart = Thread(
-            { crashRestartOnWorker(attempt) },
-            "mirakc-supervisor-crash-restart"
-        ).also {
-            it.isDaemon = true
-            it.start()
+        crashRestart = launchOwnerWorkerLocked("mirakc-supervisor-crash-restart") {
+            crashRestartOnWorker(attempt)
         }
     }
 
-    private fun setStateLocked(value: String) {
+    private fun setStateLocked(value: String, phase: MirakcObservedPhase = observedPhase) {
         state = value
+        observedPhase = phase
         // The callback only rebuilds the service status text and never takes
         // this supervisor's lock, so state notifications cannot deadlock.
         onStateChanged()
+    }
+
+    /** Register before starting so stop() can join even after a worker clears its role field. */
+    private fun launchOwnerWorkerLocked(name: String, work: () -> Unit): Thread {
+        check(ownerGate.ownerStarted()) { "runtime owner is stopping" }
+        val worker = Thread({
+            try {
+                work()
+            } finally {
+                val finishScan = synchronized(lock) {
+                    ownerWorkers.remove(Thread.currentThread())
+                    ownerGate.ownerFinished()
+                    pendingScanCompletion.takeIf { stopping && ownerWorkers.isEmpty() }?.also {
+                        pendingScanCompletion = null
+                    }
+                }
+                finishScan?.let { finishCompletedScan(it.first, it.second) }
+            }
+        }, name).also { it.isDaemon = true }
+        ownerWorkers += worker
+        worker.start()
+        return worker
     }
 
     private data class DiagnosticReader(
@@ -671,6 +939,86 @@ internal class MirakcSupervisor(
         }
     }
 
+    private fun stopCompletedScanRuntime(
+        started: NativeUsbProcess.StartedMirakc,
+        status: GrScanStatus
+    ) {
+        val otherWorkers: List<Thread>
+        synchronized(lock) {
+            if (process?.pid != started.pid || stopping) return
+            stopping = true
+            ownerGate.beginStop()
+            setStateLocked("finishing channel scan", MirakcObservedPhase.FINISHING_SCAN)
+            otherWorkers = ownerWorkers.filter { it !== Thread.currentThread() }
+            otherWorkers.forEach(Thread::interrupt)
+        }
+        stopStarted(started, "scan-${status.state.name.lowercase()}")
+        closeRuntimeAdapters()
+        otherWorkers.forEach { worker ->
+            try {
+                worker.join(STOP_WORKER_TIMEOUT_MS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return
+            }
+        }
+        val slowWorkers = otherWorkers.filter(Thread::isAlive)
+        if (slowWorkers.isNotEmpty()) {
+            Thread({
+                slowWorkers.forEach { it.join() }
+                closeRuntimeAdapters()
+                completeScanStop(started, status)
+            }, "mirakc-scan-stop-barrier").also {
+                it.isDaemon = true
+                it.start()
+            }
+            return
+        }
+        closeRuntimeAdapters()
+        completeScanStop(started, status)
+    }
+
+    private fun completeScanStop(started: NativeUsbProcess.StartedMirakc, status: GrScanStatus) {
+        synchronized(lock) {
+            pendingScanCompletion = started to status
+        }
+        finishPendingScanIfQuiescent()
+    }
+
+    private fun finishPendingScanIfQuiescent() {
+        val pending = synchronized(lock) {
+            if (!stopping || ownerWorkers.isNotEmpty()) return
+            pendingScanCompletion.also { pendingScanCompletion = null }
+        } ?: return
+        finishCompletedScan(pending.first, pending.second)
+    }
+
+    private fun finishCompletedScan(started: NativeUsbProcess.StartedMirakc, status: GrScanStatus) {
+        try {
+            onGrScanStatus(status)
+        } catch (error: Exception) {
+            Log.e(TAG, "Unable to persist completed GR scan", error)
+        }
+        synchronized(lock) {
+            if (process?.pid != started.pid) {
+                stopping = false
+                return
+            }
+            process = null
+            monitor = null
+            startup = null
+            try {
+                clearGrScanTriggers()
+            } catch (error: IOException) {
+                Log.e(TAG, "GR scan trigger cleanup failed after scan stop", error)
+            }
+            setStateLocked("scan ${status.state.name.lowercase()} (runtime stopped)", MirakcObservedPhase.STOPPED)
+            stopping = false
+            ownerGate.finishStop()
+            lock.notifyAll()
+        }
+    }
+
     private fun describe(result: NativeUsbProcess.PollResult.EXITED): String = when {
         result.code != null -> "exit=${result.code}"
         result.signal != null -> "signal=${result.signal}"
@@ -684,11 +1032,11 @@ internal class MirakcSupervisor(
     }
 
     private fun buildConfig(
-        cacheDir: File,
-        recordingDir: File,
+        layout: MirakcRuntimeLayout,
         strings: File,
         generation: SianoGeneration,
-        px4Generations: List<Px4Generation>
+        px4Generations: List<Px4Generation>,
+        mode: MirakcRuntimeMode
     ): String {
         val arib = File(context.applicationInfo.nativeLibraryDir, "libmirakc-arib.so")
         val adapter = File(context.applicationInfo.nativeLibraryDir, "libmirakc-siano-adapter.so")
@@ -746,27 +1094,31 @@ internal class MirakcSupervisor(
             }
         }
         val hasSatellitePx4 = px4Generations.any { px4 -> px4.tuners.any { it.supportsSatellite } }
-        val satelliteChannelConfig = if (!hasSatellitePx4) {
+        val satelliteChannelConfig = if (!hasSatellitePx4 || mode == MirakcRuntimeMode.SCAN_ONLY) {
             ""
         } else {
             renderPx4SatelliteChannelConfig()
         }
-        val terrestrialChannelConfig = renderTerrestrialChannelConfig(
-            terrestrialChannels(),
-            appendListHeaderWhenEmpty = px4Generations.any { px4 -> px4.tuners.any { it.supportsTerrestrial } }
-        )
+        val terrestrialChannelConfig = if (mode == MirakcRuntimeMode.SCAN_ONLY) {
+            "channels: []\n"
+        } else {
+            renderTerrestrialChannelConfig(
+                terrestrialChannels(),
+                appendListHeaderWhenEmpty = px4Generations.any { px4 -> px4.tuners.any { it.supportsTerrestrial } }
+            )
+        }
         val epgIntervalMinutes = EpgUpdateIntervalStore(
             AndroidStringSettings(
                 context.getSharedPreferences("epg-update-settings", Context.MODE_PRIVATE)
             )
         ).minutes()
-        val jobsConfig = renderMirakcJobCommands(aribPath, epgIntervalMinutes)
+        val jobsConfig = renderMirakcJobCommands(aribPath, epgIntervalMinutes, enabled = mode == MirakcRuntimeMode.PUBLIC)
         return """
             |epg:
-            |  cache-dir: '${yamlPath(cacheDir)}'
+            |  cache-dir: '${yamlPath(layout.cacheDirectory)}'
             |server:
             |  addrs:
-            |    - http: '0.0.0.0:40772'
+            |    - http: '${layout.listenAddress}'
             |$terrestrialChannelConfig$satelliteChannelConfig$tunerConfig|filters:
             |  decode-filter:
             |    command: '$b25FilterPath --socket=@${generation.socketName} --token=${generation.token}'
@@ -781,7 +1133,7 @@ internal class MirakcSupervisor(
             |resource:
             |  strings-yaml: '${yamlPath(strings)}'
             |recording:
-            |  basedir: '${yamlPath(recordingDir)}'
+            |  basedir: '${yamlPath(layout.recordingDirectory)}'
         """.trimMargin() + "\n"
     }
 
@@ -796,6 +1148,7 @@ internal class MirakcSupervisor(
         const val MAX_DIAGNOSTICS_BYTES = 64 * 1024
         const val MAX_DIAGNOSTIC_LINE = 512
         const val DIAGNOSTICS_DRAIN_TIMEOUT_MS = 500L
+        const val STOP_WORKER_TIMEOUT_MS = 2_000L
         const val MAX_SCAN_STATUS_BYTES = 2 * 1024
         const val TAG = "MirakcSupervisor"
     }
@@ -803,9 +1156,9 @@ internal class MirakcSupervisor(
     private val updateSchedulesTrigger: File
         get() = epgDir.resolve("cache/.acceptance-update-schedules")
     private val grScanTrigger: File
-        get() = epgDir.resolve("cache/.acceptance-gr-scan")
+        get() = File(context.filesDir, "mirakc-scan-runtime/cache/.acceptance-gr-scan")
     private val grScanCancelTrigger: File
-        get() = epgDir.resolve("cache/.acceptance-cancel-gr-scan")
+        get() = File(context.filesDir, "mirakc-scan-runtime/cache/.acceptance-cancel-gr-scan")
     private val grScanStateFile: File
-        get() = epgDir.resolve("cache/.gr-scan-state")
+        get() = File(context.filesDir, "mirakc-scan-runtime/cache/.gr-scan-state")
 }

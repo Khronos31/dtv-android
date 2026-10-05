@@ -228,12 +228,12 @@ index 0df38541..b570ab68 100644
      }
  }
 diff --git mirakc-core/src/epg/job.rs mirakc-core/src/epg/job.rs
-index d89feda6..41da4174 100644
+index d89feda6..cdd80650 100644
 --- mirakc-core/src/epg/job.rs
 +++ mirakc-core/src/epg/job.rs
 @@ -1,14 +1,16 @@
  use std::env;
-+use std::io;
++use std::io::{self, Read};
 +use std::path::Path;
  use std::str::FromStr;
  use std::sync::Arc;
@@ -310,7 +310,7 @@ index d89feda6..41da4174 100644
 +            return;
 +        };
 +        self.scanning_gr_channels = true;
-+        let scan_id = new_gr_scan_id();
++        let scan_id = scan_id_for_gr_scan(cache_dir, new_gr_scan_id);
 +        let cancel_marker = cache_dir.join(".acceptance-cancel-gr-scan");
 +        let scanner = ServiceScanner::new(self.config.clone(), self.tuner_manager.clone());
 +        let result = scanner
@@ -445,7 +445,7 @@ index d89feda6..41da4174 100644
          let addr = ctx.address().clone();
          ctx.spawn_task(async move {
              tokio::time::sleep(interval).await;
-@@ -194,6 +347,42 @@ where
+@@ -194,6 +347,81 @@ where
      }
  }
  
@@ -485,10 +485,49 @@ index d89feda6..41da4174 100644
 +        .max(1)
 +}
 +
++const MAX_GR_SCAN_STATE_BYTES: u64 = 4096;
++
++fn queued_gr_scan_request_id(cache_dir: &Path) -> Option<u64> {
++    let state_file = cache_dir.join(".gr-scan-state");
++    let mut contents = Vec::new();
++    std::fs::File::open(state_file)
++        .ok()?
++        .take(MAX_GR_SCAN_STATE_BYTES + 1)
++        .read_to_end(&mut contents)
++        .ok()?;
++    if contents.len() as u64 > MAX_GR_SCAN_STATE_BYTES {
++        return None;
++    }
++    let contents = std::str::from_utf8(&contents).ok()?;
++    let fields = contents.trim_end_matches('\n').split('\n').collect::<Vec<_>>();
++    if fields.len() != 8
++        || fields[0] != "queued"
++        || fields[1] != "0"
++        || fields[2] != "50"
++        || !fields[3].is_empty()
++        || !fields[4].is_empty()
++        || fields[5] != "0"
++        || fields[7] != "NONE"
++    {
++        return None;
++    }
++    fields[6]
++        .parse::<u64>()
++        .ok()
++        .filter(|scan_id| *scan_id > 0 && *scan_id <= i64::MAX as u64)
++}
++
++fn scan_id_for_gr_scan<F>(cache_dir: &Path, fresh_scan_id: F) -> u64
++where
++    F: FnOnce() -> u64,
++{
++    queued_gr_scan_request_id(cache_dir).unwrap_or_else(fresh_scan_id)
++}
++
  #[async_trait]
  impl<T, E, F> Actor for JobManager<T, E, F>
  where
-@@ -210,6 +399,7 @@ where
+@@ -210,6 +438,7 @@ where
      async fn started(&mut self, ctx: &mut Context<Self>) {
          // It's guaranteed that no response is sent before initial jobs are invoked.
          tracing::debug!("Started");
@@ -496,7 +535,7 @@ index d89feda6..41da4174 100644
          if self.config.jobs.scan_services.disabled {
              // Nothing to do.
          } else if is_fresh(&self.config, "services.json") {
-@@ -385,6 +575,28 @@ where
+@@ -385,6 +614,28 @@ where
      }
  }
  
@@ -525,14 +564,14 @@ index d89feda6..41da4174 100644
  // used for debugging purposes
  
  static EPG_FRESH_PERIOD: Lazy<Option<std::time::Duration>> = Lazy::new(|| {
-@@ -412,3 +624,30 @@ fn is_fresh(config: &Config, filename: &str) -> bool {
+@@ -412,3 +663,75 @@ fn is_fresh(config: &Config, filename: &str) -> bool {
          _ => false,
      }
  }
 +
 +#[cfg(test)]
 +mod tests {
-+    use super::write_gr_scan_status;
++    use super::{scan_id_for_gr_scan, write_gr_scan_status};
 +
 +    #[test]
 +    fn gr_scan_status_has_bounded_line_format_and_stable_scan_id() {
@@ -555,18 +594,70 @@ index d89feda6..41da4174 100644
 +            "running\n2\n50\n14\n13,14\n0\n1759591680123\nNONE\n"
 +        );
 +    }
++
++    #[test]
++    fn queued_android_scan_id_is_preserved_through_progress_and_completion() {
++        let cache_dir = tempfile::tempdir().unwrap();
++        let requested_scan_id = 1_759_591_680_123;
++        std::fs::write(
++            cache_dir.path().join(".gr-scan-state"),
++            format!("queued\n0\n50\n\n\n0\n{requested_scan_id}\nNONE\n"),
++        )
++        .unwrap();
++
++        let scan_id = scan_id_for_gr_scan(cache_dir.path(), || panic!("valid queued ID was not used"));
++        assert_eq!(requested_scan_id, scan_id);
++        write_gr_scan_status(
++            cache_dir.path(), scan_id, "running", 1, Some(13), &[], 0, None,
++        )
++        .unwrap();
++        let progress = std::fs::read_to_string(cache_dir.path().join(".gr-scan-state")).unwrap();
++        assert_eq!(progress.lines().nth(6), Some("1759591680123"));
++
++        write_gr_scan_status(
++            cache_dir.path(), scan_id, "complete", 50, None, &[13, 16], 0, None,
++        )
++        .unwrap();
++        let completed = std::fs::read_to_string(cache_dir.path().join(".gr-scan-state")).unwrap();
++        assert_eq!(completed.lines().nth(6), Some("1759591680123"));
++    }
++
++    #[test]
++    fn only_bounded_well_formed_queued_request_ids_are_adopted() {
++        let cache_dir = tempfile::tempdir().unwrap();
++        for state in [
++            "running\n1\n50\n13\n\n0\n123\nNONE\n".to_string(),
++            "queued\n0\n50\n\n\n0\n0\nNONE\n".to_string(),
++            format!("queued\n0\n50\n\n\n0\n{}\nNONE\n", i64::MAX as u64 + 1),
++            format!("queued\n0\n50\n\n\n0\n123\nNONE\n{}", "x".repeat(4096)),
++        ] {
++            std::fs::write(cache_dir.path().join(".gr-scan-state"), state).unwrap();
++            assert_eq!(
++                scan_id_for_gr_scan(cache_dir.path(), || 999),
++                999,
++                "invalid or stale state must use a fresh trigger ID"
++            );
++        }
++    }
 +}
 diff --git mirakc-core/src/epg/service_scanner.rs mirakc-core/src/epg/service_scanner.rs
-index b2cad233..7de4da22 100644
+index b2cad233..ab0dccf8 100644
 --- mirakc-core/src/epg/service_scanner.rs
 +++ mirakc-core/src/epg/service_scanner.rs
-@@ -1,4 +1,5 @@
+@@ -1,6 +1,12 @@
++use std::collections::BTreeSet;
++use std::future::Future;
++use std::pin::Pin;
  use std::sync::Arc;
 +use std::time::Duration;
  
  use actlet::prelude::*;
++use futures::stream::FuturesUnordered;
++use futures::StreamExt;
  use indexmap::IndexMap;
-@@ -64,10 +65,97 @@ where
+ use serde::Deserialize;
+ use tokio::io::AsyncReadExt;
+@@ -64,10 +70,79 @@ where
          results
      }
  
@@ -576,59 +667,41 @@ index b2cad233..7de4da22 100644
 +    /// instead of applying a partial channel list.
 +    pub async fn scan_gr_channels<F, C>(
 +        &self,
-+        mut on_progress: F,
++        on_progress: F,
 +        should_cancel: C,
 +    ) -> std::io::Result<GrScanResult>
 +    where
++        T: Send + Sync + 'static,
 +        F: FnMut(usize, Option<u16>, &[u16]) -> std::io::Result<()> + Send,
 +        C: Fn() -> bool + Send,
 +    {
-+        const CHANNEL_COUNT: usize = 50;
-+        let mut found_channels = Vec::new();
-+        let mut failed_channels = 0;
-+        let mut completed = 0;
-+        let mut current_channel = None;
-+        let mut interrupted = false;
-+        let command = &self.config.jobs.scan_services.command;
-+
-+        on_progress(0, None, &found_channels)?;
-+        for (index, channel_number) in (13u16..=62).enumerate() {
-+            if should_cancel() {
-+                interrupted = true;
-+                break;
-+            }
-+            let channel = ChannelConfig {
-+                name: format!("GR-{channel_number}"),
-+                channel_type: ChannelType::GR,
-+                channel: channel_number.to_string(),
-+                extra_args: String::new(),
-+                services: Vec::new(),
-+                excluded_services: Vec::new(),
-+                disabled: false,
-+            };
-+            match Self::scan_services_in_channel(&channel, command, &self.tuner_manager).await {
-+                Ok(services) if !services.is_empty() => found_channels.push(channel_number),
-+                Ok(_) => {}
-+                Err(error) if error.downcast_ref::<NoServiceFound>().is_some() => {}
-+                Err(_) => {
-+                    // Error text can include commands or paths; progress state
-+                    // records only the count and never serializes raw errors.
-+                    tracing::warn!(channel = channel_number, "GR channel scan failed");
-+                    failed_channels += 1;
++        let worker_limit = gr_scan_worker_count(&self.config);
++        let tuner_manager = self.tuner_manager.clone();
++        let command = self.config.jobs.scan_services.command.clone();
++        run_bounded_gr_scan(
++            worker_limit,
++            move |channel_number| {
++                let tuner_manager = tuner_manager.clone();
++                let command = command.clone();
++                async move {
++                    let channel = ChannelConfig {
++                        name: format!("GR-{channel_number}"),
++                        channel_type: ChannelType::GR,
++                        channel: channel_number.to_string(),
++                        extra_args: String::new(),
++                        services: Vec::new(),
++                        excluded_services: Vec::new(),
++                        disabled: false,
++                    };
++                    let services =
++                        Self::scan_services_in_channel(&channel, &command, &tuner_manager).await?;
++                    Ok(!services.is_empty())
 +                }
-+            }
-+            completed = index + 1;
-+            current_channel = Some(channel_number);
-+            on_progress(index + 1, Some(channel_number), &found_channels)?;
-+        }
-+        debug_assert_eq!(CHANNEL_COUNT, 62 - 13 + 1);
-+        Ok(GrScanResult {
-+            found_channels,
-+            failed_channels,
-+            completed,
-+            current_channel,
-+            interrupted,
-+        })
++            },
++            on_progress,
++            should_cancel,
++        )
++        .await
 +    }
 +
      async fn scan_services_in_channel(
@@ -664,7 +737,7 @@ index b2cad233..7de4da22 100644
      ) -> anyhow::Result<Vec<EpgService>> {
          tracing::debug!(channel.name, "Scanning services...");
  
-@@ -113,7 +201,9 @@ where
+@@ -113,7 +188,9 @@ where
          // streaming in the next iteration.
          let _ = handle.await;
  
@@ -675,10 +748,202 @@ index b2cad233..7de4da22 100644
  
          let services: Vec<TsService> = serde_json::from_slice(&buf)?;
          tracing::debug!(
-@@ -129,6 +219,27 @@ where
+@@ -129,6 +206,219 @@ where
      }
  }
  
++const GR_SCAN_FIRST_CHANNEL: u16 = 13;
++const GR_SCAN_LAST_CHANNEL: u16 = 62;
++const GR_SCAN_MAX_WORKERS: usize = 8;
++const GR_SCAN_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(25);
++
++type GrScanTask = Pin<Box<dyn Future<Output = (u16, anyhow::Result<bool>)> + Send>>;
++
++fn gr_scan_worker_count(config: &Config) -> usize {
++    config
++        .tuners
++        .iter()
++        .filter(|tuner| !tuner.disabled && tuner.channel_types.contains(&ChannelType::GR))
++        .count()
++        .clamp(1, GR_SCAN_MAX_WORKERS)
++        .min((GR_SCAN_LAST_CHANNEL - GR_SCAN_FIRST_CHANNEL + 1) as usize)
++}
++
++fn publish_gr_scan_progress<F>(
++    on_progress: &mut F,
++    completed: usize,
++    in_flight: &BTreeSet<u16>,
++    found_channels: &BTreeSet<u16>,
++) -> std::io::Result<()>
++where
++    F: FnMut(usize, Option<u16>, &[u16]) -> std::io::Result<()>,
++{
++    let found = found_channels.iter().copied().collect::<Vec<_>>();
++    on_progress(completed, in_flight.first().copied(), &found)
++}
++
++fn admit_next_gr_scan_task<F, Fut, P>(
++    tasks: &mut FuturesUnordered<GrScanTask>,
++    next_channel: &mut u16,
++    in_flight: &mut BTreeSet<u16>,
++    completed: usize,
++    found_channels: &BTreeSet<u16>,
++    scan_channel: &F,
++    on_progress: &mut P,
++) -> std::io::Result<bool>
++where
++    F: Fn(u16) -> Fut,
++    Fut: Future<Output = anyhow::Result<bool>> + Send + 'static,
++    P: FnMut(usize, Option<u16>, &[u16]) -> std::io::Result<()>,
++{
++    if *next_channel > GR_SCAN_LAST_CHANNEL {
++        return Ok(false);
++    }
++    let channel = *next_channel;
++    *next_channel += 1;
++    in_flight.insert(channel);
++    if let Err(error) = publish_gr_scan_progress(on_progress, completed, in_flight, found_channels)
++    {
++        in_flight.remove(&channel);
++        return Err(error);
++    }
++    let scan_channel = scan_channel(channel);
++    tasks.push(Box::pin(async move { (channel, scan_channel.await) }));
++    Ok(true)
++}
++
++async fn run_bounded_gr_scan<F, Fut, P, C>(
++    worker_limit: usize,
++    scan_channel: F,
++    mut on_progress: P,
++    should_cancel: C,
++) -> std::io::Result<GrScanResult>
++where
++    F: Fn(u16) -> Fut + Clone + Send + Sync + 'static,
++    Fut: Future<Output = anyhow::Result<bool>> + Send + 'static,
++    P: FnMut(usize, Option<u16>, &[u16]) -> std::io::Result<()> + Send,
++    C: Fn() -> bool + Send,
++{
++    let worker_limit = worker_limit.clamp(1, GR_SCAN_MAX_WORKERS);
++    let mut tasks = FuturesUnordered::<GrScanTask>::new();
++    let mut next_channel = GR_SCAN_FIRST_CHANNEL;
++    let mut in_flight = BTreeSet::new();
++    let mut found_channels = BTreeSet::new();
++    let mut failed_channels = 0;
++    let mut completed = 0;
++    let mut cancellation_observed = false;
++    let mut stop_admitting = false;
++    let mut progress_error = None;
++
++    on_progress(0, None, &[])?;
++    while tasks.len() < worker_limit && !stop_admitting {
++        if should_cancel() {
++            cancellation_observed = true;
++            stop_admitting = true;
++            break;
++        }
++        match admit_next_gr_scan_task(
++            &mut tasks,
++            &mut next_channel,
++            &mut in_flight,
++            completed,
++            &found_channels,
++            &scan_channel,
++            &mut on_progress,
++        ) {
++            Ok(true) => {}
++            Ok(false) => break,
++            Err(error) => {
++                progress_error = Some(error);
++                stop_admitting = true;
++            }
++        }
++    }
++
++    while !tasks.is_empty() {
++        if !stop_admitting && should_cancel() {
++            cancellation_observed = true;
++            stop_admitting = true;
++        }
++        tokio::select! {
++            next = tasks.next() => {
++                let Some((channel, result)) = next else { break; };
++                in_flight.remove(&channel);
++                completed += 1;
++                match result {
++                    Ok(true) => { found_channels.insert(channel); }
++                    Ok(false) => {}
++                    Err(error) if error.downcast_ref::<NoServiceFound>().is_some() => {}
++                    Err(error) => {
++                        if matches!(
++                            error.downcast_ref::<crate::error::Error>(),
++                            Some(crate::error::Error::TunerUnavailable)
++                        ) {
++                            tracing::warn!(channel, "GR scan could not acquire a tuner lease");
++                        } else {
++                            tracing::warn!(channel, "GR channel scan failed");
++                        }
++                        failed_channels += 1;
++                    }
++                }
++                if progress_error.is_none() {
++                    if let Err(error) = publish_gr_scan_progress(
++                        &mut on_progress,
++                        completed,
++                        &in_flight,
++                        &found_channels,
++                    ) {
++                        progress_error = Some(error);
++                        stop_admitting = true;
++                    }
++                }
++                while tasks.len() < worker_limit && !stop_admitting {
++                    if should_cancel() {
++                        cancellation_observed = true;
++                        stop_admitting = true;
++                        break;
++                    }
++                    match admit_next_gr_scan_task(
++                        &mut tasks,
++                        &mut next_channel,
++                        &mut in_flight,
++                        completed,
++                        &found_channels,
++                        &scan_channel,
++                        &mut on_progress,
++                    ) {
++                        Ok(true) => {}
++                        Ok(false) => break,
++                        Err(error) => {
++                            progress_error = Some(error);
++                            stop_admitting = true;
++                        }
++                    }
++                }
++            }
++            _ = tokio::time::sleep(GR_SCAN_CANCEL_POLL_INTERVAL), if !stop_admitting => {
++                if should_cancel() {
++                    cancellation_observed = true;
++                    stop_admitting = true;
++                }
++            }
++        }
++    }
++
++    let found_channels = found_channels.into_iter().collect::<Vec<_>>();
++    let result = GrScanResult {
++        found_channels,
++        failed_channels,
++        completed,
++        current_channel: None,
++        interrupted: cancellation_observed,
++    };
++    if let Some(error) = progress_error {
++        return Err(error);
++    }
++    Ok(result)
++}
++
 +#[derive(Debug, thiserror::Error)]
 +#[error("No service, maybe out of service")]
 +struct NoServiceFound;
@@ -703,10 +968,307 @@ index b2cad233..7de4da22 100644
  #[derive(Clone, Deserialize)]
  #[cfg_attr(test, derive(Serialize))]
  #[serde(rename_all = "camelCase")]
-@@ -165,6 +276,14 @@ mod tests {
+@@ -163,7 +453,310 @@ impl From<(&ChannelConfig, &TsService)> for EpgService {
+ mod tests {
+     use super::*;
      use crate::tuner::stub::TunerManagerStub;
++    use std::sync::atomic::{AtomicUsize, Ordering};
      use test_log::test;
- 
++    use tokio::sync::Semaphore;
++
++    fn test_progress_callback(
++        snapshots: Arc<std::sync::Mutex<Vec<(usize, Option<u16>, Vec<u16>)>>>,
++    ) -> impl FnMut(usize, Option<u16>, &[u16]) -> std::io::Result<()> + Send {
++        move |completed, current, found| {
++            snapshots
++                .lock()
++                .unwrap()
++                .push((completed, current, found.to_vec()));
++            Ok(())
++        }
++    }
++
++    fn update_peak(peak: &AtomicUsize, candidate: usize) {
++        let mut observed = peak.load(Ordering::SeqCst);
++        while candidate > observed {
++            match peak.compare_exchange(observed, candidate, Ordering::SeqCst, Ordering::SeqCst) {
++                Ok(_) => break,
++                Err(actual) => observed = actual,
++            }
++        }
++    }
++
++    #[test]
++    fn gr_scan_worker_limit_uses_enabled_terrestrial_capabilities_and_stays_bounded() {
++        let config: Config = serde_norway::from_str(
++            r#"
++            tuners:
++              - name: px4-gr-0
++                types: [GR]
++                command: true
++              - name: px4-mixed-1
++                types: [GR, BS]
++                command: true
++              - name: siano-gr
++                types: [GR]
++                command: true
++              - name: satellite-only
++                types: [BS, CS]
++                command: true
++              - name: disabled-gr
++                types: [GR]
++                command: true
++                disabled: true
++            "#,
++        )
++        .unwrap();
++        assert_eq!(gr_scan_worker_count(&config), 3);
++
++        let q3u4: Config = serde_norway::from_str(
++            r#"
++            tuners:
++              - name: q3-gr-0
++                types: [GR]
++                command: true
++              - name: q3-gr-1
++                types: [GR]
++                command: true
++              - name: q3-gr-2
++                types: [GR]
++                command: true
++              - name: q3-gr-3
++                types: [GR]
++                command: true
++            "#,
++        )
++        .unwrap();
++        assert_eq!(gr_scan_worker_count(&q3u4), 4);
++
++        let m1ur: Config = serde_norway::from_str(
++            "tuners:\n  - name: m1ur-gr\n    types: [GR]\n    command: true\n",
++        )
++        .unwrap();
++        assert_eq!(gr_scan_worker_count(&m1ur), 1);
++
++        let many_gr_tuners = (0..16)
++            .map(|index| format!("- name: gr-{index}\n  types: [GR]\n  command: true\n"))
++            .collect::<String>();
++        let config: Config = serde_norway::from_str(&format!("tuners:\n{many_gr_tuners}")).unwrap();
++        assert_eq!(gr_scan_worker_count(&config), GR_SCAN_MAX_WORKERS);
++
++        let empty: Config = serde_norway::from_str("{}").unwrap();
++        assert_eq!(gr_scan_worker_count(&empty), 1);
++    }
++
++    #[test(tokio::test)]
++    async fn bounded_gr_scan_handles_reverse_completion_without_duplicates_or_progress_regression()
++    {
++        let started = Arc::new(std::sync::Mutex::new(Vec::new()));
++        let completion_order = Arc::new(std::sync::Mutex::new(Vec::new()));
++        let active = Arc::new(AtomicUsize::new(0));
++        let peak = Arc::new(AtomicUsize::new(0));
++        let snapshots = Arc::new(std::sync::Mutex::new(Vec::new()));
++
++        let scan = {
++            let started = started.clone();
++            let completion_order = completion_order.clone();
++            let active = active.clone();
++            let peak = peak.clone();
++            move |channel| {
++                let started = started.clone();
++                let completion_order = completion_order.clone();
++                let active = active.clone();
++                let peak = peak.clone();
++                async move {
++                    started.lock().unwrap().push(channel);
++                    let current = active.fetch_add(1, Ordering::SeqCst) + 1;
++                    update_peak(&peak, current);
++                    tokio::task::yield_now().await;
++                    let delay_ms = match channel {
++                        13 => 40,
++                        14 => 10,
++                        15 => 120,
++                        16 => 100,
++                        _ => 2,
++                    };
++                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
++                    active.fetch_sub(1, Ordering::SeqCst);
++                    completion_order.lock().unwrap().push(channel);
++                    Ok(channel % 2 == 0)
++                }
++            }
++        };
++
++        let result =
++            run_bounded_gr_scan(4, scan, test_progress_callback(snapshots.clone()), || false)
++                .await
++                .unwrap();
++
++        let started = started.lock().unwrap().clone();
++        let completion_order = completion_order.lock().unwrap().clone();
++        let expected: Vec<u16> = (13..=62).collect();
++        let mut started_sorted = started.clone();
++        started_sorted.sort_unstable();
++        assert_eq!(started_sorted, expected);
++        assert_eq!(started.len(), 50);
++        assert!(started.windows(2).all(|pair| pair[0] != pair[1]));
++        assert_eq!(peak.load(Ordering::SeqCst), 4);
++        assert!(completion_order.windows(2).any(|pair| pair[0] > pair[1]));
++        assert_eq!(
++            result.found_channels,
++            (13..=62)
++                .filter(|channel| channel % 2 == 0)
++                .collect::<Vec<_>>()
++        );
++        assert_eq!(result.failed_channels, 0);
++        assert_eq!(result.completed, 50);
++        assert_eq!(result.current_channel, None);
++        assert!(!result.interrupted);
++
++        let snapshots = snapshots.lock().unwrap();
++        assert_eq!(snapshots.last().unwrap().0, 50);
++        assert_eq!(snapshots.last().unwrap().1, None);
++        assert_eq!(snapshots.last().unwrap().2, result.found_channels);
++        assert!(snapshots.windows(2).all(|pair| pair[0].0 <= pair[1].0));
++        assert!(snapshots
++            .iter()
++            .all(|(_, current, _)| { current.is_none_or(|channel| (13..=62).contains(&channel)) }));
++    }
++
++    #[test(tokio::test)]
++    async fn canceled_parallel_gr_scan_stops_admission_and_drains_in_flight_channels() {
++        let started = Arc::new(std::sync::Mutex::new(Vec::new()));
++        let gates = Arc::new(
++            (13u16..=62)
++                .map(|channel| (channel, Arc::new(Semaphore::new(0))))
++                .collect::<std::collections::HashMap<_, _>>(),
++        );
++        let cancellation = Arc::new(std::sync::atomic::AtomicBool::new(false));
++        let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
++        let scan = {
++            let started = started.clone();
++            let gates = gates.clone();
++            move |channel| {
++                let started = started.clone();
++                let gates = gates.clone();
++                let started_tx = started_tx.clone();
++                async move {
++                    started.lock().unwrap().push(channel);
++                    started_tx.send(channel).unwrap();
++                    let gate = gates.get(&channel).unwrap().clone();
++                    let _permit = gate.acquire_owned().await.unwrap();
++                    Ok(true)
++                }
++            }
++        };
++        let canceled = cancellation.clone();
++        let task = tokio::spawn(async move {
++            run_bounded_gr_scan(
++                4,
++                scan,
++                |_, _, _| Ok(()),
++                move || canceled.load(Ordering::SeqCst),
++            )
++            .await
++        });
++
++        let mut first_wave = Vec::new();
++        for _ in 0..4 {
++            first_wave.push(started_rx.recv().await.unwrap());
++        }
++        first_wave.sort_unstable();
++        assert_eq!(first_wave, vec![13, 14, 15, 16]);
++        cancellation.store(true, Ordering::SeqCst);
++        for channel in &first_wave {
++            gates.get(channel).unwrap().add_permits(1);
++        }
++
++        let result = task.await.unwrap().unwrap();
++        let started = started.lock().unwrap().clone();
++        assert_eq!(started, first_wave);
++        assert_eq!(result.completed, 4);
++        assert_eq!(result.found_channels, first_wave);
++        assert_eq!(result.failed_channels, 0);
++        assert_eq!(result.current_channel, None);
++        assert!(result.interrupted);
++    }
++
++    #[test(tokio::test)]
++    async fn cancellation_observed_before_last_result_prevents_successful_completion() {
++        let cancellation = Arc::new(std::sync::atomic::AtomicBool::new(false));
++        let last_channel_gate = Arc::new(Semaphore::new(0));
++        let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
++        let scan = {
++            let last_channel_gate = last_channel_gate.clone();
++            move |channel| {
++                let started_tx = started_tx.clone();
++                let gate = last_channel_gate.clone();
++                async move {
++                    started_tx.send(channel).unwrap();
++                    if channel == GR_SCAN_LAST_CHANNEL {
++                        let _permit = gate.acquire_owned().await.unwrap();
++                    }
++                    Ok(false)
++                }
++            }
++        };
++        let canceled = cancellation.clone();
++        let task = tokio::spawn(async move {
++            run_bounded_gr_scan(
++                8,
++                scan,
++                |_, _, _| Ok(()),
++                move || canceled.load(Ordering::SeqCst),
++            )
++            .await
++        });
++
++        let mut started = Vec::new();
++        loop {
++            let channel = started_rx.recv().await.unwrap();
++            started.push(channel);
++            if channel == GR_SCAN_LAST_CHANNEL {
++                break;
++            }
++        }
++        assert_eq!(started.len(), 50);
++        cancellation.store(true, Ordering::SeqCst);
++        last_channel_gate.add_permits(1);
++
++        let result = task.await.unwrap().unwrap();
++        assert_eq!(result.completed, 50);
++        assert!(result.interrupted);
++        assert_eq!(result.current_channel, None);
++    }
++
++    #[test(tokio::test)]
++    async fn tuner_unavailable_counts_as_failure_not_empty_reception() {
++        let starts = Arc::new(AtomicUsize::new(0));
++        let scan = {
++            let starts = starts.clone();
++            move |channel| {
++                let starts = starts.clone();
++                async move {
++                    starts.fetch_add(1, Ordering::SeqCst);
++                    match channel {
++                        13 => Err(NoServiceFound.into()),
++                        14 => Err(crate::error::Error::TunerUnavailable.into()),
++                        15 => Ok(true),
++                        _ => Ok(false),
++                    }
++                }
++            }
++        };
++        let result = run_bounded_gr_scan(1, scan, |_, _, _| Ok(()), || false)
++            .await
++            .unwrap();
++        assert_eq!(starts.load(Ordering::SeqCst), 50);
++        assert_eq!(result.completed, 50);
++        assert_eq!(result.found_channels, vec![15]);
++        assert_eq!(result.failed_channels, 1);
++        assert!(!result.interrupted);
++    }
++
 +    #[test]
 +    fn satellite_scan_retry_is_limited_to_satellite_channels() {
 +        assert_eq!(scan_attempt_limit(ChannelType::GR), 1);
@@ -714,11 +1276,10 @@ index b2cad233..7de4da22 100644
 +        assert_eq!(scan_attempt_limit(ChannelType::CS), 3);
 +        assert_eq!(scan_attempt_limit(ChannelType::SKY), 1);
 +    }
-+
+ 
      #[test(tokio::test)]
      async fn test_scan_services_in_channel() {
-         let stub = TunerManagerStub::default();
-@@ -239,4 +358,117 @@ mod tests {
+@@ -239,4 +832,124 @@ mod tests {
          let results = scan.scan_services().await;
          assert!(results[0].1.is_none());
      }
@@ -749,9 +1310,7 @@ index b2cad233..7de4da22 100644
 +        let result = scan
 +            .scan_gr_channels(
 +                |completed, channel, found| {
-+                    if let Some(channel) = channel {
-+                        progress.push((completed, channel, found.to_vec()));
-+                    }
++                    progress.push((completed, channel, found.to_vec()));
 +                    Ok(())
 +                },
 +                || false,
@@ -764,10 +1323,19 @@ index b2cad233..7de4da22 100644
 +        assert_eq!(result.found_channels, expected_channels);
 +        assert_eq!(result.completed, 50);
 +        assert!(!result.interrupted);
-+        assert_eq!(progress.len(), 50);
-+        assert_eq!(progress.first().unwrap().0, 1);
++        assert_eq!(progress.len(), 101);
++        assert_eq!(progress[0].0, 0);
++        assert_eq!(progress[0].1, None);
++        assert_eq!(progress[1].0, 0);
++        assert_eq!(progress[1].1, Some(13));
++        assert_eq!(progress[2].0, 1);
++        assert_eq!(progress[2].1, None);
++        assert_eq!(progress[3].0, 1);
++        assert_eq!(progress[3].1, Some(14));
++        assert_eq!(progress[progress.len() - 2].0, 49);
++        assert_eq!(progress[progress.len() - 2].1, Some(62));
 +        assert_eq!(progress.last().unwrap().0, 50);
-+        assert_eq!(progress.last().unwrap().1, 62);
++        assert_eq!(progress.last().unwrap().1, None);
 +        assert_eq!(progress.last().unwrap().2, expected_channels);
 +    }
 +
@@ -798,8 +1366,8 @@ index b2cad233..7de4da22 100644
 +
 +        let result = scan
 +            .scan_gr_channels(
-+                |completed, _, _| {
-+                    if completed == 1 {
++                |completed, channel, _| {
++                    if completed == 1 && channel.is_none() {
 +                        cancelled.store(true, Ordering::SeqCst);
 +                    }
 +                    Ok(())
@@ -811,7 +1379,7 @@ index b2cad233..7de4da22 100644
 +
 +        assert!(result.interrupted);
 +        assert_eq!(result.completed, 1);
-+        assert_eq!(result.current_channel, Some(13));
++        assert_eq!(result.current_channel, None);
 +        assert_eq!(result.found_channels, vec![13]);
 +    }
 +

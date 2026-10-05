@@ -24,6 +24,7 @@ env:
   RUST_VERSION: "1.98.1"
   SIANO_USERLAND_REF: d1f4e42810d5a2023ff4a6c31f798cb381026693
   PX4_USERLAND_REF: cf38742618bb02db41a95def619fbff50e9eb0f3
+  PX4_USERLAND_PATCH_SHA256: c60214256a40b03f3469b5a508f149c12e599282edf103875a2170b816c4b697
   PX4_DRV_REF: 2b3f79b5bc5db56e8556bb28397f7d8f74b2adeb
 
 jobs:
@@ -105,8 +106,11 @@ jobs:
           CANDIDATE_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          test "$(cat mirakc/VERSION)" = "0.3.3" \
-            || { echo "candidate build requires a 0.3.3 checkout" >&2; exit 1; }
+          test "$(cat mirakc/VERSION)" = "0.4.0" \
+            || { echo "candidate build requires a 0.4.0 checkout" >&2; exit 1; }
+          patch_sha256="$(sha256sum tools/mirakc/patches/px4-userland-receiver-control-concurrency.patch | awk '{ print $1 }')"
+          test "$patch_sha256" = "$PX4_USERLAND_PATCH_SHA256" \
+            || { echo "DTV-owned PX4 source patch hash does not match the release pin" >&2; exit 1; }
           ./gradlew --no-daemon \
             -PsianoUserlandDir="$GITHUB_WORKSPACE/siano-userland" \
             -Ppx4UserlandDir="$GITHUB_WORKSPACE/px4-userland" \
@@ -122,6 +126,8 @@ jobs:
             echo "git_ref=$CANDIDATE_REF"
             echo "git_head=$(git rev-parse HEAD)"
             echo "version=$(cat mirakc/VERSION)"
+            echo "px4_userland_ref=$PX4_USERLAND_REF"
+            echo "px4_userland_patch_sha256=$patch_sha256"
             echo "unsigned_apk_sha256=$(sha256sum "$apk" | awk '{ print $1 }')"
           } > out/CANDIDATE_BUILD_INFO.txt
       - uses: actions/upload-artifact@v4
@@ -202,7 +208,7 @@ jobs:
               || { echo "Signed APK metadata changed: $signed_metadata" >&2; exit 1; }
             printf '%s' "$cert_sha256"
           }
-          candidate_cert="$(sign_apk candidate/mirakc-unsigned.apk "$RUNNER_TEMP/mirakc-signed-candidate.apk" 0.3.3 303)"
+          candidate_cert="$(sign_apk candidate/mirakc-unsigned.apk "$RUNNER_TEMP/mirakc-signed-candidate.apk" 0.4.0 400)"
           mkdir -p out
           cp "$RUNNER_TEMP/mirakc-signed-candidate.apk" out/mirakc-signed-candidate.apk
           (cd out && sha256sum mirakc-signed-candidate.apk > SHA256SUMS)
@@ -227,8 +233,12 @@ jobs:
 
           candidate = read_info(sys.argv[1])
           expected_cert = "1fd02c94f29a5756ed1d560ac4ecb6813fa0b2e634473a6f31da210ffd5223c4"
-          if candidate.get("kind") != "candidate" or candidate.get("version") != "0.3.3":
+          if candidate.get("kind") != "candidate" or candidate.get("version") != "0.4.0":
               raise SystemExit("candidate build-info changed during signing")
+          if candidate.get("px4_userland_ref") != "cf38742618bb02db41a95def619fbff50e9eb0f3":
+              raise SystemExit("candidate PX4 upstream source ref changed during signing")
+          if candidate.get("px4_userland_patch_sha256") != "c60214256a40b03f3469b5a508f149c12e599282edf103875a2170b816c4b697":
+              raise SystemExit("candidate PX4 DTV patch provenance changed during signing")
           if sys.argv[2] != expected_cert:
               raise SystemExit("signed certificate is not the production certificate")
           digest = sys.argv[3]

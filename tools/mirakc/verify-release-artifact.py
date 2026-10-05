@@ -19,6 +19,9 @@ EXPECTED = {
     "SHA256SUMS",
 }
 CERT = "1fd02c94f29a5756ed1d560ac4ecb6813fa0b2e634473a6f31da210ffd5223c4"
+PX4_USERLAND_REF = "cf38742618bb02db41a95def619fbff50e9eb0f3"
+PX4_USERLAND_PATCH_SHA256 = "c60214256a40b03f3469b5a508f149c12e599282edf103875a2170b816c4b697"
+VERSION_PATTERN = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 
 
 class ArtifactError(RuntimeError):
@@ -35,9 +38,23 @@ def read_info(path: Path) -> dict[str, str]:
     return values
 
 
-def verify_candidate_info(candidate: dict[str, str]) -> None:
-    if candidate.get("kind") != "candidate" or candidate.get("version") != "0.3.3":
+def requires_px4_patch_provenance(version: str) -> bool:
+    match = VERSION_PATTERN.fullmatch(version)
+    if match is None:
+        return False
+    return tuple(int(part) for part in match.groups()) >= (0, 4, 0)
+
+
+def verify_candidate_info(candidate: dict[str, str], expected_version: str) -> None:
+    if VERSION_PATTERN.fullmatch(expected_version) is None:
+        raise ArtifactError("expected version is not canonical semantic version")
+    if candidate.get("kind") != "candidate" or candidate.get("version") != expected_version:
         raise ArtifactError("candidate build-info identity mismatch")
+    if requires_px4_patch_provenance(expected_version):
+        if candidate.get("px4_userland_ref") != PX4_USERLAND_REF:
+            raise ArtifactError("candidate PX4 upstream source ref mismatch")
+        if candidate.get("px4_userland_patch_sha256") != PX4_USERLAND_PATCH_SHA256:
+            raise ArtifactError("candidate PX4 patch digest mismatch")
     if re.fullmatch(r"[1-9][0-9]*", candidate.get("candidate_run_id", "")) is None:
         raise ArtifactError("candidate run id is malformed")
     if not candidate.get("git_ref"):
@@ -97,7 +114,7 @@ def verify_sums(entries: dict[str, Path]) -> dict[str, str]:
     return values
 
 
-def verify(root: Path, expected_head: str, expected_run: str) -> dict[str, object]:
+def verify(root: Path, expected_head: str, expected_run: str, expected_version: str) -> dict[str, object]:
     if re.fullmatch(r"[0-9a-f]{40}", expected_head) is None:
         raise ArtifactError("expected head is malformed")
     if re.fullmatch(r"[1-9][0-9]*", expected_run) is None:
@@ -105,7 +122,7 @@ def verify(root: Path, expected_head: str, expected_run: str) -> dict[str, objec
     entries = files(root)
     hashes = verify_sums(entries)
     candidate = read_info(entries["CANDIDATE_BUILD_INFO.txt"])
-    verify_candidate_info(candidate)
+    verify_candidate_info(candidate, expected_version)
     if candidate["candidate_run_id"] != expected_run or candidate["git_head"] != expected_head:
         raise ArtifactError("artifact candidate run/head does not match attestation")
     combined = json.loads(entries["BUILD_INFO.json"].read_text(encoding="utf-8"))
@@ -126,9 +143,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("artifact")
     parser.add_argument("--expected-head", required=True)
     parser.add_argument("--expected-run", required=True)
+    parser.add_argument("--expected-version", required=True)
     args = parser.parse_args(argv)
     try:
-        print(json.dumps(verify(Path(args.artifact).resolve(), args.expected_head, args.expected_run), sort_keys=True))
+        print(json.dumps(verify(
+            Path(args.artifact).resolve(), args.expected_head, args.expected_run, args.expected_version
+        ), sort_keys=True))
     except (ArtifactError, OSError, ValueError, json.JSONDecodeError) as error:
         print(f"verify-release-artifact: {error}", file=sys.stderr)
         return 1
