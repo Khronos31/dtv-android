@@ -495,6 +495,13 @@ if [ "$full_gate" -eq 1 ]; then
         shift 4
         build_dir=$work/native-cmake-$abi-$target
         destination=$full_native_root/lib/$abi/$name
+        if [ "$target" = px4_adapter ]; then
+            # Match Gradle's canonical DWARF paths; the linker build-id
+            # otherwise varies with extracted source and temporary build dirs.
+            source_prefix_map_flags="-ffile-prefix-map=$native_cmake_source=/src/dtv -ffile-prefix-map=$px4=/src/px4 -ffile-prefix-map=$build_dir=/src/build"
+            set -- "$@" "-DCMAKE_C_FLAGS=$source_prefix_map_flags" \
+                "-DCMAKE_CXX_FLAGS=$source_prefix_map_flags"
+        fi
         run_guarded env PATH="$guard_path" ANDROID_NDK_HOME="$ndk" \
             cmake -S "$native_cmake_source" -B "$build_dir" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \

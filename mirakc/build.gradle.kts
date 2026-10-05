@@ -340,6 +340,13 @@ val preparePx4AdapterBinaries = tasks.register("preparePx4AdapterBinaries") {
         fun buildAbi(abi: String) {
             val buildDir = project.rootDir.resolve(".work/build-px4-adapter-$abi")
             val destination = nativeOutputDir.dir(abi).file("libmirakc-px4-adapter.so").asFile
+            // Normalize DWARF paths before link-time build-id generation so a
+            // clean-room build from a different checkout path stays byte-equal.
+            val sourcePrefixMapFlags = listOf(
+                "-ffile-prefix-map=${px4AdapterSource.asFile.parent}=/src/dtv",
+                "-ffile-prefix-map=${px4PatchedSourceDir.absolutePath}=/src/px4",
+                "-ffile-prefix-map=${buildDir.absolutePath}=/src/build"
+            ).joinToString(" ")
             project.exec {
                 workingDir(project.rootDir)
                 commandLine(
@@ -350,7 +357,9 @@ val preparePx4AdapterBinaries = tasks.register("preparePx4AdapterBinaries") {
                     "-DANDROID_ABI=$abi", "-DANDROID_PLATFORM=android-24",
                     "-DANDROID_STL=c++_static",
                     "-DMIRAKC_BUILD_PX4_ADAPTER=ON",
-                    "-DPX4_USERLAND_DIR=${px4PatchedSourceDir.absolutePath}"
+                    "-DPX4_USERLAND_DIR=${px4PatchedSourceDir.absolutePath}",
+                    "-DCMAKE_C_FLAGS=$sourcePrefixMapFlags",
+                    "-DCMAKE_CXX_FLAGS=$sourcePrefixMapFlags"
                 )
             }
             project.exec {
