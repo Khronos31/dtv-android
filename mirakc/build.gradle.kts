@@ -39,7 +39,7 @@ val sianoBuildScript = sianoUserlandDir.map { file(it).resolve("scripts/build-an
 val sianoPinnedRef = "d1f4e42810d5a2023ff4a6c31f798cb381026693"
 
 val mirakcAribSourceDir = providers.gradleProperty("mirakcAribSourceDir")
-    .orElse(layout.projectDirectory.dir("../.work/mirakc-arib-0.24.38").asFile.absolutePath)
+    .orElse(layout.projectDirectory.dir("../.work/mirakc-arib-0.24.39").asFile.absolutePath)
 val mirakcAribBuildScript = layout.projectDirectory.file("../tools/mirakc-arib/build-android.sh")
 val mirakcAribBootstrapScript = layout.projectDirectory.file("../tools/mirakc-arib/bootstrap-autotools.sh")
 val mirakcAribToolchainFile = layout.projectDirectory.file("../tools/mirakc-arib/android.toolchain.cmake")
@@ -140,9 +140,9 @@ val mirakcBinaries = listOf(
     nativeOutputDir.file("arm64-v8a/libmirakc.so"),
     nativeOutputDir.file("armeabi-v7a/libmirakc.so")
 )
-val mirakcPinnedRef = "fc9610f51f8621aa8db508ddd36c7f1e2785d7be"
+val mirakcPinnedRef = "09664c2eefd0dccc38cabd3717b081ac84bf0833"
 val mirakcSourceDir = providers.gradleProperty("mirakcSourceDir")
-    .orElse(layout.projectDirectory.dir("../.work/mirakc-3.4.86").asFile.absolutePath)
+    .orElse(layout.projectDirectory.dir("../.work/mirakc-3.4.88").asFile.absolutePath)
 val mirakcBuildScript = layout.projectDirectory.file("../tools/mirakc/build-android.sh")
 val mirakcVerifierScript = layout.projectDirectory.file("../tools/mirakc/verify-android-elf.sh")
 val mirakcAndroidPatch = layout.projectDirectory.file("../tools/mirakc/patches/mirakc-android-web-resilience.patch")
@@ -485,7 +485,7 @@ val px4Binaries = listOf(
     nativeOutputDir.file("armeabi-v7a/libpx4-ts.so"),
     nativeOutputDir.file("armeabi-v7a/libpx4ctl.so")
 )
-val px4PinnedRef = "cf38742618bb02db41a95def619fbff50e9eb0f3"
+val px4PinnedRef = "7ad5f6691f77a9aa58c4097f8b6dfea77f6d9b6a"
 val px4BuildScript = px4UserlandDir.map { file(it).resolve("scripts/build-android.sh") }
 val px4PinnedPatchSha256 = "c60214256a40b03f3469b5a508f149c12e599282edf103875a2170b816c4b697"
 

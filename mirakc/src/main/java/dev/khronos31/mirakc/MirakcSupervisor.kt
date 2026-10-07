@@ -689,7 +689,7 @@ internal class MirakcSupervisor(
                 try {
                     val body = connection.inputStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
                     if (connection.responseCode == HttpURLConnection.HTTP_OK &&
-                        body.contains("\"current\":\"3.4.86\"")) return
+                        body.contains("\"current\":\"3.4.88\"")) return
                     lastError = "unexpected version response"
                 } finally {
                     connection.disconnect()

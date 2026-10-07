@@ -12,7 +12,7 @@ env:
   JAVA_RUNTIME_VERSION: "17.0.20.1+1"
   RUST_VERSION: "1.98.1"
   SIANO_USERLAND_REF: d1f4e42810d5a2023ff4a6c31f798cb381026693
-  PX4_USERLAND_REF: cf38742618bb02db41a95def619fbff50e9eb0f3
+  PX4_USERLAND_REF: 7ad5f6691f77a9aa58c4097f8b6dfea77f6d9b6a
   PX4_DRV_REF: 2b3f79b5bc5db56e8556bb28397f7d8f74b2adeb
 
 jobs:
@@ -120,22 +120,22 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/mirakc-dependencies"
           curl -fL --retry 3 \
-            -o "$RUNNER_TEMP/mirakc-dependencies/swagger-ui-5.17.14.zip" \
-            https://github.com/swagger-api/swagger-ui/archive/refs/tags/v5.17.14.zip
+            -o "$RUNNER_TEMP/mirakc-dependencies/swagger-ui-5.32.6.zip" \
+            https://github.com/swagger-api/swagger-ui/archive/refs/tags/v5.32.6.zip
           printf '%s  %s\n' \
-            481244d0812097b11fbaeef79f71d942b171617f9c9f9514e63acbe13e71ccdc \
-            "$RUNNER_TEMP/mirakc-dependencies/swagger-ui-5.17.14.zip" \
+            b3c07e091559b59a833f66547eb1fc18f2896f96e3f1f953e2f1efb328aa3394 \
+            "$RUNNER_TEMP/mirakc-dependencies/swagger-ui-5.32.6.zip" \
             | sha256sum -c -
       - name: Verify corresponding-source archive offline Cargo proof
         env:
           CARGO_HOME: ${{ runner.temp }}/cargo
-          MIRAKC_TEST_MIRAKC_ROOT: ${{ github.workspace }}/.work/mirakc-3.4.86
-          MIRAKC_TEST_ARIB_ROOT: ${{ github.workspace }}/.work/mirakc-arib-0.24.38
+          MIRAKC_TEST_MIRAKC_ROOT: ${{ github.workspace }}/.work/mirakc-3.4.88
+          MIRAKC_TEST_ARIB_ROOT: ${{ github.workspace }}/.work/mirakc-arib-0.24.39
           MIRAKC_TEST_SIANO_ROOT: ${{ github.workspace }}/siano-userland
           MIRAKC_TEST_PX4_ROOT: ${{ github.workspace }}/px4-userland
           MIRAKC_TEST_PX4_DRV_ROOT: ${{ github.workspace }}/px4_drv
           MIRAKC_TEST_LIBUSB_ARCHIVE: ${{ github.workspace }}/siano-userland/build/android-aarch64/src/libusb-1.0.30.tar.bz2
-          MIRAKC_TEST_SWAGGER_UI_ARCHIVE: ${{ runner.temp }}/mirakc-dependencies/swagger-ui-5.17.14.zip
+          MIRAKC_TEST_SWAGGER_UI_ARCHIVE: ${{ runner.temp }}/mirakc-dependencies/swagger-ui-5.32.6.zip
           MIRAKC_TEST_AUTOTOOLS_CACHE: ${{ runner.temp }}/mirakc-arib-tools/autotools-sources
           MIRAKC_TEST_ARCHIVE_OUTPUT: ${{ runner.temp }}/mirakc-corresponding-source.tar.gz
         run: tools/mirakc/test-source-package.sh

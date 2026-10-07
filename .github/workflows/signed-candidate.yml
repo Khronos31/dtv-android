@@ -23,7 +23,7 @@ env:
   JAVA_RUNTIME_VERSION: "17.0.20.1+1"
   RUST_VERSION: "1.98.1"
   SIANO_USERLAND_REF: d1f4e42810d5a2023ff4a6c31f798cb381026693
-  PX4_USERLAND_REF: cf38742618bb02db41a95def619fbff50e9eb0f3
+  PX4_USERLAND_REF: 7ad5f6691f77a9aa58c4097f8b6dfea77f6d9b6a
   PX4_USERLAND_PATCH_SHA256: c60214256a40b03f3469b5a508f149c12e599282edf103875a2170b816c4b697
   PX4_DRV_REF: 2b3f79b5bc5db56e8556bb28397f7d8f74b2adeb
 
@@ -235,7 +235,7 @@ jobs:
           expected_cert = "1fd02c94f29a5756ed1d560ac4ecb6813fa0b2e634473a6f31da210ffd5223c4"
           if candidate.get("kind") != "candidate" or candidate.get("version") != "0.4.0":
               raise SystemExit("candidate build-info changed during signing")
-          if candidate.get("px4_userland_ref") != "cf38742618bb02db41a95def619fbff50e9eb0f3":
+          if candidate.get("px4_userland_ref") != "7ad5f6691f77a9aa58c4097f8b6dfea77f6d9b6a":
               raise SystemExit("candidate PX4 upstream source ref changed during signing")
           if candidate.get("px4_userland_patch_sha256") != "c60214256a40b03f3469b5a508f149c12e599282edf103875a2170b816c4b697":
               raise SystemExit("candidate PX4 DTV patch provenance changed during signing")

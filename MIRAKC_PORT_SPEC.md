@@ -7,26 +7,28 @@ Date: 2026-10-02
 
 Replace the Kotlin Mirakurun-compatible server in the `mirakc` APK with an
 Android port of upstream mirakc, while keeping Android-specific lifecycle and
-USB-permission handling in a thin Kotlin/JNI supervisor. Package the latest
-stable releases of both tuner backends so one APK can operate Siano RIO devices
+USB-permission handling in a thin Kotlin/JNI supervisor. Package pinned,
+published releases of both tuner backends so one APK can operate Siano RIO devices
 and multiple PX4 enclosures without a kernel driver. The Android software
 profile matrix covers every USB `DeviceProfile` in the pinned px4-userland
-source: all 16 products listed in its v0.1.9 `identity.cpp` table, including
+source: all 16 products listed in its v0.1.10 `identity.cpp` table, including
 the DTV/e-Better counterparts. This is a software mapping scope, not a claim
 that every model has passed Android hardware validation. The upstream README
 and its per-model validation evidence remain authoritative for hardware status.
 
-The pinned inputs for the first port are:
+The dependency refresh pins the following published upstream tags (2026-10-08):
 
-- mirakc `3.4.86` (`fc9610f51f8621aa8db508ddd36c7f1e2785d7be`);
-- mirakc-arib `0.24.38` (`e85e1f991aa91ba0e6c6e02d14a17d159901e181`);
+- mirakc `3.4.88` (`09664c2eefd0dccc38cabd3717b081ac84bf0833`);
+- mirakc-arib `0.24.39` (`3266523d535b301141c533592a46d32617094439`);
 - siano-userland `v0.1.9` (`d1f4e42810d5a2023ff4a6c31f798cb381026693`);
-- px4-userland `v0.1.9` (`cf38742618bb02db41a95def619fbff50e9eb0f3`).
+- px4-userland `v0.1.10` (`7ad5f6691f77a9aa58c4097f8b6dfea77f6d9b6a`).
 
-`latest` means the newest non-prerelease release/tag observed when these inputs
-were pinned on 2026-10-02.
-Builds remain reproducible by pinning these exact refs rather than following a
-moving branch.
+Siano remains at v0.1.9 by scope; this refresh does not claim all components
+are at their latest upstream release. Builds remain reproducible by pinning
+these exact refs rather than following a moving branch.
+The new pins have only been statically inspected in this change. Required
+next-release verification is tracked in
+[`tools/mirakc/PENDING-DEPENDENCY-VALIDATION.md`](tools/mirakc/PENDING-DEPENDENCY-VALIDATION.md).
 
 ## Acceptance criteria
 
@@ -49,7 +51,7 @@ moving branch.
 4. `./gradlew --no-daemon test :mirakc:lintDebug` exits 0.  Existing tests and
    their expected values are not weakened or skipped.
 5. On the Google TV Streamer, the Android foreground service starts the bundled
-   upstream mirakc, `GET /api/version` reports `3.4.86`, and stopping/restarting
+   upstream mirakc, `GET /api/version` reports `3.4.88`, and stopping/restarting
    the service leaves no mirakc, mirakc-arib, siano or px4 child processes.
    Across ten tune/job/stop/reconnect cycles, `/proc/<pid>/fd` confirms that
    mirakc and unrelated children inherit no USB or smart-card descriptors and
@@ -119,8 +121,8 @@ moving branch.
 | Candidate | Classification | Evidence |
 | --- | --- | --- |
 | Former Kotlin server in this repository | adapt/reference | Reuse its Android lifecycle, UsbManager and proven CCID/libarib25 code.  It is no longer the APK's HTTP, EPG or stream implementation. |
-| `mirakc/mirakc` 3.4.86 | adapt/port | Canonical server.  Its pinned Rust workspace is the source for the Android build; Android packaging and descriptor inheritance are not upstream features. |
-| `mirakc/mirakc-arib` 0.24.38 | adapt/port | Canonical companion commands used by mirakc jobs and filters.  The pinned source and submodules are built for Android by the repository harness. |
+| `mirakc/mirakc` 3.4.88 | adapt/port | Canonical server.  Its pinned Rust workspace is the source for the Android build; Android packaging and descriptor inheritance are not upstream features. |
+| `mirakc/mirakc-arib` 0.24.39 | adapt/port | Canonical companion commands used by mirakc jobs and filters.  The pinned source and submodules are built for Android by the repository harness. |
 | Linux/musl mirakc container binaries | reject | Wrong ABI/runtime for Bionic and cannot receive Android UsbManager descriptors. |
 | Public Android mirakc ports | build | GitHub repository and code searches on 2026-09-13 found no maintained Android port to adopt. |
 | `hassio-addons/mirakc` | adapt/reference | Reuse configuration and process topology concepts; its container/device access model cannot be adopted on Android. |
@@ -135,7 +137,7 @@ moving branch.
    unverified because that device exposes no 64-bit ABI.  Risk: Linux
    assumptions compile but fail at runtime.
 2. **Mandatory mirakc-arib feasibility gate.** Before replacing any Kotlin
-   server path, cross-build the exact, unpruned `0.24.38` source and submodules
+   server path, cross-build the exact, unpruned `0.24.39` source and submodules
    for armv7a, package and execute it from `nativeLibraryDir`, and pass upstream
    or behavior-equivalent fixtures for `scan-services`, `sync-clocks`,
    `collect-eits`, `filter-service`, and `filter-program`.  Measure one live
@@ -203,7 +205,7 @@ owner correctly. The host parser test can be run with
 
 ### Android PX4 profile coverage (2026-10-04)
 
-Android maps all 16 product IDs in the pinned px4-userland v0.1.9
+The 2026-10-04 mapping review covered all 16 product IDs in px4-userland v0.1.9
 `DeviceProfile` table (`cf38742618bb02db41a95def619fbff50e9eb0f3`): Q3U4
 `084a`, W3U4 `083f`, MLT5PE / DTV02A-5TS-P `024e` / `924e`, W3PE4/5
 `023f` / `073f`, Q3PE4/5 `024a` / `074a`, MLT8PE3/5 `0252` / `0253`,
@@ -213,6 +215,12 @@ The pinned source is the authority for USB profile identity and per-profile
 bridge/receiver/T/S properties. Its README and validation table identify which
 hardware profiles are verified or unverified; APK mapping does not upgrade
 those statuses or claim Android hardware operation.
+
+The 2026-10-08 dependency refresh selects px4-userland v0.1.10
+(`7ad5f6691f77a9aa58c4097f8b6dfea77f6d9b6a`). Static inspection found the
+same 16 profile IDs, but mapping/build/runtime compatibility against that tag
+is not yet verified; see
+[`tools/mirakc/PENDING-DEPENDENCY-VALIDATION.md`](tools/mirakc/PENDING-DEPENDENCY-VALIDATION.md).
 
 Two-bridge Q3-family devices pair only within the exact same product profile,
 by matching 14-digit base serial and suffixes `1`/`2`. Each single-bridge

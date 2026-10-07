@@ -14,9 +14,12 @@ APK は2本あります。
 `mirakc-vX.Y.Z` と `epgstation-server-vX.Y.Z` に分かれているため、必要なAPKの
 リリースから対応するファイルを選んでください。
 
-mirakc APK は上流の mirakc `3.4.86` を Android 向けに移植して組み込み、番組表・
+mirakc APK は上流の mirakc `3.4.88` を Android 向けに移植して組み込み、番組表・
 ストリーム・HTTP API はその実装を使います。ジョブとフィルターのコマンドには、
-上流の mirakc-arib `0.24.38` を固定して同梱しています。
+上流の mirakc-arib `0.24.39` を固定して同梱しています。
+この依存更新のビルド・パッチ適用・実機検証は次リリース前の必須ゲートとして
+[`tools/mirakc/PENDING-DEPENDENCY-VALIDATION.md`](tools/mirakc/PENDING-DEPENDENCY-VALIDATION.md)
+に記録しています。
 
 番組表や録画予約の画面は、スマートフォンや PC のブラウザから開きます。
 テレビの画面で録画を見るときは
@@ -33,7 +36,7 @@ mirakc APK は上流の mirakc `3.4.86` を Android 向けに移植して組み�
 | カード | B-CAS カード |
 | その他 | USB ハブ（本体のポートが1つしかないため）、録画用の USB ストレージ（任意・exFAT） |
 
-mirakc APK は、px4-userland v0.1.9 が扱う16種類のUSB製品IDに対応します。ここに載っていることは、その機種の受信やカード利用を実機で確認済みという意味ではありません。実機未検証の機種は、Android でも未検証です。
+mirakc APK は、px4-userland v0.1.10 が扱う16種類のUSB製品IDに対応します。ここに載っていることは、その機種の受信やカード利用を実機で確認済みという意味ではありません。実機未検証の機種は、Android でも未検証です。
 
 | 機種 | USB ID | USBブリッジ数 | 受信機数 | 地上波/衛星 |
 |---|---|---:|---:|---|
@@ -166,9 +169,9 @@ EPGStation Server も必要なときに開いてください。
   Android TV / Fire TV 向けの EPGStation クライアント。リモコンの十字キーだけで
   快適に録画を見られます。テレビ側の視聴体験はこのアプリにお任せするのが一番です。
 * **[mirakc](https://github.com/mirakc/mirakc)** —— Mirakurun 互換の PVR
-  バックエンド。この APK は上流 `3.4.86` を Android 向けに移植して使っています。
+  バックエンド。この APK は上流 `3.4.88` を Android 向けに移植して使っています。
 * **[mirakc-arib](https://github.com/mirakc/mirakc-arib)** —— mirakc の EPG ジョブと
-  ストリームフィルターが使う上流コマンド群。APK には `0.24.38` を固定して
+  ストリームフィルターが使う上流コマンド群。APK には `0.24.39` を固定して
   同梱しています。
 * **[libarib25](https://github.com/stz2012/libarib25)**（stz2012 さん）——
   B-CAS による復号。この APK に組み込んで使わせていただいています。
@@ -221,8 +224,8 @@ siano-ts --channel N --firmware <filesDir>/isdbt_rio.inp --fd 3
 #### 上流 mirakc の HTTP・EPG・ストリーム
 
 HTTP API、チャンネル・サービス・番組情報、ライブストリーム、イベント通知は
-上流 mirakc `3.4.86` が提供します。EPG のサービススキャン、時刻同期、番組表更新、
-ストリームのサービス／番組フィルターは、固定した mirakc-arib `0.24.38` の
+上流 mirakc `3.4.88` が提供します。EPG のサービススキャン、時刻同期、番組表更新、
+ストリームのサービス／番組フィルターは、固定した mirakc-arib `0.24.39` の
 コマンドを上流ジョブから呼び出します。手動の初期GR探索も上流 mirakc の tuner scan APIを
 使うため、APK独自の旧 HTTP サーバーや TS の SI パーサーは含みません。
 
@@ -301,16 +304,16 @@ JDK 17 と Android NDK r26 以降が要ります。Gradle タスクは SDK の `
 `scripts/build-android.sh` を呼び、検証済みの実行ファイルを mirakc の APK に
 入れます。
 
-上流 mirakc `3.4.86` と mirakc-arib `0.24.38` も、それぞれ固定した commit の
+上流 mirakc `3.4.88` と mirakc-arib `0.24.39` も、それぞれ固定した commit の
 ソースから Android ABI ごとにビルドします。mirakc のビルドには
 `tools/mirakc/build-android.sh`、mirakc-arib には `tools/mirakc-arib/build-android.sh`
 を使います。
 
-px4-userland v0.1.9 にある全16種類のUSB製品IDをAndroid側でも扱い、
+px4-userland v0.1.10 にある全16種類のUSB製品IDをAndroid側でも扱い、
 固定したソースから `px4d` / `px4-ts` / `px4ctl` を作ります。ブリッジを2つ使うQ3系はUSB機器を2つ、
 それ以外は1つ渡して起動します。固定したソースは
 [px4-userland](https://github.com/Khronos31/px4-userland) commit
-`cf38742618bb02db41a95def619fbff50e9eb0f3` です。製品IDの対応付け、オフラインテスト、APKへの同梱は、
+`7ad5f6691f77a9aa58c4097f8b6dfea77f6d9b6a` です。製品IDの対応付け、オフラインテスト、APKへの同梱は、
 その機種での受信・カード利用・複数台同時利用を実証するものではありません。実機での確認状況は
 px4-userland の README と検証表に従い、Androidで確認していない機種の動作は未確認として扱います。
 
@@ -324,7 +327,7 @@ PX4 firmware抽出に `px4_drv/fwtool` のビルドは不要です。Android APK
 export JAVA_HOME=/path/to/jdk17
 export ANDROID_NDK_HOME=/path/to/android-sdk/ndk/27.0.12077973
 ./gradlew -PsianoUserlandDir=/path/to/siano-userland \
-    -Ppx4UserlandDir=/path/to/px4-userland-v0.1.9 \
+    -Ppx4UserlandDir=/path/to/px4-userland-v0.1.10 \
     :mirakc:assembleDebug :epgstation-server:assembleDebug
 ```
 

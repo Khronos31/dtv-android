@@ -58,8 +58,8 @@ cp "$root/tools/mirakc/patches/px4-userland-receiver-control-concurrency.patch" 
     git commit -q -m fixture
 )
 dtv_commit=$(git -C "$temporary/dtv" rev-parse HEAD)
-mirakc_root=${MIRAKC_TEST_MIRAKC_ROOT:-$root/.work/mirakc-3.4.86}
-arib_root=${MIRAKC_TEST_ARIB_ROOT:-$root/.work/mirakc-arib-0.24.38}
+mirakc_root=${MIRAKC_TEST_MIRAKC_ROOT:-$root/.work/mirakc-3.4.88}
+arib_root=${MIRAKC_TEST_ARIB_ROOT:-$root/.work/mirakc-arib-0.24.39}
 siano_root=${MIRAKC_TEST_SIANO_ROOT:-$root/.work/pinned-siano-userland}
 px4_root=${MIRAKC_TEST_PX4_ROOT:-$root/.work/pinned-px4-userland}
 px4_drv_root=${MIRAKC_TEST_PX4_DRV_ROOT:-$root/.work/pinned-px4_drv}
