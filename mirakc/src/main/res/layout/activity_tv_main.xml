@@ -340,7 +340,7 @@
                         android:layout_height="8dp"
                         android:layout_marginTop="8dp"
                         android:progressDrawable="@drawable/progress_horizontal_tv"
-                        android:max="50"
+                        android:max="40"
                         android:progress="0"
                         android:visibility="gone" />
                 </LinearLayout>

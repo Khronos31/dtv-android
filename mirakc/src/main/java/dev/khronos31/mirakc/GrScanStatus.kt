@@ -46,7 +46,10 @@ internal data class GrScanStatus(
     }
 
     companion object {
-        private const val EXPECTED_TOTAL = 50
+        private const val FIRST_SCAN_CHANNEL = 13
+        private const val LAST_SCAN_CHANNEL = 52
+        private const val EXPECTED_TOTAL = LAST_SCAN_CHANNEL - FIRST_SCAN_CHANNEL + 1
+        private const val LEGACY_TOTAL = 50
 
         fun queued(scanId: Long): GrScanStatus = GrScanStatus(
             State.QUEUED, 0, EXPECTED_TOTAL, null, emptyList(), 0, scanId, null
@@ -87,15 +90,17 @@ internal data class GrScanStatus(
                 "interrupted" -> State.INTERRUPTED
                 else -> return null
             }
-            val completed = fields[1].toIntOrNull()?.takeIf { it in 0..EXPECTED_TOTAL } ?: return null
-            val total = fields[2].toIntOrNull()?.takeIf { it == EXPECTED_TOTAL } ?: return null
+            val total = fields[2].toIntOrNull()?.takeIf {
+                it == EXPECTED_TOTAL || it == LEGACY_TOTAL
+            } ?: return null
+            val completed = fields[1].toIntOrNull()?.takeIf { it in 0..total } ?: return null
             val current = fields[3].takeIf { it.isNotEmpty() }?.toIntOrNull()?.takeIf { it in 13..62 }
             if (fields[3].isNotEmpty() && current == null) return null
             val found = if (fields[4].isEmpty()) emptyList() else {
                 fields[4].split(',').map { it.toIntOrNull()?.takeIf { channel -> channel in 13..62 } ?: return null }
                     .distinct().sorted()
             }
-            val failed = fields[5].toIntOrNull()?.takeIf { it in 0..EXPECTED_TOTAL } ?: return null
+            val failed = fields[5].toIntOrNull()?.takeIf { it in 0..total } ?: return null
             val scanId = fields[6].toLongOrNull()?.takeIf { it > 0 } ?: return null
             val errorCode = when {
                 fields[7] == "NONE" -> null
@@ -103,7 +108,7 @@ internal data class GrScanStatus(
                 else -> return null
             }
             // A complete scan can replace the user's channel list only when
-            // mirakc reports all 50 channels scanned without errors and with
+            // mirakc reports the full declared range scanned without errors and with
             // at least one detected channel. Empty results use State.EMPTY.
             if (state == State.COMPLETE &&
                 (completed != total || failed != 0 || found.isEmpty() || errorCode != null)

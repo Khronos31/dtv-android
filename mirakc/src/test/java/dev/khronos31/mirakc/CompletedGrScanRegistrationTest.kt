@@ -16,16 +16,16 @@ class CompletedGrScanRegistrationTest {
         }
         val store = TerrestrialChannelSettingsStore(values)
 
-        val empty = GrScanStatus.parse("empty\n50\n50\n62\n\n0\n11\nNO_CHANNELS_FOUND\n")!!
-        val failed = GrScanStatus.parse("failed\n50\n50\n62\n13,20\n1\n12\nCHANNEL_SCAN_FAILED\n")!!
-        val canceled = GrScanStatus.parse("interrupted\n4\n50\n17\n13\n0\n13\nCANCELED\n")!!
+        val empty = GrScanStatus.parse("empty\n40\n40\n52\n\n0\n11\nNO_CHANNELS_FOUND\n")!!
+        val failed = GrScanStatus.parse("failed\n40\n40\n52\n13,20\n1\n12\nCHANNEL_SCAN_FAILED\n")!!
+        val canceled = GrScanStatus.parse("interrupted\n4\n40\n17\n13\n0\n13\nCANCELED\n")!!
         assertFalse(registerCompletedGrScan(store, empty))
         assertFalse(registerCompletedGrScan(store, failed))
         assertFalse(registerCompletedGrScan(store, canceled))
         assertEquals("v1|21,22", values.get(TerrestrialChannelSettingsStore.ACTIVE_KEY))
         assertEquals(null, values.get(TerrestrialChannelSettingsStore.PENDING_KEY))
 
-        val complete = GrScanStatus.parse("complete\n50\n50\n62\n13,20,13\n0\n14\nNONE\n")!!
+        val complete = GrScanStatus.parse("complete\n40\n40\n52\n13,20,13\n0\n14\nNONE\n")!!
         assertTrue(registerCompletedGrScan(store, complete))
         assertFalse(registerCompletedGrScan(store, complete))
         assertEquals("v1|21,22", values.get(TerrestrialChannelSettingsStore.ACTIVE_KEY))
