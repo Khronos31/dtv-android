@@ -48,7 +48,7 @@ class GrScanRequestLifecycleTest {
             scanMarkerCreated
         })
         assertTrue(scanMarkerCreated)
-        val queuedOnDisk = GrScanStatus.parse("queued\n0\n50\n\n\n0\n650\nNONE\n")!!
+        val queuedOnDisk = GrScanStatus.parse("queued\n0\n40\n\n\n0\n650\nNONE\n")!!
         assertEquals(GrScanStatus.State.QUEUED, lifecycle.visibleStatus(queuedOnDisk)?.state)
     }
 
@@ -95,16 +95,16 @@ class GrScanRequestLifecycleTest {
         })
         assertTrue(exposedToMirakc)
         assertEquals(GrScanStatus.State.QUEUED, lifecycle.visibleStatus(GrScanStatus.parse(queued.toFileContents()))?.state)
-        val progress = GrScanStatus.parse("running\n8\n50\n20\n13,20\n0\n701\nNONE\n")!!
+        val progress = GrScanStatus.parse("running\n8\n40\n20\n13,20\n0\n701\nNONE\n")!!
         assertEquals(8, lifecycle.visibleStatus(progress)?.completed)
-        val complete = GrScanStatus.parse("complete\n50\n50\n62\n13,20\n0\n701\nNONE\n")!!
+        val complete = GrScanStatus.parse("complete\n40\n40\n52\n13,20\n0\n701\nNONE\n")!!
         assertTrue(lifecycle.visibleStatus(complete)?.isApplicable == true)
     }
 
     @Test
     fun busyRunningStoppedCancellationAndStartupFailureHaveDistinctOutcomes() {
         val lifecycle = GrScanRequestLifecycle()
-        val running = GrScanStatus.parse("running\n3\n50\n15\n13\n0\n900\nNONE\n")!!
+        val running = GrScanStatus.parse("running\n3\n40\n15\n13\n0\n900\nNONE\n")!!
 
         assertEquals(
             GrScanRequestLifecycle.Decision.Busy,

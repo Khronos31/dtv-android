@@ -9,7 +9,7 @@ import org.junit.Test
 class GrScanStatusTest {
     @Test
     fun queuedScanIsCancellableButCannotApplyResults() {
-        val status = GrScanStatus.parse("queued\n0\n50\n\n\n0\n123\nNONE\n")!!
+        val status = GrScanStatus.parse("queued\n0\n40\n\n\n0\n123\nNONE\n")!!
 
         assertTrue(status.isRunning)
         assertTrue(status.isIndeterminate)
@@ -19,8 +19,8 @@ class GrScanStatusTest {
 
     @Test
     fun runningScanIsIndeterminateUntilFirstChannelProgressArrives() {
-        val starting = GrScanStatus.parse("running\n0\n50\n\n\n0\n124\nNONE\n")!!
-        val progressing = GrScanStatus.parse("running\n1\n50\n13\n13\n0\n124\nNONE\n")!!
+        val starting = GrScanStatus.parse("running\n0\n40\n\n\n0\n124\nNONE\n")!!
+        val progressing = GrScanStatus.parse("running\n1\n40\n13\n13\n0\n124\nNONE\n")!!
 
         assertTrue(starting.isIndeterminate)
         assertFalse(progressing.isIndeterminate)
@@ -28,24 +28,24 @@ class GrScanStatusTest {
 
     @Test
     fun parsesProgressAndOnlyCompleteNonEmptyResultsAreApplicable() {
-        val running = GrScanStatus.parse("running\n17\n50\n29\n13,16,29\n0\n12345\nNONE\n")!!
+        val running = GrScanStatus.parse("running\n17\n40\n29\n13,16,29\n0\n12345\nNONE\n")!!
         assertTrue(running.isRunning)
         assertEquals(17, running.completed)
         assertEquals(29, running.currentChannel)
         assertFalse(running.isApplicable)
 
-        val completed = GrScanStatus.parse("complete\n50\n50\n62\n13,16,29\n0\n12345\nNONE\n")!!
+        val completed = GrScanStatus.parse("complete\n40\n40\n52\n13,16,29\n0\n12345\nNONE\n")!!
         assertTrue(completed.isApplicable)
         assertNull(completed.errorCode)
 
-        val failed = GrScanStatus.parse("failed\n50\n50\n62\n13,16,29\n1\n12345\nCHANNEL_SCAN_FAILED\n")!!
+        val failed = GrScanStatus.parse("failed\n40\n40\n52\n13,16,29\n1\n12345\nCHANNEL_SCAN_FAILED\n")!!
         assertFalse(failed.isApplicable)
     }
 
     @Test
     fun cancelPreservesSameScanNativeProgressAndClearsInFlightChannel() {
-        val beforeStop = GrScanStatus.parse("running\n5\n50\n19\n16,17\n0\n1791140690515\nNONE\n")!!
-        val stopped = GrScanStatus.parse("interrupted\n5\n50\n\n16,17\n0\n1791140690515\nINTERRUPTED\n")!!
+        val beforeStop = GrScanStatus.parse("running\n5\n40\n19\n16,17\n0\n1791140690515\nNONE\n")!!
+        val stopped = GrScanStatus.parse("interrupted\n5\n40\n\n16,17\n0\n1791140690515\nINTERRUPTED\n")!!
 
         val canceled = GrScanStatus.canceledFromNative(
             scanId = beforeStop.scanId,
@@ -62,7 +62,7 @@ class GrScanStatusTest {
 
     @Test
     fun cancelFallsBackWhenNeitherStatusBelongsToThisScan() {
-        val stale = GrScanStatus.parse("interrupted\n5\n50\n\n16,17\n0\n100\nINTERRUPTED\n")!!
+        val stale = GrScanStatus.parse("interrupted\n5\n40\n\n16,17\n0\n100\nINTERRUPTED\n")!!
         val canceled = GrScanStatus.canceledFromNative(101, stale, null)
 
         assertEquals(GrScanStatus.interrupted(101), canceled)
@@ -70,9 +70,20 @@ class GrScanStatusTest {
 
     @Test
     fun malformedOrEmptyResultsAreNotApplicable() {
-        assertNull(GrScanStatus.parse("complete\n50\n50\n62\n\n0\n12345\nNONE\n"))
-        assertNull(GrScanStatus.parse("complete\n51\n50\n62\n13\n0\n12345\nNONE\n"))
-        assertNull(GrScanStatus.parse("complete\n50\n50\n62\n13\n0\n0\nNONE\n"))
+        assertNull(GrScanStatus.parse("complete\n40\n40\n52\n\n0\n12345\nNONE\n"))
+        assertNull(GrScanStatus.parse("complete\n41\n40\n52\n13\n0\n12345\nNONE\n"))
+        assertNull(GrScanStatus.parse("complete\n40\n40\n52\n13\n0\n0\nNONE\n"))
+    }
+
+    @Test
+    fun legacyFiftyChannelStateRemainsReadableForSafeRecovery() {
+        val legacy = GrScanStatus.parse("running\n9\n50\n61\n13,61\n0\n12345\nNONE\n")!!
+
+        assertEquals(50, legacy.total)
+        assertEquals(9, legacy.completed)
+        assertEquals(61, legacy.currentChannel)
+        assertEquals(listOf(13, 61), legacy.foundChannels)
+        assertEquals(40, GrScanStatus.queued(12346).total)
     }
 
     @Test

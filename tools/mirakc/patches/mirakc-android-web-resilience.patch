@@ -231,7 +231,7 @@ diff --git mirakc-core/src/epg/job.rs mirakc-core/src/epg/job.rs
 index d89feda6..cdd80650 100644
 --- mirakc-core/src/epg/job.rs
 +++ mirakc-core/src/epg/job.rs
-@@ -1,14 +1,16 @@
+@@ -1,14 +1,17 @@
  use std::env;
 +use std::io::{self, Read};
 +use std::path::Path;
@@ -250,6 +250,7 @@ index d89feda6..cdd80650 100644
  use crate::epg::clock_synchronizer::ClockSynchronizer;
  use crate::epg::eit_feeder::FeedEitSections;
  use crate::epg::service_scanner::ServiceScanner;
++use crate::epg::service_scanner::GR_SCAN_TOTAL_CHANNELS;
 @@ -17,6 +19,7 @@ use crate::epg::*;
  pub struct JobManager<T, E, F> {
      config: Arc<Config>,
@@ -467,7 +468,7 @@ index d89feda6..cdd80650 100644
 +        .collect::<Vec<_>>()
 +        .join(",");
 +    let contents = format!(
-+        "{state}\n{completed}\n50\n{}\n{found}\n{failed_channels}\n{scan_id}\n{}\n",
++        "{state}\n{completed}\n{GR_SCAN_TOTAL_CHANNELS}\n{}\n{found}\n{failed_channels}\n{scan_id}\n{}\n",
 +        current_channel
 +            .map(|value| value.to_string())
 +            .unwrap_or_default(),
@@ -503,7 +504,7 @@ index d89feda6..cdd80650 100644
 +    if fields.len() != 8
 +        || fields[0] != "queued"
 +        || fields[1] != "0"
-+        || fields[2] != "50"
++        || fields[2].parse::<usize>().ok() != Some(GR_SCAN_TOTAL_CHANNELS)
 +        || !fields[3].is_empty()
 +        || !fields[4].is_empty()
 +        || fields[5] != "0"
@@ -591,7 +592,7 @@ index d89feda6..cdd80650 100644
 +        let contents = std::fs::read_to_string(cache_dir.path().join(".gr-scan-state")).unwrap();
 +        assert_eq!(
 +            contents,
-+            "running\n2\n50\n14\n13,14\n0\n1759591680123\nNONE\n"
++            "running\n2\n40\n14\n13,14\n0\n1759591680123\nNONE\n"
 +        );
 +    }
 +
@@ -601,7 +602,7 @@ index d89feda6..cdd80650 100644
 +        let requested_scan_id = 1_759_591_680_123;
 +        std::fs::write(
 +            cache_dir.path().join(".gr-scan-state"),
-+            format!("queued\n0\n50\n\n\n0\n{requested_scan_id}\nNONE\n"),
++            format!("queued\n0\n40\n\n\n0\n{requested_scan_id}\nNONE\n"),
 +        )
 +        .unwrap();
 +
@@ -615,7 +616,7 @@ index d89feda6..cdd80650 100644
 +        assert_eq!(progress.lines().nth(6), Some("1759591680123"));
 +
 +        write_gr_scan_status(
-+            cache_dir.path(), scan_id, "complete", 50, None, &[13, 16], 0, None,
++            cache_dir.path(), scan_id, "complete", 40, None, &[13, 16], 0, None,
 +        )
 +        .unwrap();
 +        let completed = std::fs::read_to_string(cache_dir.path().join(".gr-scan-state")).unwrap();
@@ -626,10 +627,10 @@ index d89feda6..cdd80650 100644
 +    fn only_bounded_well_formed_queued_request_ids_are_adopted() {
 +        let cache_dir = tempfile::tempdir().unwrap();
 +        for state in [
-+            "running\n1\n50\n13\n\n0\n123\nNONE\n".to_string(),
-+            "queued\n0\n50\n\n\n0\n0\nNONE\n".to_string(),
-+            format!("queued\n0\n50\n\n\n0\n{}\nNONE\n", i64::MAX as u64 + 1),
-+            format!("queued\n0\n50\n\n\n0\n123\nNONE\n{}", "x".repeat(4096)),
++            "running\n1\n40\n13\n\n0\n123\nNONE\n".to_string(),
++            "queued\n0\n40\n\n\n0\n0\nNONE\n".to_string(),
++            format!("queued\n0\n40\n\n\n0\n{}\nNONE\n", i64::MAX as u64 + 1),
++            format!("queued\n0\n40\n\n\n0\n123\nNONE\n{}", "x".repeat(4096)),
 +        ] {
 +            std::fs::write(cache_dir.path().join(".gr-scan-state"), state).unwrap();
 +            assert_eq!(
@@ -748,12 +749,13 @@ index b2cad233..ab0dccf8 100644
  
          let services: Vec<TsService> = serde_json::from_slice(&buf)?;
          tracing::debug!(
-@@ -129,6 +206,219 @@ where
+@@ -129,6 +206,220 @@ where
      }
  }
  
 +const GR_SCAN_FIRST_CHANNEL: u16 = 13;
-+const GR_SCAN_LAST_CHANNEL: u16 = 62;
++const GR_SCAN_LAST_CHANNEL: u16 = 52;
++pub(super) const GR_SCAN_TOTAL_CHANNELS: usize = (GR_SCAN_LAST_CHANNEL - GR_SCAN_FIRST_CHANNEL + 1) as usize;
 +const GR_SCAN_MAX_WORKERS: usize = 8;
 +const GR_SCAN_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(25);
 +
@@ -766,7 +768,7 @@ index b2cad233..ab0dccf8 100644
 +        .filter(|tuner| !tuner.disabled && tuner.channel_types.contains(&ChannelType::GR))
 +        .count()
 +        .clamp(1, GR_SCAN_MAX_WORKERS)
-+        .min((GR_SCAN_LAST_CHANNEL - GR_SCAN_FIRST_CHANNEL + 1) as usize)
++        .min(GR_SCAN_TOTAL_CHANNELS)
 +}
 +
 +fn publish_gr_scan_progress<F>(
@@ -1106,40 +1108,40 @@ index b2cad233..ab0dccf8 100644
 +
 +        let started = started.lock().unwrap().clone();
 +        let completion_order = completion_order.lock().unwrap().clone();
-+        let expected: Vec<u16> = (13..=62).collect();
++        let expected: Vec<u16> = (13..=52).collect();
 +        let mut started_sorted = started.clone();
 +        started_sorted.sort_unstable();
 +        assert_eq!(started_sorted, expected);
-+        assert_eq!(started.len(), 50);
++        assert_eq!(started.len(), 40);
 +        assert!(started.windows(2).all(|pair| pair[0] != pair[1]));
 +        assert_eq!(peak.load(Ordering::SeqCst), 4);
 +        assert!(completion_order.windows(2).any(|pair| pair[0] > pair[1]));
 +        assert_eq!(
 +            result.found_channels,
-+            (13..=62)
++            (13..=52)
 +                .filter(|channel| channel % 2 == 0)
 +                .collect::<Vec<_>>()
 +        );
 +        assert_eq!(result.failed_channels, 0);
-+        assert_eq!(result.completed, 50);
++        assert_eq!(result.completed, 40);
 +        assert_eq!(result.current_channel, None);
 +        assert!(!result.interrupted);
 +
 +        let snapshots = snapshots.lock().unwrap();
-+        assert_eq!(snapshots.last().unwrap().0, 50);
++        assert_eq!(snapshots.last().unwrap().0, 40);
 +        assert_eq!(snapshots.last().unwrap().1, None);
 +        assert_eq!(snapshots.last().unwrap().2, result.found_channels);
 +        assert!(snapshots.windows(2).all(|pair| pair[0].0 <= pair[1].0));
 +        assert!(snapshots
 +            .iter()
-+            .all(|(_, current, _)| { current.is_none_or(|channel| (13..=62).contains(&channel)) }));
++            .all(|(_, current, _)| { current.is_none_or(|channel| (13..=52).contains(&channel)) }));
 +    }
 +
 +    #[test(tokio::test)]
 +    async fn canceled_parallel_gr_scan_stops_admission_and_drains_in_flight_channels() {
 +        let started = Arc::new(std::sync::Mutex::new(Vec::new()));
 +        let gates = Arc::new(
-+            (13u16..=62)
++            (13u16..=52)
 +                .map(|channel| (channel, Arc::new(Semaphore::new(0))))
 +                .collect::<std::collections::HashMap<_, _>>(),
 +        );
@@ -1231,12 +1233,12 @@ index b2cad233..ab0dccf8 100644
 +                break;
 +            }
 +        }
-+        assert_eq!(started.len(), 50);
++        assert_eq!(started.len(), 40);
 +        cancellation.store(true, Ordering::SeqCst);
 +        last_channel_gate.add_permits(1);
 +
 +        let result = task.await.unwrap().unwrap();
-+        assert_eq!(result.completed, 50);
++        assert_eq!(result.completed, 40);
 +        assert!(result.interrupted);
 +        assert_eq!(result.current_channel, None);
 +    }
@@ -1262,8 +1264,8 @@ index b2cad233..ab0dccf8 100644
 +        let result = run_bounded_gr_scan(1, scan, |_, _, _| Ok(()), || false)
 +            .await
 +            .unwrap();
-+        assert_eq!(starts.load(Ordering::SeqCst), 50);
-+        assert_eq!(result.completed, 50);
++        assert_eq!(starts.load(Ordering::SeqCst), 40);
++        assert_eq!(result.completed, 40);
 +        assert_eq!(result.found_channels, vec![15]);
 +        assert_eq!(result.failed_channels, 1);
 +        assert!(!result.interrupted);
@@ -1318,12 +1320,12 @@ index b2cad233..ab0dccf8 100644
 +            .await
 +            .unwrap();
 +
-+        let expected_channels: Vec<u16> = (13..=62).collect();
++        let expected_channels: Vec<u16> = (13..=52).collect();
 +        assert_eq!(result.failed_channels, 0);
 +        assert_eq!(result.found_channels, expected_channels);
-+        assert_eq!(result.completed, 50);
++        assert_eq!(result.completed, 40);
 +        assert!(!result.interrupted);
-+        assert_eq!(progress.len(), 101);
++        assert_eq!(progress.len(), 81);
 +        assert_eq!(progress[0].0, 0);
 +        assert_eq!(progress[0].1, None);
 +        assert_eq!(progress[1].0, 0);
@@ -1332,9 +1334,9 @@ index b2cad233..ab0dccf8 100644
 +        assert_eq!(progress[2].1, None);
 +        assert_eq!(progress[3].0, 1);
 +        assert_eq!(progress[3].1, Some(14));
-+        assert_eq!(progress[progress.len() - 2].0, 49);
-+        assert_eq!(progress[progress.len() - 2].1, Some(62));
-+        assert_eq!(progress.last().unwrap().0, 50);
++        assert_eq!(progress[progress.len() - 2].0, 39);
++        assert_eq!(progress[progress.len() - 2].1, Some(52));
++        assert_eq!(progress.last().unwrap().0, 40);
 +        assert_eq!(progress.last().unwrap().1, None);
 +        assert_eq!(progress.last().unwrap().2, expected_channels);
 +    }
@@ -1400,7 +1402,7 @@ index b2cad233..ab0dccf8 100644
 +
 +        assert!(result.found_channels.is_empty());
 +        assert_eq!(result.failed_channels, 0);
-+        assert_eq!(result.completed, 50);
++        assert_eq!(result.completed, 40);
 +        assert!(!result.interrupted);
 +    }
  }
