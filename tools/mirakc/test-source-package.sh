@@ -28,13 +28,13 @@ cp "$root/tools/mirakc/patches/mirakc-android-web-resilience.patch" \
    "$temporary/dtv/tools/mirakc/patches/mirakc-android-web-resilience.patch"
 (cd "$temporary/dtv" && git init -q && git config user.name fixture && git config user.email fixture@example.invalid && git add -A && git commit -q -m fixture)
 dtv_commit=$(git -C "$temporary/dtv" rev-parse HEAD)
-mirakc_root=${MIRAKC_TEST_MIRAKC_ROOT:-$root/.work/mirakc-3.4.86}
-arib_root=${MIRAKC_TEST_ARIB_ROOT:-$root/.work/mirakc-arib-0.24.38}
+mirakc_root=${MIRAKC_TEST_MIRAKC_ROOT:-$root/.work/mirakc-3.4.88}
+arib_root=${MIRAKC_TEST_ARIB_ROOT:-$root/.work/mirakc-arib-0.24.39}
 siano_root=${MIRAKC_TEST_SIANO_ROOT:-$root/.work/pinned-siano-userland}
 px4_root=${MIRAKC_TEST_PX4_ROOT:-$root/.work/pinned-px4-userland}
 px4_drv_root=${MIRAKC_TEST_PX4_DRV_ROOT:-$root/.work/pinned-px4_drv}
 libusb_archive=${MIRAKC_TEST_LIBUSB_ARCHIVE:-$siano_root/build/android-aarch64/src/libusb-1.0.30.tar.bz2}
-swagger_archive=${MIRAKC_TEST_SWAGGER_UI_ARCHIVE:-/config/.work/mirakc-swagger-ui/swagger-ui-5.17.14.zip}
+swagger_archive=${MIRAKC_TEST_SWAGGER_UI_ARCHIVE:-/config/.work/mirakc-swagger-ui/swagger-ui-5.32.6.zip}
 cargo_vendor="$temporary/cargo-vendor"
 autotools_cache=${MIRAKC_TEST_AUTOTOOLS_CACHE:-/config/.work/mirakc-arib-tools/autotools-sources}
 cargo vendor --manifest-path "$mirakc_root/Cargo.toml" --locked --versioned-dirs "$cargo_vendor" >/dev/null 2>&1
@@ -81,7 +81,7 @@ esac
 exec /usr/bin/git "$@"
 EOF
 chmod 0755 "$temporary/network-bin/git"
-swagger_archive="$temporary/extracted/third_party/swagger-ui/swagger-ui-5.17.14.zip"
+swagger_archive="$temporary/extracted/third_party/swagger-ui/swagger-ui-5.32.6.zip"
 test -f "$swagger_archive"
 (
     cd "$temporary/extracted"

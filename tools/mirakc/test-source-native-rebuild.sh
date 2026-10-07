@@ -61,7 +61,7 @@ arib=$source_root/sources/mirakc-arib
 dtv=$source_root/sources/dtv-android
 libusb=$source_root/third_party/libusb-1.0.30
 libusb_archive=$source_root/third_party/libusb-1.0.30.tar.bz2
-swagger_archive=$source_root/third_party/swagger-ui/swagger-ui-5.17.14.zip
+swagger_archive=$source_root/third_party/swagger-ui/swagger-ui-5.32.6.zip
 px4_build=$px4/scripts/build-android.sh
 siano_build=$siano/scripts/build-android.sh
 mirakc_build=$dtv/tools/mirakc/build-android.sh
@@ -410,8 +410,8 @@ for abi in aarch64 armv7a; do
 done
 
 if [ "$full_gate" -eq 1 ]; then
-    mirakc_source=$dtv/.work/mirakc-3.4.86
-    arib_source=$dtv/.work/mirakc-arib-0.24.38
+    mirakc_source=$dtv/.work/mirakc-3.4.88
+    arib_source=$dtv/.work/mirakc-arib-0.24.39
     mkdir -p "$dtv/.work"
     cp -a "$mirakc" "$mirakc_source"
     cargo_home=$work/cargo-home
@@ -457,7 +457,7 @@ if [ "$full_gate" -eq 1 ]; then
             HOME="$clean_home" RUSTUP_HOME="$rustup_home" \
             RUSTUP_TOOLCHAIN=1.98.1 \
             CARGO_HOME="$cargo_home" CARGO_NET_OFFLINE=true \
-            VERGEN_GIT_SHA=fc9610f51f8621aa8db508ddd36c7f1e2785d7be \
+            VERGEN_GIT_SHA=09664c2eefd0dccc38cabd3717b081ac84bf0833 \
             SWAGGER_UI_DOWNLOAD_URL="file://$swagger_archive" \
             MIRAKC_GIT_BIN="$git_bin" \
             MIRAKC_CLEAN_ROOM=1 MIRAKC_SOURCE_DIR="$mirakc_source" \

@@ -33,8 +33,8 @@ audit_source_archive = audit_module.audit_source_archive
 
 LIBUSB_ARCHIVE_SHA256 = "fea36f34f9156400209595e300840767ab1a385ede1dc7ee893015aea9c6dbaf"
 LIBUSB_ARCHIVE_NAME = "libusb-1.0.30.tar.bz2"
-SWAGGER_UI_ARCHIVE_NAME = "swagger-ui-5.17.14.zip"
-SWAGGER_UI_ARCHIVE_SHA256 = "481244d0812097b11fbaeef79f71d942b171617f9c9f9514e63acbe13e71ccdc"
+SWAGGER_UI_ARCHIVE_NAME = "swagger-ui-5.32.6.zip"
+SWAGGER_UI_ARCHIVE_SHA256 = "b3c07e091559b59a833f66547eb1fc18f2896f96e3f1f953e2f1efb328aa3394"
 FIRMWARE_URL = EXPECTED["linux-firmware-siano"]["url"]
 FIRMWARE_SHA256 = EXPECTED["linux-firmware-siano"]["sha256"]
 FIRMWARE_LICENSE_URL = EXPECTED["linux-firmware-siano"]["license_url"]
@@ -183,7 +183,7 @@ def copy_archive_contents(archive: Path, stage: Path) -> None:
 
 def copy_swagger_archive(archive: Path, stage: Path) -> None:
     if archive.name != SWAGGER_UI_ARCHIVE_NAME or sha256(archive) != SWAGGER_UI_ARCHIVE_SHA256:
-        fail("the exact Swagger UI 5.17.14 archive is required")
+        fail("the exact Swagger UI 5.32.6 archive is required")
     write_file(stage / "third_party/swagger-ui" / SWAGGER_UI_ARCHIVE_NAME, archive.read_bytes())
 
 
@@ -474,13 +474,13 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--dtv-root", type=Path, default=Path("."))
     parser.add_argument("--dtv-ref", default="HEAD")
-    parser.add_argument("--mirakc-root", type=Path, default=Path(".work/mirakc-3.4.86"))
-    parser.add_argument("--arib-root", type=Path, default=Path(".work/mirakc-arib-0.24.38"))
+    parser.add_argument("--mirakc-root", type=Path, default=Path(".work/mirakc-3.4.88"))
+    parser.add_argument("--arib-root", type=Path, default=Path(".work/mirakc-arib-0.24.39"))
     parser.add_argument("--siano-root", type=Path, default=Path(".work/pinned-siano-userland"))
     parser.add_argument("--px4-root", type=Path, default=Path(".work/pinned-px4-userland"))
     parser.add_argument("--px4-drv-root", type=Path, default=Path(".work/pinned-px4_drv"))
     parser.add_argument("--libusb-archive", type=Path, default=Path("/config/GitHub/siano-userland/build/android-aarch64/src/libusb-1.0.30.tar.bz2"))
-    parser.add_argument("--swagger-ui-archive", type=Path, default=Path("/config/.work/mirakc-swagger-ui/swagger-ui-5.17.14.zip"))
+    parser.add_argument("--swagger-ui-archive", type=Path, default=Path("/config/.work/mirakc-swagger-ui/swagger-ui-5.32.6.zip"))
     parser.add_argument("--autotools-cache", type=Path, default=Path("/config/.work/mirakc-arib-tools/autotools-sources"))
     parser.add_argument("--cargo-vendor-dir", type=Path)
     args = parser.parse_args()

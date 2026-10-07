@@ -18,7 +18,7 @@ object MirakcUiFixtures {
     private val q3 = TunerDeviceUi("q3u4-1", "PX-Q3U4", 8, true, true, true)
     private val about = AboutUi(
         appVersion = "0.4.0",
-        engineVersions = listOf(VersionRowUi("mirakc", "3.4.86")),
+        engineVersions = listOf(VersionRowUi("mirakc", "3.4.88")),
         driverVersions = listOf(VersionRowUi("PX4 userland", "host supplied")),
         repositoryUrl = "https://github.com/Khronos31/dtv-android",
         licenseText = "Open-source licenses are shown here in the host-provided text."

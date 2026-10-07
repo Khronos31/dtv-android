@@ -25,8 +25,8 @@ CARGO_VENDOR_CONFIG = (
     b"[source.vendored-sources]\n"
     b"directory = \"third_party/cargo/vendor\"\n"
 )
-SWAGGER_UI_ARCHIVE = "third_party/swagger-ui/swagger-ui-5.17.14.zip"
-SWAGGER_UI_ARCHIVE_SHA256 = "481244d0812097b11fbaeef79f71d942b171617f9c9f9514e63acbe13e71ccdc"
+SWAGGER_UI_ARCHIVE = "third_party/swagger-ui/swagger-ui-5.32.6.zip"
+SWAGGER_UI_ARCHIVE_SHA256 = "b3c07e091559b59a833f66547eb1fc18f2896f96e3f1f953e2f1efb328aa3394"
 PX4_ANDROID_PATCH_PATH = (
     "sources/dtv-android/tools/mirakc/patches/"
     "px4-userland-receiver-control-concurrency.patch"
@@ -141,15 +141,15 @@ EXPECTED = {
         ),
     },
     "mirakc": {
-        "version": "3.4.86",
-        "commit": "fc9610f51f8621aa8db508ddd36c7f1e2785d7be",
+        "version": "3.4.88",
+        "commit": "09664c2eefd0dccc38cabd3717b081ac84bf0833",
         "url": "https://github.com/mirakc/mirakc.git",
         "spdx": "Apache-2.0 OR MIT",
         "prefix": "sources/mirakc/",
     },
     "mirakc-arib": {
-        "version": "0.24.38",
-        "commit": "e85e1f991aa91ba0e6c6e02d14a17d159901e181",
+        "version": "0.24.39",
+        "commit": "3266523d535b301141c533592a46d32617094439",
         "url": "https://github.com/mirakc/mirakc-arib.git",
         "spdx": "GPL-2.0-or-later",
         "prefix": "sources/mirakc-arib/",
@@ -162,8 +162,8 @@ EXPECTED = {
         "prefix": "sources/siano-userland/",
     },
     "px4-userland": {
-        "version": "0.1.9",
-        "commit": "cf38742618bb02db41a95def619fbff50e9eb0f3",
+        "version": "0.1.10",
+        "commit": "7ad5f6691f77a9aa58c4097f8b6dfea77f6d9b6a",
         "url": "https://github.com/Khronos31/px4-userland.git",
         "spdx": "GPL-2.0-only",
         "prefix": "sources/px4-userland/",
@@ -248,7 +248,7 @@ TOOLCHAIN = {
     "cmake": {"version": "3.22.1", "provider": "Android SDK cmake;3.22.1/bin/cmake", "verification": "binary version checked before clean build"},
     "ninja": {"version": "1.10.2", "provider": "bundled with Android SDK cmake;3.22.1", "verification": "binary version checked before clean build"},
     "rust": {"channel": "1.98.1", "toolchain_file": "rust-toolchain.toml", "targets": ["aarch64-linux-android", "armv7-linux-androideabi"], "rustc": "1.98.1", "rustc_commit": "48a229ceaefd4985c50990b14116b6d856af0985", "cargo": "1.98.1", "cargo_commit": "797e8a9bca276c1c9f9f738d2a20f484fa4eea9d", "verification": "exact rustup channel and targets; no installer archive checksum recorded"},
-    "cargo": {"lock_path": "sources/mirakc/Cargo.lock", "lock_sha256": "42749dcfa137347602a770fd86bae1691ad60b8d363e36f05e99b840f314acf7", "cargo_ndk": {"version": None, "provider": "not used; build invokes NDK clang/linker directly", "installer_pin": "NOT_APPLICABLE"}},
+    "cargo": {"lock_path": "sources/mirakc/Cargo.lock", "lock_sha256": "d31a12f832fcad3d916108910f1b2d23afdb665391fe2f912c01771a506e9842", "cargo_ndk": {"version": None, "provider": "not used; build invokes NDK clang/linker directly", "installer_pin": "NOT_APPLICABLE"}},
     "autotools": {"m4": "1.4.19", "autoconf": "2.72", "automake": "1.17", "libtool": "2.5.4", "pkg-config": "0.29.2", "installer_pin": "source_archives_below"},
 }
 

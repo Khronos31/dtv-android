@@ -6,9 +6,9 @@ set -eu
 project_root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd -P)
 work_root=$project_root/.work
 source_url=${MIRAKC_SOURCE_URL:-https://github.com/mirakc/mirakc.git}
-source_ref=${MIRAKC_SOURCE_REF:-fc9610f51f8621aa8db508ddd36c7f1e2785d7be}
+source_ref=${MIRAKC_SOURCE_REF:-09664c2eefd0dccc38cabd3717b081ac84bf0833}
 requested_abi=${ANDROID_ABI:-arm64-v8a}
-source_dir=${MIRAKC_SOURCE_DIR:-$work_root/mirakc-3.4.86}
+source_dir=${MIRAKC_SOURCE_DIR:-$work_root/mirakc-3.4.88}
 build_dir=${MIRAKC_BUILD_DIR:-$work_root/build-mirakc-$requested_abi}
 output_dir=${MIRAKC_OUTPUT_DIR:-$work_root/mirakc-output-$requested_abi}
 clean_room=${MIRAKC_CLEAN_ROOM:-0}
@@ -102,8 +102,8 @@ rustup target list --installed | grep -Fx "$rust_target" >/dev/null \
     || fail "Rust target $rust_target is not installed (install it with rustup target add)"
 
 # Deterministic digests of the pinned Git tree and lockfile.
-source_tree_sha256=8f558fa37f2e9c475ad7c029ed06655bee624ffabb4310a5191827c6ae0fd72a
-cargo_lock_sha256=42749dcfa137347602a770fd86bae1691ad60b8d363e36f05e99b840f314acf7
+source_tree_sha256=5a7d1b46e46421c89abfaf1808d231ccacf5e1ec1a778daa2c6897c4de1c4703
+cargo_lock_sha256=d31a12f832fcad3d916108910f1b2d23afdb665391fe2f912c01771a506e9842
 patch_file=$project_root/tools/mirakc/patches/mirakc-android-web-resilience.patch
 patch_sha256=7b0de81b73a3e8f1da35ca4a3f6ad70865a97b9c057c4b35dd22fc1af67fe0af
 
@@ -144,8 +144,8 @@ fi
 actual_lock_sha256=$(sha256sum "$source_dir/Cargo.lock" | awk '{print $1}')
 [ "$actual_lock_sha256" = "$cargo_lock_sha256" ] \
     || fail "Cargo.lock checksum mismatch: $actual_lock_sha256"
-grep -F 'version = "3.4.86"' "$source_dir/mirakc/Cargo.toml" >/dev/null \
-    || fail 'pinned source is not mirakc 3.4.86'
+grep -F 'version = "3.4.88"' "$source_dir/mirakc/Cargo.toml" >/dev/null \
+    || fail 'pinned source is not mirakc 3.4.88'
 [ -f "$patch_file" ] || fail "missing upstream patch: $patch_file"
 actual_patch_sha256=$(sha256sum "$patch_file" | awk '{print $1}')
 [ "$actual_patch_sha256" = "$patch_sha256" ] \
