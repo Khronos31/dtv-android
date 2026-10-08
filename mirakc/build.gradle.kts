@@ -36,7 +36,7 @@ val mirakcAribBinaries = listOf(
 val sianoUserlandDir = providers.gradleProperty("sianoUserlandDir")
     .orElse("/config/GitHub/siano-userland")
 val sianoBuildScript = sianoUserlandDir.map { file(it).resolve("scripts/build-android.sh") }
-val sianoPinnedRef = "d1f4e42810d5a2023ff4a6c31f798cb381026693"
+val sianoPinnedRef = "89c240b8af021d55d81b3b90fce79a3690605811"
 
 val mirakcAribSourceDir = providers.gradleProperty("mirakcAribSourceDir")
     .orElse(layout.projectDirectory.dir("../.work/mirakc-arib-0.24.39").asFile.absolutePath)
