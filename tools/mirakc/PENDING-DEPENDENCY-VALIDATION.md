@@ -12,7 +12,7 @@ that this source revision builds or works on hardware.
 | mirakc-arib | 0.24.38, `e85e1f991aa91ba0e6c6e02d14a17d159901e181` | 0.24.39, `3266523d535b301141c533592a46d32617094439` | `CMakeLists.txt` reports 0.24.39. Its recursive vendor submodule refs are listed below. |
 | px4-userland | v0.1.9, `cf38742618bb02db41a95def619fbff50e9eb0f3` | v0.1.10, `7ad5f6691f77a9aa58c4097f8b6dfea77f6d9b6a` | DTV receiver-control patch remains SHA-256 `c60214256a40b03f3469b5a508f149c12e599282edf103875a2170b816c4b697`; upstream profile table still has 16 product IDs by static inspection. |
 | Swagger UI archive embedded by utoipa-swagger-ui | 5.17.14, `481244d0812097b11fbaeef79f71d942b171617f9c9f9514e63acbe13e71ccdc` | 5.32.6 | Archive SHA-256 `b3c07e091559b59a833f66547eb1fc18f2896f96e3f1f953e2f1efb328aa3394`. This is the v5.32.6 archive referenced by utoipa-swagger-ui 10.0.1. |
-| siano-userland | v0.1.9, `d1f4e42810d5a2023ff4a6c31f798cb381026693` | unchanged | Explicitly deferred; no v0.1.10 pin is inferred. |
+| siano-userland | v0.1.9, `d1f4e42810d5a2023ff4a6c31f798cb381026693` | v0.1.10, `89c240b8af021d55d81b3b90fce79a3690605811` | Annotated tag object `7123f267a5f9280938a33494dba3a7142e622727` resolves to the source commit above. Static upstream diff adds resumable output backpressure handling, packet-boundary retune handling, and `T13`..`T62` CLI input. |
 | PX4 Android adaptation | unchanged patch | unchanged patch | Apply/build against v0.1.10 has not been checked. |
 
 mirakc-arib v0.24.39 records the same vendor gitlinks as v0.24.38. The root
@@ -45,8 +45,8 @@ proofs.
 ## Required gates before the next release
 
 The maintainer preparing the next release must run these gates on the exact
-release commit, record the commit and artifact hashes, and resolve every
-failure before signing or publishing:
+release commit (record its full Git commit ID), record the commit and artifact
+hashes, and resolve every failure before signing or publishing:
 
 1. Build and test both Android ABIs (arm64-v8a and armeabi-v7a), including the
    complete mirakc-arib graph and the patched PX4 payload. Run the repository's
@@ -70,6 +70,20 @@ failure before signing or publishing:
    satellite slot/TSID selection; the new behavior needs hardware coverage.
    Do not treat profile mapping or earlier v0.1.9 device evidence as proof for
    this refreshed payload.
+6. Exercise the pinned Siano v0.1.10 path on Android TV with a Siano RIO tuner:
+   use the actual APK pipe and B25 filter path to verify normal reception and
+   reception while the consumer is stalled, then confirm normal-reception TS
+   sync, TEI, and continuity. Stop/cancel while output is backpressured; retune
+   while a TS packet is partially written and confirm packet framing across
+   the channel boundary; disconnect the USB tuner while output is pending.
+   At exit, confirm child-process termination and USB cleanup, as well as the
+   reported exit behavior. Also check CLI parsing for representative lower
+   and upper `T13`..`T62` inputs on the exact release artifact. Upstream Termux
+   results are reference evidence and must be recorded separately from Android
+   APK integration results. These are required integration and device gates,
+   not claims made by the static source inspection.
 
 No patch-application command, test, build, CI workflow, APK audit, or device
-operation was run as part of this dependency pin change.
+operation was run as part of this dependency pin change. The Siano source
+diffs are observations only; compatibility with the Android adapter and
+runtime behavior remain unverified.

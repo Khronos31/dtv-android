@@ -20,12 +20,12 @@ The dependency refresh pins the following published upstream tags (2026-10-08):
 
 - mirakc `3.4.88` (`09664c2eefd0dccc38cabd3717b081ac84bf0833`);
 - mirakc-arib `0.24.39` (`3266523d535b301141c533592a46d32617094439`);
-- siano-userland `v0.1.9` (`d1f4e42810d5a2023ff4a6c31f798cb381026693`);
+- siano-userland `v0.1.10` (`89c240b8af021d55d81b3b90fce79a3690605811`);
 - px4-userland `v0.1.10` (`7ad5f6691f77a9aa58c4097f8b6dfea77f6d9b6a`).
 
-Siano remains at v0.1.9 by scope; this refresh does not claim all components
-are at their latest upstream release. Builds remain reproducible by pinning
-these exact refs rather than following a moving branch.
+Builds remain reproducible by pinning these exact refs rather than following a
+moving branch. The v0.1.10 Siano update has only been statically inspected;
+integration and hardware behavior remain unverified.
 The new pins have only been statically inspected in this change. Required
 next-release verification is tracked in
 [`tools/mirakc/PENDING-DEPENDENCY-VALIDATION.md`](tools/mirakc/PENDING-DEPENDENCY-VALIDATION.md).

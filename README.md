@@ -278,8 +278,8 @@ recisdb は入っていません。
 同梱している外部コンポーネントはそれぞれのライセンスに従います。特に mirakc
 APKに別プロセスとして同梱する `siano-userland` の `siano-ts` は
 GPL-2.0-or-later であり、対応するソースとライセンスは
-[siano-userland](https://github.com/Khronos31/siano-userland) v0.1.9
-（commit `d1f4e42810d5a2023ff4a6c31f798cb381026693`）にあります。
+[siano-userland](https://github.com/Khronos31/siano-userland) v0.1.10
+（commit `89c240b8af021d55d81b3b90fce79a3690605811`、tag `v0.1.10`）にあります。
 PX4 tuner codeはGPL-2.0-onlyの [px4-userland](https://github.com/Khronos31/px4-userland)
 由来で、同プロジェクトのprovenance記録には `nns779/px4_drv` からの派生元と
 ライセンスが記載されています。PX4 firmware抽出器はアプリのKotlin実装です。
@@ -297,8 +297,8 @@ JDK 17 と Android NDK r26 以降が要ります。Gradle タスクは SDK の `
 `ANDROID_NDK_HOME` を指定します。
 
 `siano-ts` は別リポジトリ
-[siano-userland](https://github.com/Khronos31/siano-userland) v0.1.9
-（commit `d1f4e42810d5a2023ff4a6c31f798cb381026693`）からビルドします。
+[siano-userland](https://github.com/Khronos31/siano-userland) v0.1.10
+（commit `89c240b8af021d55d81b3b90fce79a3690605811`、tag `v0.1.10`）からビルドします。
 その場所は `-PsianoUserlandDir` で渡します（既定値は作者の環境の
 `/config/GitHub/siano-userland`）。ビルドは両 ABI について
 `scripts/build-android.sh` を呼び、検証済みの実行ファイルを mirakc の APK に

@@ -155,8 +155,8 @@ EXPECTED = {
         "prefix": "sources/mirakc-arib/",
     },
     "siano-userland": {
-        "version": "0.1.9",
-        "commit": "d1f4e42810d5a2023ff4a6c31f798cb381026693",
+        "version": "0.1.10",
+        "commit": "89c240b8af021d55d81b3b90fce79a3690605811",
         "url": "https://github.com/Khronos31/siano-userland.git",
         "spdx": "GPL-2.0-or-later",
         "prefix": "sources/siano-userland/",
