@@ -4,6 +4,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,12 +21,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.relocation.BringIntoViewResponder
 import androidx.compose.foundation.relocation.bringIntoViewResponder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
@@ -248,6 +251,10 @@ fun TvActionButton(
     }
     val focusedBorderColor = if (isDestructive) Color.White else MirakcThemeTokens.FocusStroke
 
+    // Keep pointer input alive across frequent state updates without capturing stale callbacks.
+    val currentOnClick by rememberUpdatedState(onClick)
+    val currentEnabled by rememberUpdatedState(enabled)
+
     Button(
         onClick = {
             if (enabled) {
@@ -255,7 +262,12 @@ fun TvActionButton(
             }
         },
         enabled = enabled,
-        modifier = modifier,
+        // TV Material handles remote Enter; add touch without changing TV focus/appearance.
+        modifier = modifier.pointerInput(Unit) {
+            detectTapGestures(onTap = {
+                if (currentEnabled) currentOnClick()
+            })
+        },
         shape = ButtonDefaults.shape(
             shape = RoundedCornerShape(MirakcThemeTokens.ButtonCornerRadius),
             focusedShape = RoundedCornerShape(MirakcThemeTokens.ButtonCornerRadius)
