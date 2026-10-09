@@ -110,9 +110,9 @@ with tempfile.TemporaryDirectory(prefix="mirakc-release-attestation-") as tempor
     new_build = {
         "kind": "candidate",
         "candidate_run_id": "456",
-        "git_ref": "release/0.4.0",
+        "git_ref": "release/0.4.1",
         "git_head": "c" * 40,
-        "version": "0.4.0",
+        "version": "0.4.1",
         "px4_userland_ref": artifact_module.PX4_USERLAND_REF,
         "px4_userland_patch_sha256": artifact_module.PX4_USERLAND_PATCH_SHA256,
         "unsigned_apk_sha256": "e" * 64,
@@ -127,14 +127,14 @@ with tempfile.TemporaryDirectory(prefix="mirakc-release-attestation-") as tempor
         },
     }))
     (directory / "candidate-info-040.txt").write_text(
-        "kind=candidate\ncandidate_run_id=456\ngit_ref=release/0.4.0\n"
-        + "git_head=" + "c" * 40 + "\nversion=0.4.0\n"
+        "kind=candidate\ncandidate_run_id=456\ngit_ref=release/0.4.1\n"
+        + "git_head=" + "c" * 40 + "\nversion=0.4.1\n"
         + "px4_userland_ref=" + artifact_module.PX4_USERLAND_REF + "\n"
         + "px4_userland_patch_sha256=" + artifact_module.PX4_USERLAND_PATCH_SHA256 + "\n"
         + "unsigned_apk_sha256=" + "e" * 64 + "\n"
     )
     new_attestation = module.verify_inputs(
-        new_candidate, new_build_info, "c" * 40, "0.4.0"
+        new_candidate, new_build_info, "c" * 40, "0.4.1"
     )
     assert new_attestation["values"]["candidate_run_id"] == "456"
     new_artifact = directory / "artifact-040"
@@ -148,17 +148,17 @@ with tempfile.TemporaryDirectory(prefix="mirakc-release-attestation-") as tempor
     (new_artifact / "SHA256SUMS").write_text(
         f"{new_candidate_hash}  mirakc-signed-candidate.apk\n"
     )
-    checked = artifact_module.verify(new_artifact, "c" * 40, "456", "0.4.0")
+    checked = artifact_module.verify(new_artifact, "c" * 40, "456", "0.4.1")
     assert checked["candidate_apk_sha256"] == new_candidate_hash
     bad_build = json.loads(new_build_info.read_text())
     bad_build["candidate"]["build"]["px4_userland_patch_sha256"] = "0" * 64
     (new_artifact / "BUILD_INFO.json").write_text(json.dumps(bad_build))
     try:
-        artifact_module.verify(new_artifact, "c" * 40, "456", "0.4.0")
+        artifact_module.verify(new_artifact, "c" * 40, "456", "0.4.1")
     except artifact_module.ArtifactError:
         pass
     else:
-        raise AssertionError("0.4.0 artifact with the wrong PX4 patch provenance was accepted")
+        raise AssertionError("0.4.1 artifact with the wrong PX4 patch provenance was accepted")
 
 print("release attestation host self-test: PASS")
 PY

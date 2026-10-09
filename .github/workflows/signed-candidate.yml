@@ -106,8 +106,8 @@ jobs:
           CANDIDATE_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          test "$(cat mirakc/VERSION)" = "0.4.0" \
-            || { echo "candidate build requires a 0.4.0 checkout" >&2; exit 1; }
+          test "$(cat mirakc/VERSION)" = "0.4.1" \
+            || { echo "candidate build requires a 0.4.1 checkout" >&2; exit 1; }
           patch_sha256="$(sha256sum tools/mirakc/patches/px4-userland-receiver-control-concurrency.patch | awk '{ print $1 }')"
           test "$patch_sha256" = "$PX4_USERLAND_PATCH_SHA256" \
             || { echo "DTV-owned PX4 source patch hash does not match the release pin" >&2; exit 1; }
@@ -208,7 +208,7 @@ jobs:
               || { echo "Signed APK metadata changed: $signed_metadata" >&2; exit 1; }
             printf '%s' "$cert_sha256"
           }
-          candidate_cert="$(sign_apk candidate/mirakc-unsigned.apk "$RUNNER_TEMP/mirakc-signed-candidate.apk" 0.4.0 400)"
+          candidate_cert="$(sign_apk candidate/mirakc-unsigned.apk "$RUNNER_TEMP/mirakc-signed-candidate.apk" 0.4.1 401)"
           mkdir -p out
           cp "$RUNNER_TEMP/mirakc-signed-candidate.apk" out/mirakc-signed-candidate.apk
           (cd out && sha256sum mirakc-signed-candidate.apk > SHA256SUMS)
@@ -233,7 +233,7 @@ jobs:
 
           candidate = read_info(sys.argv[1])
           expected_cert = "1fd02c94f29a5756ed1d560ac4ecb6813fa0b2e634473a6f31da210ffd5223c4"
-          if candidate.get("kind") != "candidate" or candidate.get("version") != "0.4.0":
+          if candidate.get("kind") != "candidate" or candidate.get("version") != "0.4.1":
               raise SystemExit("candidate build-info changed during signing")
           if candidate.get("px4_userland_ref") != "7ad5f6691f77a9aa58c4097f8b6dfea77f6d9b6a":
               raise SystemExit("candidate PX4 upstream source ref changed during signing")
@@ -304,8 +304,8 @@ jobs:
           CANDIDATE_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          test "$(cat epgstation-server/VERSION)" = "0.3.1" \
-            || { echo "candidate build requires EPGStation 0.3.1" >&2; exit 1; }
+          test "$(cat epgstation-server/VERSION)" = "0.4.1" \
+            || { echo "candidate build requires EPGStation 0.4.1" >&2; exit 1; }
           ./gradlew --no-daemon :epgstation-server:assembleRelease
           apk=epgstation-server/build/outputs/apk/release/epgstation-server-release-unsigned.apk
           [[ -f "$apk" ]] || { echo "Unsigned EPGStation APK not found: $apk" >&2; exit 1; }
@@ -374,12 +374,12 @@ jobs:
             || { echo "resolved candidate checkout does not match downloaded build-info" >&2; exit 1; }
           test "$(sed -n 's/^kind=//p' candidate/EPGSTATION_CANDIDATE_BUILD_INFO.txt)" = candidate
           test "$(sed -n 's/^component=//p' candidate/EPGSTATION_CANDIDATE_BUILD_INFO.txt)" = epgstation-server
-          test "$(sed -n 's/^version=//p' candidate/EPGSTATION_CANDIDATE_BUILD_INFO.txt)" = 0.3.1
+          test "$(sed -n 's/^version=//p' candidate/EPGSTATION_CANDIDATE_BUILD_INFO.txt)" = 0.4.1
           test "$(sed -n 's/^unsigned_apk_sha256=//p' candidate/EPGSTATION_CANDIDATE_BUILD_INFO.txt)" = \
             "$(sha256sum candidate/epgstation-server-unsigned.apk | awk '{ print $1 }')"
           expected_cert=1fd02c94f29a5756ed1d560ac4ecb6813fa0b2e634473a6f31da210ffd5223c4
           metadata="$($aapt2 dump badging candidate/epgstation-server-unsigned.apk | sed -n "s/^package: name='\\([^']*\\)' versionCode='\\([^']*\\)' versionName='\\([^']*\\)'.*/\\1 \\2 \\3/p")"
-          test "$metadata" = "dev.khronos31.epgstation.server 301 0.3.1"
+          test "$metadata" = "dev.khronos31.epgstation.server 401 0.4.1"
           "$apksigner" sign --ks "$RUNNER_TEMP/release.keystore" \
             --ks-pass "env:KEYSTORE_PASSWORD" --ks-key-alias "$KEY_ALIAS" \
             --key-pass "env:KEY_PASSWORD" --out "$RUNNER_TEMP/epgstation-server-signed.apk" \
@@ -389,12 +389,12 @@ jobs:
             | awk -F': ' '/certificate SHA-256 digest/ { print $NF; exit }' | tr -d ':' | tr '[:upper:]' '[:lower:]')"
           test "$cert_sha256" = "$expected_cert" || { echo "Unexpected EPGStation signing certificate: $cert_sha256" >&2; exit 1; }
           signed_metadata="$($aapt2 dump badging "$RUNNER_TEMP/epgstation-server-signed.apk" | sed -n "s/^package: name='\\([^']*\\)' versionCode='\\([^']*\\)' versionName='\\([^']*\\)'.*/\\1 \\2 \\3/p")"
-          test "$signed_metadata" = "dev.khronos31.epgstation.server 301 0.3.1"
+          test "$signed_metadata" = "dev.khronos31.epgstation.server 401 0.4.1"
           mkdir -p out
           cp "$RUNNER_TEMP/epgstation-server-signed.apk" out/epgstation-server-signed-candidate.apk
           cp candidate/EPGSTATION_CANDIDATE_BUILD_INFO.txt out/EPGSTATION_CANDIDATE_BUILD_INFO.txt
           signed_sha256="$(sha256sum out/epgstation-server-signed-candidate.apk | awk '{ print $1 }')"
-          printf '{\n  "schema": 1,\n  "component": "epgstation-server",\n  "version": "0.3.1",\n  "git_head": "%s",\n  "candidate_run_id": "%s",\n  "unsigned_apk_sha256": "%s",\n  "signed_apk_sha256": "%s",\n  "certificate_sha256": "%s"\n}\n' \
+          printf '{\n  "schema": 1,\n  "component": "epgstation-server",\n  "version": "0.4.1",\n  "git_head": "%s",\n  "candidate_run_id": "%s",\n  "unsigned_apk_sha256": "%s",\n  "signed_apk_sha256": "%s",\n  "certificate_sha256": "%s"\n}\n' \
             "$(sed -n 's/^git_head=//p' candidate/EPGSTATION_CANDIDATE_BUILD_INFO.txt)" \
             "$(sed -n 's/^candidate_run_id=//p' candidate/EPGSTATION_CANDIDATE_BUILD_INFO.txt)" \
             "$(sed -n 's/^unsigned_apk_sha256=//p' candidate/EPGSTATION_CANDIDATE_BUILD_INFO.txt)" \

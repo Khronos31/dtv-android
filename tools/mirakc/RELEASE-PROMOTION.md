@@ -1,6 +1,6 @@
 # mirakc release promotion
 
-`mirakc-v0.4.0` is promoted only from an annotated tag and the exact, successful
+`mirakc-v0.4.1` is promoted only from an annotated tag and the exact, successful
 `signed-candidate.yml` artifact. The release workflow does not rebuild mirakc.
 
 The annotation body must contain exactly this UTF-8 record (one key per line):
@@ -20,7 +20,7 @@ writes files or stdout only and never creates or pushes a Git tag:
 ```sh
 tools/mirakc/release-attestation.py generate \
   --candidate mirakc-signed-candidate.apk \
-  --expected-version 0.4.0 \
+  --expected-version 0.4.1 \
   --build-info BUILD_INFO.json --tag-target "$(git rev-parse HEAD)" \
   --message mirakc-attestation.txt \
   --acceptance-output mirakc-acceptance.json
@@ -28,7 +28,7 @@ tools/mirakc/release-attestation.py generate \
 
 The candidate build-info records both the pinned PX4 upstream commit and the
 SHA-256 of the DTV-owned PX4 patch. The release verifier checks those values
-for 0.4.0. The device evidence harness (`device-evidence.py`) remains
+for 0.4.1. The device evidence harness (`device-evidence.py`) remains
 verification material; it does not replace the signed-artifact checks.
 
 The release job fetches only the exact signed-candidate artifact and creates a
@@ -36,11 +36,11 @@ The release job fetches only the exact signed-candidate artifact and creates a
 Japanese release notes before publishing. Confirm the draft assets are exactly
 the APK, acceptance JSON, and `SHA256SUMS`, then verify the checksums from the
 downloaded directory with `sha256sum -c SHA256SUMS`. Publish the same draft
-with `gh release edit mirakc-v0.4.0 --draft=false`; do not rebuild or replace
+with `gh release edit mirakc-v0.4.1 --draft=false`; do not rebuild or replace
 the candidate APK. GitHub artifact retention is three days, so promotion must
 be performed before that window expires. Missing, stale, extra, or ambiguous
 candidate artifacts fail closed.
 
-The published mirakc files are deliberately explicit: `mirakc-0.4.0.apk`,
-`mirakc-0.4.0-acceptance.json`, and `SHA256SUMS`. EPGStation continues to
+The published mirakc files are deliberately explicit: `mirakc-0.4.1.apk`,
+`mirakc-0.4.1-acceptance.json`, and `SHA256SUMS`. EPGStation continues to
 use its existing tagged build path.
