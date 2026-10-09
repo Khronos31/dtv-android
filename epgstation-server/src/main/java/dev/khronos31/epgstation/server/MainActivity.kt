@@ -1,13 +1,16 @@
 package dev.khronos31.epgstation.server
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Handler
 import android.os.Build
 import android.os.Bundle
 import android.os.Looper
+import android.provider.Settings
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -23,9 +26,11 @@ import dev.khronos31.epgstation.ui.contract.LicenseDocumentUi
 import dev.khronos31.epgstation.ui.contract.QrImageUi
 import dev.khronos31.epgstation.ui.contract.RepositoryLinkUi
 import dev.khronos31.epgstation.ui.contract.RecordingVolumeUi
+import dev.khronos31.epgstation.ui.contract.StorageAccessUi
 import dev.khronos31.epgstation.ui.contract.UpdatePromptUi
 import dev.khronos31.epgstation.ui.contract.UpdateSuccessNoticeUi
 import dev.khronos31.updater.GitHubReleaseUpdater
+import kotlin.system.exitProcess
 import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
@@ -57,7 +62,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (::preferences.isInitialized) refreshPresentationState()
+        if (!::preferences.isInitialized) return
+        if (consumeStorageRestartRequest()) return
+        refreshPresentationState()
     }
 
     private fun dispatch(action: EpgStationUiAction) {
@@ -169,10 +176,50 @@ class MainActivity : ComponentActivity() {
     private fun selectStorage(id: String) {
         val volumes = RecordingStorage.list(this)
         val volume = volumes.firstOrNull { it.id == id } ?: return
-        if (!volume.available) return
-        RecordingStorage.save(this, volume.id)
-        refreshPresentationState()
-        startServerService(restart = true)
+        when (volume.access) {
+            RemovableAccess.NeedsAllFilesAccess -> openAllFilesAccessSettings()
+            RemovableAccess.NeedsProcessRestart -> restartProcessForStorageAccess()
+            RemovableAccess.Writable, RemovableAccess.Unavailable -> {
+                if (!volume.available) return
+                RecordingStorage.save(this, volume.id)
+                refreshPresentationState()
+                startServerService(restart = true)
+            }
+        }
+    }
+
+    @SuppressLint("ApplySharedPref")
+    private fun openAllFilesAccessSettings() {
+        if (Build.VERSION.SDK_INT < 30) return
+        preferences.edit().putBoolean(KEY_AWAITING_STORAGE_RESTART, true).commit()
+        val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+            data = Uri.parse("package:$packageName")
+        }
+        if (runCatching { startActivity(intent) }.isFailure) {
+            preferences.edit().putBoolean(KEY_AWAITING_STORAGE_RESTART, false).apply()
+        }
+    }
+
+    /**
+     * gid 1077 is fixed when the process starts. Returning from the all-files
+     * screen restarts once so /mnt/media_rw becomes writable. The flag is cleared
+     * first, so a volume that stays unwritable does not restart in a loop.
+     */
+    @SuppressLint("ApplySharedPref")
+    private fun consumeStorageRestartRequest(): Boolean {
+        if (!preferences.getBoolean(KEY_AWAITING_STORAGE_RESTART, false)) return false
+        preferences.edit().putBoolean(KEY_AWAITING_STORAGE_RESTART, false).commit()
+        val needsRestart = RecordingStorage.hasAllFilesAccess() &&
+            RecordingStorage.list(this).any { it.access == RemovableAccess.NeedsProcessRestart }
+        if (!needsRestart) return false
+        restartProcessForStorageAccess()
+        return true
+    }
+
+    private fun restartProcessForStorageAccess() {
+        val launch = packageManager.getLaunchIntentForPackage(packageName) ?: return
+        startActivity(Intent.makeRestartActivityTask(launch.component))
+        mainHandler.postDelayed({ exitProcess(0) }, 300)
     }
 
     private fun checkForUpdate() {
@@ -257,7 +304,12 @@ class MainActivity : ComponentActivity() {
                     selected = volume.id == selected.id,
                     recordedPath = volume.recordedDir.absolutePath,
                     freeBytes = volume.freeBytes,
-                    totalBytes = volume.totalBytes
+                    totalBytes = volume.totalBytes,
+                    storageAccess = when (volume.access) {
+                        RemovableAccess.NeedsAllFilesAccess -> StorageAccessUi.NeedsAllFilesAccess
+                        RemovableAccess.NeedsProcessRestart -> StorageAccessUi.NeedsProcessRestart
+                        RemovableAccess.Writable, RemovableAccess.Unavailable -> StorageAccessUi.None
+                    }
                 )
             },
             updateBusy = updateBusy,
@@ -283,6 +335,7 @@ class MainActivity : ComponentActivity() {
         const val PREFERENCES = "epgstation-server"
         const val KEY_MIRAKURUN_URL = "mirakurun_url"
         const val KEY_RECORDED_VOLUME = "recorded_volume"
+        const val KEY_AWAITING_STORAGE_RESTART = "awaiting_storage_restart"
         const val DEFAULT_MIRAKURUN_URL = "http://127.0.0.1:40772/"
         const val APP_REPOSITORY_URL = "https://github.com/Khronos31/dtv-android"
         const val EPGSTATION_REPOSITORY_URL = "https://github.com/l3tnun/EPGStation"

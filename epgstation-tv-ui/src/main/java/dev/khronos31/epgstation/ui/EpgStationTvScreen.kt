@@ -64,6 +64,7 @@ import dev.khronos31.epgstation.ui.contract.EpgStationUiAction
 import dev.khronos31.epgstation.ui.contract.EpgStationUiState
 import dev.khronos31.epgstation.ui.contract.LicenseDocumentUi
 import dev.khronos31.epgstation.ui.contract.RecordingVolumeUi
+import dev.khronos31.epgstation.ui.contract.StorageAccessUi
 import dev.khronos31.epgstation.ui.contract.RepositoryLinkUi
 import dev.khronos31.epgstation.ui.contract.UpdatePromptUi
 import kotlinx.coroutines.delay
@@ -613,9 +614,16 @@ private fun StorageCard(
                         formatStorageCapacityJapanese(volume.freeBytes, volume.totalBytes)
                     }
 
+                    val accessNote = when (volume.storageAccess) {
+                        StorageAccessUi.NeedsAllFilesAccess ->
+                            "タップで、すべてのファイルへのアクセスを許可します。他のアプリの許可もそのまま残ります。"
+                        StorageAccessUi.NeedsProcessRestart ->
+                            "許可は付いています。タップでアプリを起動し直し、このストレージを使えるようにします。"
+                        StorageAccessUi.None -> null
+                    }
                     TvFocusableCard(
                         onClick = { onSelect(volume.id) },
-                        enabled = volume.available,
+                        enabled = volume.available || volume.storageAccess != StorageAccessUi.None,
                         isSelected = volume.selected
                     ) {
                         Row(
@@ -643,12 +651,24 @@ private fun StorageCard(
                                         backgroundColor = EpgStationThemeTokens.StatusSuccessBg,
                                         textColor = EpgStationThemeTokens.StatusSuccess
                                     )
-                                } else if (!volume.available) {
-                                    TvBadge(
-                                        text = "利用不可",
-                                        backgroundColor = EpgStationThemeTokens.StatusErrorBg,
-                                        textColor = EpgStationThemeTokens.StatusError
+                                } else when (volume.storageAccess) {
+                                    StorageAccessUi.NeedsAllFilesAccess -> TvBadge(
+                                        text = "許可が必要",
+                                        backgroundColor = EpgStationThemeTokens.StatusWarningBg,
+                                        textColor = EpgStationThemeTokens.StatusWarning
                                     )
+                                    StorageAccessUi.NeedsProcessRestart -> TvBadge(
+                                        text = "再起動が必要",
+                                        backgroundColor = EpgStationThemeTokens.StatusWarningBg,
+                                        textColor = EpgStationThemeTokens.StatusWarning
+                                    )
+                                    StorageAccessUi.None -> if (!volume.available) {
+                                        TvBadge(
+                                            text = "利用不可",
+                                            backgroundColor = EpgStationThemeTokens.StatusErrorBg,
+                                            textColor = EpgStationThemeTokens.StatusError
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -666,6 +686,14 @@ private fun StorageCard(
                             color = if (volume.available) EpgStationThemeTokens.Primary else EpgStationThemeTokens.OnSurfaceMuted,
                             fontWeight = FontWeight.Medium
                         )
+                        if (accessNote != null) {
+                            Text(
+                                text = accessNote,
+                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.5.sp),
+                                color = EpgStationThemeTokens.StatusWarning,
+                                maxLines = 3
+                            )
+                        }
                     }
                 }
             }

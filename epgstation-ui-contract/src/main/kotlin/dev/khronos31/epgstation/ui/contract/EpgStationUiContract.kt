@@ -3,6 +3,12 @@ package dev.khronos31.epgstation.ui.contract
 import java.net.URI
 import java.util.Collections
 
+enum class StorageAccessUi {
+    None,
+    NeedsAllFilesAccess,
+    NeedsProcessRestart,
+}
+
 data class RecordingVolumeUi(
     val id: String,
     val title: String,
@@ -12,7 +18,8 @@ data class RecordingVolumeUi(
     val selected: Boolean,
     val recordedPath: String,
     val freeBytes: Long?,
-    val totalBytes: Long?
+    val totalBytes: Long?,
+    val storageAccess: StorageAccessUi = StorageAccessUi.None,
 )
 
 /** Immutable raster matching the first URL in [EpgStationUiState.listenUrls]. */
