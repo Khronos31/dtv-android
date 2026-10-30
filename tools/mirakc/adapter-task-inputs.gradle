@@ -2,10 +2,11 @@ gradle.projectsEvaluated {
     def module = gradle.rootProject.findProject(':mirakc')
     def cppRoot = new File(module.projectDir, 'src/main/cpp').canonicalFile
     def expected = [
+        prepareB25FilterBinaries: ['b25_filter.cpp', 'b25_filter_contract.h'],
         preparePx4AdapterBinaries: [
             'adapter_cli.h', 'px4_adapter.cpp', 'px4_tune_plan.cpp',
             'px4_tune_plan.h', 'px4_receiver_retry.h', 'px4_card_retry.h',
-            'b25_filter.cpp', 'ccid_reader.c', 'ccid_reader.h',
+            'b25_filter.cpp', 'b25_filter_contract.h', 'ccid_reader.c', 'ccid_reader.h',
             't1_state_machine.c', 't1_state_machine.h', 'b_cas_card_ccid.c',
             'arib25/arib_std_b25.c', 'arib25/ts_section_parser.c',
             'arib25/multi2.cc', 'CMakeLists.txt'
@@ -13,7 +14,7 @@ gradle.projectsEvaluated {
         prepareAsicenAdapterBinaries: [
             'adapter_cli.h', 'px4_adapter.cpp', 'px4_tune_plan.cpp',
             'px4_tune_plan.h', 'px4_receiver_retry.h', 'px4_card_retry.h',
-            'b25_filter.cpp', 'ccid_reader.c', 'ccid_reader.h',
+            'b25_filter.cpp', 'b25_filter_contract.h', 'ccid_reader.c', 'ccid_reader.h',
             't1_state_machine.c', 't1_state_machine.h', 'b_cas_card_ccid.c',
             'arib25/arib_std_b25.c', 'arib25/ts_section_parser.c',
             'arib25/multi2.cc', 'CMakeLists.txt'
@@ -21,6 +22,7 @@ gradle.projectsEvaluated {
         preparePixAdapterBinaries: ['adapter_cli.h', 'pix_adapter.cpp', 'CMakeLists.txt']
     ]
     def externalInputs = [
+        prepareB25FilterBinaries: [],
         preparePx4AdapterBinaries: ['../tools/mirakc/verify-android-elf.sh'],
         prepareAsicenAdapterBinaries: ['../tools/mirakc/verify-android-elf.sh'],
         preparePixAdapterBinaries: ['../tools/mirakc/verify-android-elf.sh']

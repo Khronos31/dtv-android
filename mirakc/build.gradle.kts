@@ -130,6 +130,28 @@ val t1StateMachineSource = layout.projectDirectory.file("src/main/cpp/t1_state_m
 val t1StateMachineHeader = layout.projectDirectory.file("src/main/cpp/t1_state_machine.h")
 val t1StateMachineTests = layout.projectDirectory.file("src/main/cpp/tests/t1_state_machine_test.cpp")
 val t1StateMachineTestScript = layout.projectDirectory.file("../tools/mirakc/test-t1-state-machine.sh")
+val b25IoTestScript = layout.projectDirectory.file("../tools/mirakc/test-b25-io.sh")
+val b25IoSources = listOf(
+    "b25_filter.cpp",
+    "b25_filter_main.cpp",
+    "siano_adapter.cpp",
+    "tests/b25_filter_io_test.cpp",
+    "tests/b25_filter_main_exit_test.cpp",
+    "tests/b25_filter_sigpipe_test.cpp",
+    "tests/siano_adapter_io_test.cpp",
+    "b25_filter_contract.h",
+    "ccid_reader.h",
+    "arib25/arib_std_b25.h",
+    "arib25/b_cas_card.h",
+    "arib25/b_cas_card_error_code.h",
+    "tests/stubs/android/log.h"
+).map { layout.projectDirectory.file("src/main/cpp/$it") }
+val ccidReaderSource = layout.projectDirectory.file("src/main/cpp/ccid_reader.c")
+val ccidReaderHeader = layout.projectDirectory.file("src/main/cpp/ccid_reader.h")
+val ccidReaderDescriptorTests =
+    layout.projectDirectory.file("src/main/cpp/tests/ccid_reader_descriptor_test.c")
+val ccidReaderDescriptorTestScript =
+    layout.projectDirectory.file("../tools/mirakc/test-ccid-reader-descriptor.sh")
 
 val runPx4TunePlanHostTests = tasks.register<Exec>("runPx4TunePlanHostTests") {
     workingDir(project.rootDir)
@@ -159,11 +181,36 @@ val runT1StateMachineHostTests = tasks.register<Exec>("runT1StateMachineHostTest
     )
 }
 
+val runB25IoHostTests = tasks.register<Exec>("runB25IoHostTests") {
+    group = "verification"
+    description = "Runs deterministic host tests for B25 and Siano adapter I/O"
+    workingDir(project.rootDir)
+    commandLine("/bin/sh", b25IoTestScript.asFile.absolutePath)
+    inputs.files(b25IoSources, b25IoTestScript)
+}
+
+val runCcidReaderDescriptorHostTests = tasks.register<Exec>("runCcidReaderDescriptorHostTests") {
+    group = "verification"
+    description = "Runs deterministic host tests for CCID descriptor endpoint selection"
+    workingDir(project.rootDir)
+    commandLine("/bin/sh", ccidReaderDescriptorTestScript.asFile.absolutePath)
+    inputs.files(
+        ccidReaderSource,
+        ccidReaderHeader,
+        t1StateMachineSource,
+        t1StateMachineHeader,
+        ccidReaderDescriptorTests,
+        ccidReaderDescriptorTestScript
+    )
+}
+
 tasks.matching {
     it.name == "check" || it.name == "test" || it.name.endsWith("UnitTest")
 }.configureEach {
     dependsOn(runT1StateMachineHostTests)
+    dependsOn(runCcidReaderDescriptorHostTests)
     dependsOn(runPx4RuntimeSocketPathHostTests)
+    dependsOn(runB25IoHostTests)
 }
 
 val mirakcBinaries = listOf(
@@ -266,6 +313,7 @@ val prepareB25FilterBinaries = tasks.register("prepareB25FilterBinaries") {
         b25FilterCmake,
         b25FilterVerifier,
         layout.projectDirectory.file("src/main/cpp/b25_filter.cpp"),
+        layout.projectDirectory.file("src/main/cpp/b25_filter_contract.h"),
         layout.projectDirectory.file("src/main/cpp/ccid_reader.c"),
         layout.projectDirectory.file("src/main/cpp/ccid_reader.h"),
         layout.projectDirectory.file("src/main/cpp/t1_state_machine.c"),
@@ -339,6 +387,7 @@ val preparePx4AdapterBinaries = tasks.register("preparePx4AdapterBinaries") {
         px4AdapterCmake,
         px4AdapterVerifier,
         layout.projectDirectory.file("src/main/cpp/b25_filter.cpp"),
+        layout.projectDirectory.file("src/main/cpp/b25_filter_contract.h"),
         layout.projectDirectory.file("src/main/cpp/ccid_reader.c"),
         layout.projectDirectory.file("src/main/cpp/ccid_reader.h"),
         layout.projectDirectory.file("src/main/cpp/t1_state_machine.c"),
@@ -435,6 +484,7 @@ val prepareAsicenAdapterBinaries = tasks.register("prepareAsicenAdapterBinaries"
         px4ReceiverRetryHeader,
         px4CardRetryHeader,
         layout.projectDirectory.file("src/main/cpp/b25_filter.cpp"),
+        layout.projectDirectory.file("src/main/cpp/b25_filter_contract.h"),
         layout.projectDirectory.file("src/main/cpp/ccid_reader.c"),
         layout.projectDirectory.file("src/main/cpp/ccid_reader.h"),
         layout.projectDirectory.file("src/main/cpp/t1_state_machine.c"),

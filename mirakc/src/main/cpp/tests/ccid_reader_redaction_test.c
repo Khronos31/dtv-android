@@ -42,14 +42,14 @@ int ioctl(int fd, unsigned long request, ...) {
     struct usbdevfs_bulktransfer* transfer = va_arg(arguments, struct usbdevfs_bulktransfer*);
     va_end(arguments);
 
-    if (transfer->ep == CCID_OUT) {
+    if (transfer->ep == (unsigned int)g_ep_out) {
         const uint8_t* command = (const uint8_t*)transfer->data;
         if (transfer->len < 10) return -1;
         last_request_type = command[0];
         last_request_sequence = command[6];
         return (int)transfer->len;
     }
-    if (transfer->ep != CCID_IN || transfer->len < 10 + sizeof(synthetic_payload)) return -1;
+    if (transfer->ep != (unsigned int)g_ep_in || transfer->len < 10 + sizeof(synthetic_payload)) return -1;
 
     uint8_t* response = (uint8_t*)transfer->data;
     const uint8_t* body = synthetic_payload;
@@ -79,18 +79,54 @@ int ioctl(int fd, unsigned long request, ...) {
 }
 
 ssize_t pread(int fd, void* buffer, size_t count, off_t offset) {
-    uint8_t descriptor[54] = {0};
+    /*
+     * Synthetic descriptor blob in the real USBFS read format: device
+     * descriptor followed by one configuration tree (config + interface +
+     * CCID class + bulk endpoints), with a consistent wTotalLength.
+     */
+    uint8_t descriptor[18 + 9 + 9 + 54 + 7 + 7] = {0};
     (void)fd;
     if (offset != 0 || count < sizeof(descriptor)) return -1;
-    descriptor[0] = sizeof(descriptor);
-    descriptor[1] = 0x21;
-    descriptor[6] = 0x03;
-    descriptor[28] = 32;
-    descriptor[40] = 0;
-    descriptor[41] = 0;
-    descriptor[42] = 0x02;
-    descriptor[44] = 0x0f;
-    memcpy(descriptor + 48, synthetic_descriptor_secret, sizeof(synthetic_descriptor_secret));
+    uint8_t* const device = descriptor;
+    device[0] = 18;
+    device[1] = 0x01;
+    device[8] = 0xff;
+    device[9] = 0xff;
+    device[10] = 0xff;
+    device[17] = 1;
+    uint8_t* const config = descriptor + 18;
+    config[0] = 9;
+    config[1] = 0x02;
+    config[2] = (uint8_t)(sizeof(descriptor) - 18);
+    config[4] = 1;
+    uint8_t* const interface = descriptor + 27;
+    interface[0] = 9;
+    interface[1] = 0x04;
+    interface[2] = 0;
+    interface[4] = 2;
+    interface[5] = 0x0B;
+    uint8_t* const ccid = descriptor + 36;
+    ccid[0] = 54;
+    ccid[1] = 0x21;
+    ccid[6] = 0x03;
+    ccid[28] = 32;
+    ccid[40] = 0;
+    ccid[41] = 0;
+    ccid[42] = 0x02;
+    ccid[44] = 0x0f;
+    memcpy(ccid + 48, synthetic_descriptor_secret, sizeof(synthetic_descriptor_secret));
+    uint8_t* const endpoint_out = descriptor + 90;
+    endpoint_out[0] = 7;
+    endpoint_out[1] = 0x05;
+    endpoint_out[2] = 0x01;
+    endpoint_out[3] = 0x02;
+    endpoint_out[4] = 64;
+    uint8_t* const endpoint_in = descriptor + 97;
+    endpoint_in[0] = 7;
+    endpoint_in[1] = 0x05;
+    endpoint_in[2] = 0x82;
+    endpoint_in[3] = 0x02;
+    endpoint_in[4] = 64;
     memcpy(buffer, descriptor, sizeof(descriptor));
     return (ssize_t)sizeof(descriptor);
 }
@@ -131,6 +167,10 @@ static void clear_log(void) {
 }
 
 int main(void) {
+    /* The raw transfer checks below run before ccid_open derives these. */
+    g_ep_out = 0x01;
+    g_ep_in = 0x82;
+    g_slot = 0;
     g_seq = (uint8_t)synthetic_sequence;
     if (send_ccid(PC_TO_RDR_XFR_BLOCK, synthetic_payload,
                   (uint32_t)sizeof(synthetic_payload), 0, 0, 0) < 0) {

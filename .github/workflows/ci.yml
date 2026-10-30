@@ -160,7 +160,7 @@ jobs:
             -PlibusbArchive="$GITHUB_WORKSPACE/.work/libusb-1.0.30.tar.bz2" \
             -PlibusbSourceDir="$GITHUB_WORKSPACE/.work/libusb-1.0.30" \
             -Ppx4DrvDir="$GITHUB_WORKSPACE/px4_drv" \
-            test :mirakc:lintDebug
+            :mirakc:test :mirakc-ui-contract:test :updater:test :mirakc:lintDebug
       - name: Test CCID log redaction
         run: bash tools/mirakc/test-ccid-log-redaction.sh
       - name: Assemble debug

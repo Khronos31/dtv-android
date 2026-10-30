@@ -317,6 +317,13 @@ int child_result(int status) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    struct sigaction ignore_sigpipe{};
+    ignore_sigpipe.sa_handler = SIG_IGN;
+    if (sigemptyset(&ignore_sigpipe.sa_mask) != 0 ||
+        sigaction(SIGPIPE, &ignore_sigpipe, nullptr) != 0) {
+        return 70;
+    }
+
     std::string px4_ts;
     std::string ts_program;
     std::string base_serial;

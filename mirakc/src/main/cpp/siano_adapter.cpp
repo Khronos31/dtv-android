@@ -103,37 +103,52 @@ int main(int argc, char** argv) {
     log_info("request sent");
 
     char buffer[32 * 1024];
+    int result = 0;
     while (true) {
         struct pollfd event{fd, POLLIN | POLLHUP | POLLERR, 0};
         const int ready = ::poll(&event, 1, -1);
         if (ready < 0) {
             if (errno == EINTR) continue;
             log_error_errno("poll failure", errno);
+            result = 1;
             break;
         }
-        if ((event.revents & POLLIN) != 0) {
+        if ((event.revents & POLLNVAL) != 0) {
+            log_error_revents(event.revents);
+            result = 1;
+            break;
+        }
+        if ((event.revents & (POLLIN | POLLHUP)) != 0) {
             const ssize_t count = ::read(fd, buffer, sizeof(buffer));
             if (count == 0) {
+                if ((event.revents & POLLERR) != 0) {
+                    log_error_revents(event.revents);
+                    result = 1;
+                    break;
+                }
                 log_info("socket EOF");
                 break;
             }
             if (count < 0) {
                 if (errno == EINTR) continue;
                 log_error_errno("read failure", errno);
+                result = 1;
                 break;
             }
             if (!write_all(STDOUT_FILENO, buffer, static_cast<std::size_t>(count))) {
                 log_error_errno("stdout write failure", errno);
+                result = 1;
                 break;
             }
             // POLLIN|POLLHUP can carry one or more final TS chunks. Return
             // to poll once more so queued bytes are drained before HUP ends.
             continue;
-        } else if ((event.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+        } else if ((event.revents & POLLERR) != 0) {
             log_error_revents(event.revents);
+            result = 1;
             break;
         }
     }
     ::close(fd);
-    return 0;
+    return result;
 }
