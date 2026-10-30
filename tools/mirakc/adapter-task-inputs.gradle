@@ -3,6 +3,7 @@ gradle.projectsEvaluated {
     def cppRoot = new File(module.projectDir, 'src/main/cpp').canonicalFile
     def expected = [
         prepareB25FilterBinaries: ['b25_filter.cpp', 'b25_filter_contract.h'],
+        prepareSianoAdapterBinaries: ['siano_adapter.cpp', 'siano_stream_protocol.h', 'CMakeLists.txt'],
         preparePx4AdapterBinaries: [
             'adapter_cli.h', 'px4_adapter.cpp', 'px4_tune_plan.cpp',
             'px4_tune_plan.h', 'px4_receiver_retry.h', 'px4_card_retry.h',
@@ -23,6 +24,7 @@ gradle.projectsEvaluated {
     ]
     def externalInputs = [
         prepareB25FilterBinaries: [],
+        prepareSianoAdapterBinaries: ['../tools/mirakc/verify-android-elf.sh'],
         preparePx4AdapterBinaries: ['../tools/mirakc/verify-android-elf.sh'],
         prepareAsicenAdapterBinaries: ['../tools/mirakc/verify-android-elf.sh'],
         preparePixAdapterBinaries: ['../tools/mirakc/verify-android-elf.sh']
@@ -66,6 +68,14 @@ gradle.projectsEvaluated {
     def actualBundle = asicenTask.inputs.properties['asicenCoreBundlePath']
     if (actualBundle != expectedBundle) {
         throw new GradleException("prepareAsicenBinaries selects Core bundle ${actualBundle}, expected ${expectedBundle}")
+    }
+
+    def sianoProtocol = new File(cppRoot, 'siano_stream_protocol.h').canonicalFile
+    ['generateApkSourceMetadata', 'generateDebugApkSourceMetadata'].each { taskName ->
+        def task = module.tasks.getByName(taskName)
+        if (!task.inputs.files.files.collect { it.canonicalFile }.toSet().contains(sianoProtocol)) {
+            throw new GradleException("${taskName} is missing the staged Siano protocol header input ${sianoProtocol}")
+        }
     }
 
     println 'Custom adapter Gradle task inputs: PASS'

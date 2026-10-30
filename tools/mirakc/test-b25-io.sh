@@ -34,9 +34,18 @@ c++ -std=c++17 -Wall -Wextra -Werror \
 "$build_dir/b25_filter_sigpipe_test"
 
 c++ -std=c++17 -Wall -Wextra -Werror -I"$cpp_dir/tests/stubs" \
-    -Dmain=siano_adapter_main_entry -Dpoll=host_poll -Dread=host_read -Dwrite=host_write \
+    -Dmain=siano_adapter_main_entry -Dread=host_read -Dwrite=host_write \
     -c "$cpp_dir/siano_adapter.cpp" -o "$build_dir/siano_adapter.o"
 c++ -std=c++17 -Wall -Wextra -Werror -I"$cpp_dir/tests/stubs" \
     "$cpp_dir/tests/siano_adapter_io_test.cpp" "$build_dir/siano_adapter.o" \
     -pthread -o "$build_dir/siano_adapter_io_test"
 "$build_dir/siano_adapter_io_test"
+
+c++ -std=c++17 -Wall -Wextra -Werror -I"$cpp_dir/tests/stubs" \
+    -Dmain=siano_adapter_entry -c "$cpp_dir/siano_adapter.cpp" \
+    -o "$build_dir/siano_adapter_terminal.o"
+c++ -std=c++17 -Wall -Wextra -Werror -I"$cpp_dir/tests/stubs" \
+    "$cpp_dir/tests/siano_adapter_terminal_host.cpp" "$build_dir/siano_adapter_terminal.o" \
+    -pthread -o "$build_dir/siano_adapter_terminal_host"
+"$build_dir/siano_adapter_terminal_host" --self-test \
+    "$repo_dir/mirakc/src/test/resources/siano-terminal"

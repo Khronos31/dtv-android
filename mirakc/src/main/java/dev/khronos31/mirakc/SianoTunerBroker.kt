@@ -5,6 +5,7 @@ import android.net.LocalSocket
 import android.util.Log
 import java.io.Closeable
 import java.io.File
+import java.io.InputStream
 import java.io.FileDescriptor
 import java.io.IOException
 import java.nio.charset.StandardCharsets
@@ -13,6 +14,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /** One S1UD presents one USB entry (one tuner); support up to four devices. */
 internal const val MAX_SIANO_TUNERS = 4
@@ -334,6 +336,7 @@ internal class SianoTunerBroker(
         private val stopped = AtomicBoolean(false)
         private val lifecycleLock = Any()
         private var clientLifetime: SianoTsClientLifetime? = null
+        private var streamSession: SianoTunerStreamSession? = null
 
         fun run() {
             val process: NativeUsbProcess.StartedTsClient
@@ -349,39 +352,63 @@ internal class SianoTunerBroker(
                         "--channel", channel.toString()
                     )
                 )
-                // stop() is serialized with publication of the child, so a
-                // generation rotation cannot miss a just-created process.
-                clientLifetime = SianoTsClientLifetime(device.owner) { reason ->
-                    logPoll(process, reason)
-                    try {
-                        NativeUsbProcess.stopCommand(process.pid)
-                    } finally {
+                val processOutputClosed = AtomicBoolean(false)
+                val closeProcessOutput = {
+                    if (processOutputClosed.compareAndSet(false, true)) {
                         try { process.output.close() } catch (_: IOException) { }
+                    }
+                }
+                val diagnosticsClosed = AtomicBoolean(false)
+                val closeDiagnostics = {
+                    if (diagnosticsClosed.compareAndSet(false, true)) {
                         try { process.diagnostics.close() } catch (_: IOException) { }
                     }
                 }
-                // Start the sole stderr consumer before releasing the same
-                // lock stop() uses to claim and finish this process.
-                startTsDiagnostics(process)
-                Log.i(TAG, "siano-ts started index=$index channel=$channel pid=${process.pid}")
+                val processResources = SianoTsProcessResources(
+                    stopProcess = { NativeUsbProcess.stopCommand(process.pid) },
+                    closeOutput = closeProcessOutput,
+                    closeDiagnostics = closeDiagnostics
+                )
+                val processControlRef = AtomicReference<SianoTsProcessControl?>()
+                clientLifetime = SianoTsClientLifetime(device.owner) { reason ->
+                    Log.i(TAG, "siano-ts stop stage=$reason index=$index channel=$channel pid=${process.pid}")
+                    val control = processControlRef.get()
+                    if (control != null) control.stop() else processResources.stop()
+                }
+                processResources.setup {
+                    val processOutput = android.os.ParcelFileDescriptor.AutoCloseInputStream(process.output)
+                    val diagnosticsInput = android.os.ParcelFileDescriptor.AutoCloseInputStream(process.diagnostics)
+                    val processControl = SianoTsProcessControl(
+                        pollProcess = {
+                            when (val status = NativeUsbProcess.pollSiano(process.pid)) {
+                                NativeUsbProcess.PollResult.ALIVE -> SianoChildStatus.ALIVE
+                                is NativeUsbProcess.PollResult.EXITED ->
+                                    SianoChildStatus.EXITED(status.code, status.signal)
+                                NativeUsbProcess.PollResult.ERROR -> SianoChildStatus.ERROR
+                            }
+                        },
+                        stopProcess = processResources::stop
+                    )
+                    processControlRef.set(processControl)
+                    streamSession = SianoTunerStreamSession(
+                        input = processOutput,
+                        output = client.outputStream,
+                        process = processControl,
+                        closeOutput = { try { client.close() } catch (_: IOException) { } }
+                    )
+                    // Start the sole stderr consumer before releasing the same
+                    // lock stop() uses to claim and finish this process.
+                    startTsDiagnostics(process, diagnosticsInput, closeDiagnostics)
+                    Log.i(TAG, "siano-ts started index=$index channel=$channel pid=${process.pid}")
+                }
             }
             val watcher = Thread({ watchClient() }, "siano-broker-watch-$index").also {
                 it.isDaemon = true
                 it.start()
             }
             try {
-                android.os.ParcelFileDescriptor.AutoCloseInputStream(process.output).use { input ->
-                    val output = client.outputStream
-                    val buffer = ByteArray(32 * 1024)
-                    while (!stopped.get()) {
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        if (count > 0) {
-                            output.write(buffer, 0, count)
-                            output.flush()
-                        }
-                    }
-                }
+                val terminal = streamSession?.run() ?: SianoStreamTerminal(SianoStreamOutcome.CANCEL, 0)
+                Log.i(TAG, "siano-ts terminal index=$index channel=$channel outcome=${terminal.outcome} detail=${terminal.detail}")
             } finally {
                 watcher.interrupt()
                 stop("ts-eof")
@@ -390,38 +417,29 @@ internal class SianoTunerBroker(
 
         fun stop(reason: String = "stop") {
             val lifetime: SianoTsClientLifetime?
+            val stream: SianoTunerStreamSession?
             synchronized(lifecycleLock) {
                 if (!stopped.compareAndSet(false, true)) return
                 lifetime = clientLifetime
                 clientLifetime = null
+                stream = streamSession
             }
-            lifetime?.stop(reason)
             try { client.close() } catch (_: IOException) { }
+            stream?.cancel()
+            lifetime?.stop(reason)
         }
 
-        private fun logPoll(process: NativeUsbProcess.StartedTsClient, reason: String) {
-            when (val result = NativeUsbProcess.pollCommand(process.pid)) {
-                NativeUsbProcess.PollResult.ALIVE ->
-                    Log.i(TAG, "siano-ts poll stage=$reason index=$index channel=$channel state=ALIVE")
-                is NativeUsbProcess.PollResult.EXITED ->
-                    Log.i(
-                        TAG,
-                        "siano-ts poll stage=$reason index=$index channel=$channel " +
-                            "state=EXITED code=${result.code ?: "unknown"} signal=${result.signal ?: "none"}"
-                    )
-                NativeUsbProcess.PollResult.ERROR ->
-                    Log.e(TAG, "siano-ts poll stage=$reason index=$index channel=$channel state=ERROR")
-            }
-        }
-
-        private fun startTsDiagnostics(process: NativeUsbProcess.StartedTsClient) {
+        private fun startTsDiagnostics(
+            process: NativeUsbProcess.StartedTsClient,
+            input: InputStream,
+            closeInput: () -> Unit
+        ) {
             Thread({
                 try {
-                    android.os.ParcelFileDescriptor.AutoCloseInputStream(process.diagnostics).use { input ->
-                        val buffer = ByteArray(1024)
-                        while (input.read(buffer) >= 0) { }
-                    }
+                    val buffer = ByteArray(1024)
+                    while (input.read(buffer) >= 0) { }
                 } catch (_: IOException) { }
+                finally { closeInput() }
             }, "siano-ts-diagnostics-${process.pid}").apply { isDaemon = true; start() }
         }
 
@@ -480,7 +498,7 @@ internal class SianoTunerBroker(
 
     private companion object {
         const val MAX_CLIENTS = 8
-        const val PROTOCOL = "SIAO/1"
+        const val PROTOCOL = "SIAO/2"
         const val REQUEST_TIMEOUT_MS = 2_000
         val READER_ACK = byteArrayOf('O'.code.toByte(), 'K'.code.toByte(), '\n'.code.toByte())
         const val TAG = "SianoTunerBroker"

@@ -38,7 +38,7 @@ mirakc APK は上流の mirakc `3.4.91` を Android 向けに移植して組み�
 | --- | --- |
 | 本体 | Android TV / Google TV（Google TV Streamer で動作確認） |
 | チューナー | PLEX PX-S1UD／同じ Siano チップの USB チューナー、下表のPX4系チューナー |
-| カードリーダー | CCID 対応の USB カードリーダー（Identive/SCM SCR33xx v2.0 で動作確認） |
+| カードリーダー | USB構成が1つで、CCIDインターフェースがalternate setting 0にbulk IN/OUTを持つCCIDリーダー（slot 0を使用。Identive/SCM SCR33xx v2.0で動作確認） |
 | カード | B-CAS カード |
 | その他 | USB ハブ（本体のポートが1つしかないため）、録画用の USB ストレージ（任意・exFAT） |
 
@@ -203,6 +203,11 @@ USB 権限を要求する Siano の ID は次の3つです。
 Siano は Android 側が許可した USB descriptor と firmware を persistent な `sianod` に
 渡し、その daemon が USB を所有します。`sianoctl` で状態を取得し、mirakc の tuner
 command は USB FD を持たない `siano-ts` client を専用 adapter 経由で呼び出します。
+broker と adapter の tuner stream は app-private `SIAO/2` framing を使います。各frameは
+`SIA2` magic・u32 big-endian type・u32 big-endian payload length の12-byte headerを持ちます。
+DATA(type 1) は1〜32768-byte TS payload、END(type 2) は outcome kind と detail の各u32です。
+END outcome は EXIT(1)、SIGNAL(2)、TIMEOUT(3)、CANCEL(4)、POLL_ERROR(5)、BROKER_IO(6)。
+adapter は DATA payload のみを stdout に出し、正常終了として扱うのは観測済みEXIT(0) ENDだけです。
 PX4 は enclosure ごとに1つの `px4d` が1本または2本の Android 管理 FD を所有します。
 ASICEN は [asicen-userland](https://github.com/Khronos31/asicen-userland) の逐次 provisioning
 契約に従い、loader の primary へ許可・firmware upload、再列挙後に sibling loader へ

@@ -3,6 +3,7 @@ import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.Base64
 import org.gradle.api.tasks.Exec
+import org.gradle.api.tasks.testing.Test
 import org.gradle.api.provider.Provider
 
 plugins {
@@ -80,6 +81,7 @@ val sianoAdapterVerifier = layout.projectDirectory.file("../tools/mirakc/verify-
 val b25FilterSource = layout.projectDirectory.file("src/main/cpp/b25_filter_main.cpp")
 val b25FilterCmake = layout.projectDirectory.file("src/main/cpp/CMakeLists.txt")
 val b25FilterVerifier = layout.projectDirectory.file("../tools/mirakc/verify-android-elf.sh")
+val sianoStreamProtocolHeader = layout.projectDirectory.file("src/main/cpp/siano_stream_protocol.h")
 val px4AdapterSource = layout.projectDirectory.file("src/main/cpp/px4_adapter.cpp")
 val pixAdapterSource = layout.projectDirectory.file("src/main/cpp/pix_adapter.cpp")
 val adapterCliHeader = layout.projectDirectory.file("src/main/cpp/adapter_cli.h")
@@ -136,10 +138,12 @@ val b25IoSources = listOf(
     "b25_filter.cpp",
     "b25_filter_main.cpp",
     "siano_adapter.cpp",
+    "siano_stream_protocol.h",
     "tests/b25_filter_io_test.cpp",
     "tests/b25_filter_main_exit_test.cpp",
     "tests/b25_filter_sigpipe_test.cpp",
     "tests/siano_adapter_io_test.cpp",
+    "tests/siano_adapter_terminal_host.cpp",
     "b25_filter_contract.h",
     "ccid_reader.h",
     "arib25/arib_std_b25.h",
@@ -147,6 +151,8 @@ val b25IoSources = listOf(
     "arib25/b_cas_card_error_code.h",
     "tests/stubs/android/log.h"
 ).map { layout.projectDirectory.file("src/main/cpp/$it") }
+val sianoTerminalFixtures = listOf("exit0.hex", "exit7.hex", "signal9.hex")
+    .map { layout.projectDirectory.file("src/test/resources/siano-terminal/$it") }
 val ccidReaderSource = layout.projectDirectory.file("src/main/cpp/ccid_reader.c")
 val ccidReaderHeader = layout.projectDirectory.file("src/main/cpp/ccid_reader.h")
 val ccidReaderDescriptorTests =
@@ -187,7 +193,14 @@ val runB25IoHostTests = tasks.register<Exec>("runB25IoHostTests") {
     description = "Runs deterministic host tests for B25 and Siano adapter I/O"
     workingDir(project.rootDir)
     commandLine("/bin/sh", b25IoTestScript.asFile.absolutePath)
-    inputs.files(b25IoSources, b25IoTestScript)
+    inputs.files(b25IoSources, sianoTerminalFixtures, b25IoTestScript)
+}
+
+tasks.withType<Test>().configureEach {
+    systemProperty(
+        "mirakc.siano.terminal.host",
+        project.rootDir.resolve(".work/host-b25-io/siano_adapter_terminal_host").absolutePath
+    )
 }
 
 val runCcidReaderDescriptorHostTests = tasks.register<Exec>("runCcidReaderDescriptorHostTests") {
@@ -261,7 +274,7 @@ val prepareMirakcAribBinaries = tasks.register("prepareMirakcAribBinaries") {
 
 val prepareSianoAdapterBinaries = tasks.register("prepareSianoAdapterBinaries") {
     dependsOn(preparePatchedCoreSource)
-    inputs.files(sianoAdapterSource, sianoAdapterCmake, sianoAdapterVerifier, coreTrackedSourceFiles, coreConcurrencyPatch)
+    inputs.files(sianoAdapterSource, sianoStreamProtocolHeader, sianoAdapterCmake, sianoAdapterVerifier, coreTrackedSourceFiles, coreConcurrencyPatch)
     outputs.files(
         nativeOutputDir.file("arm64-v8a/libmirakc-siano-adapter.so"),
         nativeOutputDir.file("armeabi-v7a/libmirakc-siano-adapter.so")
