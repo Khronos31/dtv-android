@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 env:
@@ -97,6 +98,13 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+      - name: CI cache scope and cold proof structure fixture
+        run: python3 tools/mirakc/test-ci-cache-configuration.py
+      - name: CI cache material helper fixture
+        run: python3 tools/mirakc/test-ci-cache-material.py
       - name: Device evidence host self-test
         run: tools/mirakc/test-device-evidence.sh
       - name: Shared JNI process launcher host self-test
@@ -142,17 +150,118 @@ jobs:
           rustup target add --toolchain "$RUST_VERSION" armv7-linux-androideabi aarch64-linux-android
           rustc --version | grep -E "^rustc ${RUST_VERSION} "
           cargo --version | grep -E "^cargo ${RUST_VERSION} "
-      - name: Cache portable aribb24 host tools
-        uses: actions/cache@v4
+      - name: Provision pinned mirakc source checkouts before cache lookup
+        run: |
+          set -euo pipefail
+          mkdir -p .work
+          git clone --no-checkout https://github.com/mirakc/mirakc.git .work/mirakc-3.4.91
+          git -C .work/mirakc-3.4.91 fetch --no-tags origin 4f0767e87b109cabd17ed1ded0311355244fa018
+          git -C .work/mirakc-3.4.91 checkout --detach 4f0767e87b109cabd17ed1ded0311355244fa018
+          git -C .work/mirakc-3.4.91 submodule update --init --recursive
+          git clone --no-checkout https://github.com/mirakc/mirakc-arib.git .work/mirakc-arib-0.24.40
+          git -C .work/mirakc-arib-0.24.40 fetch --no-tags origin 312168e85b30941a1fc0344900fd543a036ea341
+          git -C .work/mirakc-arib-0.24.40 checkout --detach 312168e85b30941a1fc0344900fd543a036ea341
+          git -C .work/mirakc-arib-0.24.40 submodule sync --recursive
+          git -C .work/mirakc-arib-0.24.40 submodule update --init --recursive
+      - name: Restore Cargo dependency downloads
+        uses: actions/cache/restore@v4
         with:
-          path: ${{ runner.temp }}/mirakc-arib-tools
-          key: mirakc-arib-autotools-${{ runner.os }}-${{ hashFiles('tools/mirakc-arib/bootstrap-autotools.sh') }}
-      - name: Test and lint
+          path: |
+            ${{ runner.temp }}/cargo/registry/index
+            ${{ runner.temp }}/cargo/registry/cache
+            ${{ runner.temp }}/cargo/registry/src
+            ${{ runner.temp }}/cargo/git/db
+            ${{ runner.temp }}/cargo/git/checkouts
+          key: cargo-downloads-${{ runner.os }}-${{ env.RUST_VERSION }}-${{ hashFiles('.work/mirakc-3.4.91/Cargo.lock') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            cargo-downloads-${{ runner.os }}-${{ env.RUST_VERSION }}-${{ hashFiles('.work/mirakc-3.4.91/Cargo.lock') }}-
+      - name: Fetch locked mirakc Cargo dependencies
+        id: cargo_fetch
+        env:
+          CARGO_HOME: ${{ runner.temp }}/cargo
+        run: cargo fetch --locked --manifest-path .work/mirakc-3.4.91/Cargo.toml
+      - name: Save validated Cargo downloads
+        if: ${{ always() && steps.cargo_fetch.outcome == 'success' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ runner.temp }}/cargo/registry/index
+            ${{ runner.temp }}/cargo/registry/cache
+            ${{ runner.temp }}/cargo/registry/src
+            ${{ runner.temp }}/cargo/git/db
+            ${{ runner.temp }}/cargo/git/checkouts
+          key: cargo-downloads-${{ runner.os }}-${{ env.RUST_VERSION }}-${{ hashFiles('.work/mirakc-3.4.91/Cargo.lock') }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Fingerprint portable host toolchain
+        id: arib_host_toolchain
+        run: |
+          set -euo pipefail
+          fingerprint=$(
+            {
+              uname -srm
+              cc --version | sed -n '1p'
+              make --version | sed -n '1p'
+              ld --version | sed -n '1p'
+              printf 'CFLAGS=\n'
+            } | sha256sum | awk '{print $1}'
+          )
+          echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
+      - name: Restore pinned ARIB source archives
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/mirakc-arib-tools/autotools-sources
+          key: arib-sources-${{ runner.os }}-${{ hashFiles('tools/mirakc-arib/bootstrap-autotools.sh') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            arib-sources-${{ runner.os }}-${{ hashFiles('tools/mirakc-arib/bootstrap-autotools.sh') }}-
+      - name: Restore completed portable ARIB host tools
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/mirakc-arib-tools/autotools
+          key: arib-tools-${{ runner.os }}-${{ runner.arch }}-${{ steps.arib_host_toolchain.outputs.fingerprint }}-${{ hashFiles('tools/mirakc-arib/bootstrap-autotools.sh', 'tools/mirakc/prepare-ci-cache-material.py') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            arib-tools-${{ runner.os }}-${{ runner.arch }}-${{ steps.arib_host_toolchain.outputs.fingerprint }}-${{ hashFiles('tools/mirakc-arib/bootstrap-autotools.sh', 'tools/mirakc/prepare-ci-cache-material.py') }}-
+      - name: Acquire and verify pinned ARIB source archives
+        id: arib_sources
+        env:
+          MIRAKC_ARIB_AUTOTOOLS_ROOT: ${{ runner.temp }}/mirakc-arib-tools
+        run: >-
+          python3 tools/mirakc/prepare-ci-cache-material.py
+          --bootstrap tools/mirakc-arib/bootstrap-autotools.sh
+          --tool-root "$RUNNER_TEMP/mirakc-arib-tools"
+          --fetch-only
+      - name: Save verified ARIB source archives
+        if: ${{ always() && steps.arib_sources.outcome == 'success' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/mirakc-arib-tools/autotools-sources
+          key: arib-sources-${{ runner.os }}-${{ hashFiles('tools/mirakc-arib/bootstrap-autotools.sh') }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Bootstrap and verify completed portable ARIB host tools
+        id: arib_tools
+        env:
+          MIRAKC_ARIB_AUTOTOOLS_ROOT: ${{ runner.temp }}/mirakc-arib-tools
+        run: >-
+          python3 tools/mirakc/prepare-ci-cache-material.py
+          --bootstrap tools/mirakc-arib/bootstrap-autotools.sh
+          --tool-root "$RUNNER_TEMP/mirakc-arib-tools"
+      - name: Save verified portable ARIB host tools
+        if: ${{ always() && steps.arib_tools.outcome == 'success' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/mirakc-arib-tools/autotools
+          key: arib-tools-${{ runner.os }}-${{ runner.arch }}-${{ steps.arib_host_toolchain.outputs.fingerprint }}-${{ hashFiles('tools/mirakc-arib/bootstrap-autotools.sh', 'tools/mirakc/prepare-ci-cache-material.py') }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Bounded native Gradle cache fixture
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.NDK_VERSION }}
+          MIRAKC_TEST_MIRAKC_ROOT: ${{ github.workspace }}/.work/mirakc-3.4.91
+          MIRAKC_TEST_ARIB_ROOT: ${{ github.workspace }}/.work/mirakc-arib-0.24.40
+          MIRAKC_TEST_CMAKE_BIN: ${{ env.ANDROID_SDK_ROOT }}/cmake/${{ env.ANDROID_CMAKE_VERSION }}/bin
+        run: sh tools/mirakc/test-native-output-cache.sh
+      - name: Test, lint, and assemble debug
+        id: mirakc_gradle_build
         env:
           MIRAKC_ARIB_AUTOTOOLS_ROOT: ${{ runner.temp }}/mirakc-arib-tools
           CARGO_HOME: ${{ runner.temp }}/cargo
         run: |
-          ./gradlew --no-daemon --max-workers=1 \
+          ./gradlew --no-daemon --max-workers=1 --build-cache -PciNativeCache=true \
             -PsianoUserlandDir="$GITHUB_WORKSPACE/siano-userland" \
             -Ppx4UserlandDir="$GITHUB_WORKSPACE/px4-userland" \
             -PasicenUserlandDir="$GITHUB_WORKSPACE/asicen-userland" \
@@ -162,25 +271,9 @@ jobs:
             -PlibusbArchive="$GITHUB_WORKSPACE/.work/libusb-1.0.30.tar.bz2" \
             -PlibusbSourceDir="$GITHUB_WORKSPACE/.work/libusb-1.0.30" \
             -Ppx4DrvDir="$GITHUB_WORKSPACE/px4_drv" \
-            :mirakc:test :mirakc-ui-contract:test :updater:test :mirakc:lintDebug
+            :mirakc:test :mirakc-ui-contract:test :updater:test :mirakc:lintDebug :mirakc:assembleDebug
       - name: Test CCID log redaction
         run: bash tools/mirakc/test-ccid-log-redaction.sh
-      - name: Assemble debug
-        env:
-          MIRAKC_ARIB_AUTOTOOLS_ROOT: ${{ runner.temp }}/mirakc-arib-tools
-          CARGO_HOME: ${{ runner.temp }}/cargo
-        run: |
-          ./gradlew --no-daemon --max-workers=1 \
-            -PsianoUserlandDir="$GITHUB_WORKSPACE/siano-userland" \
-            -Ppx4UserlandDir="$GITHUB_WORKSPACE/px4-userland" \
-            -PasicenUserlandDir="$GITHUB_WORKSPACE/asicen-userland" \
-            -PpixUserlandDir="$GITHUB_WORKSPACE/pix-userland" \
-            -PuserlandCoreDir="$GITHUB_WORKSPACE/dtv-userland-core" \
-            -PsianoPx4UserlandDir="$GITHUB_WORKSPACE/siano-px4-userland" \
-            -PlibusbArchive="$GITHUB_WORKSPACE/.work/libusb-1.0.30.tar.bz2" \
-            -PlibusbSourceDir="$GITHUB_WORKSPACE/.work/libusb-1.0.30" \
-            -Ppx4DrvDir="$GITHUB_WORKSPACE/px4_drv" \
-            :mirakc:assembleDebug
       - name: Cache pinned Swagger UI source archive
         run: |
           set -euo pipefail
@@ -233,13 +326,6 @@ jobs:
           python3 tools/mirakc/audit-source.py \
             --expected-dtv-commit "$(git rev-parse HEAD)" \
             "$RUNNER_TEMP/mirakc-corresponding-source.tar.gz"
-      - name: Clean-room complete native inventory and relink proof
-        env:
-          MIRAKC_REQUIRE_NETWORK_NAMESPACE: required
-        run: >-
-          tools/mirakc/test-source-native-rebuild.sh
-          "$RUNNER_TEMP/mirakc-corresponding-source.tar.gz"
-          "$GITHUB_WORKSPACE/mirakc/build/outputs/apk/debug/mirakc-debug.apk"
       - name: Test APK source metadata with pinned source fixtures
         env:
           MIRAKC_TEST_MIRAKC_ROOT: ${{ github.workspace }}/.work/mirakc-3.4.91
@@ -267,6 +353,58 @@ jobs:
         with:
           name: mirakc-debug-apk
           path: mirakc/build/outputs/apk/debug/mirakc-debug.apk
+
+  mirakc-native-clean-room:
+    name: mirakc cold native rebuild proof
+    needs: mirakc
+    runs-on: ubuntu-latest
+    env:
+      MIRAKC_REQUIRE_NETWORK_NAMESPACE: required
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: mirakc-corresponding-source
+          path: ${{ runner.temp }}/mirakc-proof/source
+      - uses: actions/download-artifact@v4
+        with:
+          name: mirakc-debug-apk
+          path: ${{ runner.temp }}/mirakc-proof/apk
+      - name: Install Rust 1.98.1 targets for the cold proof
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_VERSION" --profile minimal \
+            --target armv7-linux-androideabi,aarch64-linux-android
+          rustup default "$RUST_VERSION"
+          rustc --version | grep -E "^rustc ${RUST_VERSION} "
+          cargo --version | grep -E "^cargo ${RUST_VERSION} "
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install the pinned NDK for the cold proof
+        run: |
+          set -euo pipefail
+          printf 'y\n%.0s' $(seq 20) \
+            | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" >/dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+      - name: Install pinned Android CMake and bundled Ninja for the cold proof
+        run: |
+          set -euo pipefail
+          printf 'y\n%.0s' $(seq 20) \
+            | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "cmake;$ANDROID_CMAKE_VERSION" >/dev/null
+          cmake_bin="$ANDROID_SDK_ROOT/cmake/$ANDROID_CMAKE_VERSION/bin"
+          test "$("$cmake_bin/cmake" --version | sed -n '1s/^cmake version \([0-9][0-9.]*\).*/\1/p')" = "$ANDROID_CMAKE_VERSION"
+          test "$("$cmake_bin/ninja" --version)" = "1.10.2"
+          echo "$cmake_bin" >> "$GITHUB_PATH"
+      - name: Build and audit the uploaded cold source/APK pair
+        run: |
+          set -euo pipefail
+          proof_root="$RUNNER_TEMP/mirakc-proof"
+          source_archive=$(find "$proof_root/source" -maxdepth 2 -type f -name 'mirakc-corresponding-source.tar.gz' -print -quit)
+          apk=$(find "$proof_root/apk" -maxdepth 3 -type f -name 'mirakc-debug.apk' -print -quit)
+          test -n "$source_archive" && test -n "$apk"
+          tar -xzf "$source_archive" -C "$proof_root"
+          sh "$proof_root/sources/dtv-android/tools/mirakc/test-source-native-rebuild.sh" \
+            "$source_archive" "$apk"
 
   epgstation-server:
     name: EPGStation Server APK (debug)
