@@ -2,18 +2,26 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 env:
   # Pinned so that a runner image refresh cannot change what ships in the APK.
   NDK_VERSION: "27.0.12077973"
   ANDROID_CMAKE_VERSION: "3.22.1"
-  JAVA_VERSION: "17"
+  JAVA_VERSION: "17.0.20"
   JAVA_RUNTIME_VERSION: "17.0.20.1+1"
+  JAVA_ARCHIVE_URL: "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.20.1%2B1/OpenJDK17U-jdk_x64_linux_hotspot_17.0.20.1_1.tar.gz"
+  JAVA_ARCHIVE_SHA256: "3808d1d15e3ec6bd5b84057fb5d84c33d8a1536a258146bcea2e603fc726e08e"
   RUST_VERSION: "1.98.1"
-  SIANO_USERLAND_REF: 89c240b8af021d55d81b3b90fce79a3690605811
-  PX4_USERLAND_REF: 7ad5f6691f77a9aa58c4097f8b6dfea77f6d9b6a
+  SIANO_USERLAND_REF: 33c3468e7e10781ae6c7e9a5fd57a0c1b0825288
+  PX4_USERLAND_REF: 5c91e8c57b288c0f490061789829e42dbbf61b3d
+  ASICEN_USERLAND_REF: e2a86ca194b60f1111ecfa0a020cd0944c351c76
+  PIX_USERLAND_REF: 66f5a731784d205d1d306edda9cc57071c087f8e
+  DTV_USERLAND_CORE_REF: 67420d1c909e9205841612a186ae4c7fbf4dd092
+  SIANO_PX4_USERLAND_REF: 90b08dfe79b0b40e393f015975c761863830866a
   PX4_DRV_REF: 2b3f79b5bc5db56e8556bb28397f7d8f74b2adeb
+  CARGO_BUILD_JOBS: "1"
 
 jobs:
   version:
@@ -47,13 +55,41 @@ jobs:
           path: px4-userland
       - uses: actions/checkout@v5
         with:
+          repository: Khronos31/asicen-userland
+          ref: ${{ env.ASICEN_USERLAND_REF }}
+          path: asicen-userland
+      - uses: actions/checkout@v5
+        with:
+          repository: Khronos31/pix-userland
+          ref: ${{ env.PIX_USERLAND_REF }}
+          path: pix-userland
+      - uses: actions/checkout@v5
+        with:
+          repository: Khronos31/dtv-userland-core
+          ref: ${{ env.DTV_USERLAND_CORE_REF }}
+          path: dtv-userland-core
+      - uses: actions/checkout@v5
+        with:
+          repository: Khronos31/px4-userland
+          ref: ${{ env.SIANO_PX4_USERLAND_REF }}
+          path: siano-px4-userland
+      - uses: actions/checkout@v5
+        with:
           repository: nns779/px4_drv
           ref: ${{ env.PX4_DRV_REF }}
           path: px4_drv
+      - name: Download and verify the pinned Temurin JDK
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/temurin-jdk.tar.gz"
+          curl --fail --location --retry 3 "$JAVA_ARCHIVE_URL" --output "$archive"
+          printf '%s  %s\n' "$JAVA_ARCHIVE_SHA256" "$archive" | sha256sum --check --strict
       - uses: actions/setup-java@v5
         with:
-          distribution: temurin
+          distribution: jdkfile
           java-version: ${{ env.JAVA_VERSION }}
+          jdkFile: ${{ runner.temp }}/temurin-jdk.tar.gz
+          architecture: x64
       - name: Verify exact JDK runtime
         run: |
           set -euo pipefail
@@ -62,8 +98,19 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+      - name: CI cache scope and cold proof structure fixture
+        run: python3 tools/mirakc/test-ci-cache-configuration.py
+      - name: CI cache material helper fixture
+        run: python3 tools/mirakc/test-ci-cache-material.py
       - name: Device evidence host self-test
         run: tools/mirakc/test-device-evidence.sh
+      - name: Shared JNI process launcher host self-test
+        run: sh tools/mirakc/test-userland-process-launch.sh
+      - name: Cargo registry and Git vendor provenance fixtures
+        run: python3 tools/mirakc/test-cargo-vendor.py
       - name: Release attestation host self-test
         run: tools/mirakc/test-release-attestation.sh
       - name: Install the pinned NDK
@@ -81,6 +128,21 @@ jobs:
           test "$("$cmake_bin/cmake" --version | sed -n '1s/^cmake version \([0-9][0-9.]*\).*/\1/p')" = "$ANDROID_CMAKE_VERSION"
           test "$("$cmake_bin/ninja" --version)" = "1.10.2"
           echo "$cmake_bin" >> "$GITHUB_PATH"
+      - name: Install libusb development files for PIX CMake fixture
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libusb-1.0-0-dev
+      - name: PIX source revision override fixture
+        env:
+          MIRAKC_TEST_PIX_ROOT: ${{ github.workspace }}/pix-userland
+          MIRAKC_TEST_CORE_ROOT: ${{ github.workspace }}/dtv-userland-core
+        run: python3 tools/mirakc/test-pix-source-revision.py
+      - name: Debug DTV deletion input fixture
+        run: tools/mirakc/test-debug-dtv-deletion-input.sh
+      - name: Custom adapter Gradle task input fixture
+        run: sh tools/mirakc/test-adapter-task-inputs.sh
+      - name: Native rebuild helper ABI scope fixture
+        run: sh tools/mirakc/test-source-native-helper-scope.sh
       - name: Install Rust Android targets
         run: |
           set -euo pipefail
@@ -88,33 +150,130 @@ jobs:
           rustup target add --toolchain "$RUST_VERSION" armv7-linux-androideabi aarch64-linux-android
           rustc --version | grep -E "^rustc ${RUST_VERSION} "
           cargo --version | grep -E "^cargo ${RUST_VERSION} "
-      - name: Cache portable aribb24 host tools
-        uses: actions/cache@v4
+      - name: Provision pinned mirakc source checkouts before cache lookup
+        run: |
+          set -euo pipefail
+          mkdir -p .work
+          git clone --no-checkout https://github.com/mirakc/mirakc.git .work/mirakc-3.4.91
+          git -C .work/mirakc-3.4.91 fetch --no-tags origin 4f0767e87b109cabd17ed1ded0311355244fa018
+          git -C .work/mirakc-3.4.91 checkout --detach 4f0767e87b109cabd17ed1ded0311355244fa018
+          git -C .work/mirakc-3.4.91 submodule update --init --recursive
+          git clone --no-checkout https://github.com/mirakc/mirakc-arib.git .work/mirakc-arib-0.24.40
+          git -C .work/mirakc-arib-0.24.40 fetch --no-tags origin 312168e85b30941a1fc0344900fd543a036ea341
+          git -C .work/mirakc-arib-0.24.40 checkout --detach 312168e85b30941a1fc0344900fd543a036ea341
+          git -C .work/mirakc-arib-0.24.40 submodule sync --recursive
+          git -C .work/mirakc-arib-0.24.40 submodule update --init --recursive
+      - name: Restore Cargo dependency downloads
+        uses: actions/cache/restore@v4
         with:
-          path: ${{ runner.temp }}/mirakc-arib-tools
-          key: mirakc-arib-autotools-${{ runner.os }}-${{ hashFiles('tools/mirakc-arib/bootstrap-autotools.sh') }}
-      - name: Test and lint
+          path: |
+            ${{ runner.temp }}/cargo/registry/index
+            ${{ runner.temp }}/cargo/registry/cache
+            ${{ runner.temp }}/cargo/registry/src
+            ${{ runner.temp }}/cargo/git/db
+            ${{ runner.temp }}/cargo/git/checkouts
+          key: cargo-downloads-${{ runner.os }}-${{ env.RUST_VERSION }}-${{ hashFiles('.work/mirakc-3.4.91/Cargo.lock') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            cargo-downloads-${{ runner.os }}-${{ env.RUST_VERSION }}-${{ hashFiles('.work/mirakc-3.4.91/Cargo.lock') }}-
+      - name: Fetch locked mirakc Cargo dependencies
+        id: cargo_fetch
+        env:
+          CARGO_HOME: ${{ runner.temp }}/cargo
+        run: cargo fetch --locked --manifest-path .work/mirakc-3.4.91/Cargo.toml
+      - name: Save validated Cargo downloads
+        if: ${{ always() && steps.cargo_fetch.outcome == 'success' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ runner.temp }}/cargo/registry/index
+            ${{ runner.temp }}/cargo/registry/cache
+            ${{ runner.temp }}/cargo/registry/src
+            ${{ runner.temp }}/cargo/git/db
+            ${{ runner.temp }}/cargo/git/checkouts
+          key: cargo-downloads-${{ runner.os }}-${{ env.RUST_VERSION }}-${{ hashFiles('.work/mirakc-3.4.91/Cargo.lock') }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Fingerprint portable host toolchain
+        id: arib_host_toolchain
+        run: |
+          set -euo pipefail
+          fingerprint=$(
+            {
+              uname -srm
+              cc --version | sed -n '1p'
+              make --version | sed -n '1p'
+              ld --version | sed -n '1p'
+              printf 'CFLAGS=\n'
+            } | sha256sum | awk '{print $1}'
+          )
+          echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
+      - name: Restore pinned ARIB source archives
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/mirakc-arib-tools/autotools-sources
+          key: arib-sources-${{ runner.os }}-${{ hashFiles('tools/mirakc-arib/bootstrap-autotools.sh') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            arib-sources-${{ runner.os }}-${{ hashFiles('tools/mirakc-arib/bootstrap-autotools.sh') }}-
+      - name: Restore completed portable ARIB host tools
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/mirakc-arib-tools/autotools
+          key: arib-tools-${{ runner.os }}-${{ runner.arch }}-${{ steps.arib_host_toolchain.outputs.fingerprint }}-${{ hashFiles('tools/mirakc-arib/bootstrap-autotools.sh', 'tools/mirakc/prepare-ci-cache-material.py') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            arib-tools-${{ runner.os }}-${{ runner.arch }}-${{ steps.arib_host_toolchain.outputs.fingerprint }}-${{ hashFiles('tools/mirakc-arib/bootstrap-autotools.sh', 'tools/mirakc/prepare-ci-cache-material.py') }}-
+      - name: Acquire and verify pinned ARIB source archives
+        id: arib_sources
+        env:
+          MIRAKC_ARIB_AUTOTOOLS_ROOT: ${{ runner.temp }}/mirakc-arib-tools
+        run: >-
+          python3 tools/mirakc/prepare-ci-cache-material.py
+          --bootstrap tools/mirakc-arib/bootstrap-autotools.sh
+          --tool-root "$RUNNER_TEMP/mirakc-arib-tools"
+          --fetch-only
+      - name: Save verified ARIB source archives
+        if: ${{ always() && steps.arib_sources.outcome == 'success' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/mirakc-arib-tools/autotools-sources
+          key: arib-sources-${{ runner.os }}-${{ hashFiles('tools/mirakc-arib/bootstrap-autotools.sh') }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Bootstrap and verify completed portable ARIB host tools
+        id: arib_tools
+        env:
+          MIRAKC_ARIB_AUTOTOOLS_ROOT: ${{ runner.temp }}/mirakc-arib-tools
+        run: >-
+          python3 tools/mirakc/prepare-ci-cache-material.py
+          --bootstrap tools/mirakc-arib/bootstrap-autotools.sh
+          --tool-root "$RUNNER_TEMP/mirakc-arib-tools"
+      - name: Save verified portable ARIB host tools
+        if: ${{ always() && steps.arib_tools.outcome == 'success' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/mirakc-arib-tools/autotools
+          key: arib-tools-${{ runner.os }}-${{ runner.arch }}-${{ steps.arib_host_toolchain.outputs.fingerprint }}-${{ hashFiles('tools/mirakc-arib/bootstrap-autotools.sh', 'tools/mirakc/prepare-ci-cache-material.py') }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Bounded native Gradle cache fixture
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.NDK_VERSION }}
+          MIRAKC_TEST_MIRAKC_ROOT: ${{ github.workspace }}/.work/mirakc-3.4.91
+          MIRAKC_TEST_ARIB_ROOT: ${{ github.workspace }}/.work/mirakc-arib-0.24.40
+          MIRAKC_TEST_CMAKE_BIN: ${{ env.ANDROID_SDK_ROOT }}/cmake/${{ env.ANDROID_CMAKE_VERSION }}/bin
+        run: sh tools/mirakc/test-native-output-cache.sh
+      - name: Test, lint, and assemble debug
+        id: mirakc_gradle_build
         env:
           MIRAKC_ARIB_AUTOTOOLS_ROOT: ${{ runner.temp }}/mirakc-arib-tools
           CARGO_HOME: ${{ runner.temp }}/cargo
         run: |
-          ./gradlew --no-daemon \
+          ./gradlew --no-daemon --max-workers=1 --build-cache -PciNativeCache=true \
             -PsianoUserlandDir="$GITHUB_WORKSPACE/siano-userland" \
             -Ppx4UserlandDir="$GITHUB_WORKSPACE/px4-userland" \
+            -PasicenUserlandDir="$GITHUB_WORKSPACE/asicen-userland" \
+            -PpixUserlandDir="$GITHUB_WORKSPACE/pix-userland" \
+            -PuserlandCoreDir="$GITHUB_WORKSPACE/dtv-userland-core" \
+            -PsianoPx4UserlandDir="$GITHUB_WORKSPACE/siano-px4-userland" \
+            -PlibusbArchive="$GITHUB_WORKSPACE/.work/libusb-1.0.30.tar.bz2" \
+            -PlibusbSourceDir="$GITHUB_WORKSPACE/.work/libusb-1.0.30" \
             -Ppx4DrvDir="$GITHUB_WORKSPACE/px4_drv" \
-            test :mirakc:lintDebug
+            :mirakc:test :mirakc-ui-contract:test :updater:test :mirakc:lintDebug :mirakc:assembleDebug
       - name: Test CCID log redaction
         run: bash tools/mirakc/test-ccid-log-redaction.sh
-      - name: Assemble debug
-        env:
-          MIRAKC_ARIB_AUTOTOOLS_ROOT: ${{ runner.temp }}/mirakc-arib-tools
-          CARGO_HOME: ${{ runner.temp }}/cargo
-        run: |
-          ./gradlew --no-daemon \
-            -PsianoUserlandDir="$GITHUB_WORKSPACE/siano-userland" \
-            -Ppx4UserlandDir="$GITHUB_WORKSPACE/px4-userland" \
-            -Ppx4DrvDir="$GITHUB_WORKSPACE/px4_drv" \
-            :mirakc:assembleDebug
       - name: Cache pinned Swagger UI source archive
         run: |
           set -euo pipefail
@@ -129,23 +288,57 @@ jobs:
       - name: Verify corresponding-source archive offline Cargo proof
         env:
           CARGO_HOME: ${{ runner.temp }}/cargo
-          MIRAKC_TEST_MIRAKC_ROOT: ${{ github.workspace }}/.work/mirakc-3.4.88
-          MIRAKC_TEST_ARIB_ROOT: ${{ github.workspace }}/.work/mirakc-arib-0.24.39
+          MIRAKC_TEST_MIRAKC_ROOT: ${{ github.workspace }}/.work/mirakc-3.4.91
+          MIRAKC_TEST_ARIB_ROOT: ${{ github.workspace }}/.work/mirakc-arib-0.24.40
           MIRAKC_TEST_SIANO_ROOT: ${{ github.workspace }}/siano-userland
           MIRAKC_TEST_PX4_ROOT: ${{ github.workspace }}/px4-userland
+          MIRAKC_TEST_ASICEN_ROOT: ${{ github.workspace }}/asicen-userland
+          MIRAKC_TEST_PIX_ROOT: ${{ github.workspace }}/pix-userland
+          MIRAKC_TEST_CORE_ROOT: ${{ github.workspace }}/dtv-userland-core
+          MIRAKC_TEST_SIANO_PX4_ROOT: ${{ github.workspace }}/siano-px4-userland
           MIRAKC_TEST_PX4_DRV_ROOT: ${{ github.workspace }}/px4_drv
-          MIRAKC_TEST_LIBUSB_ARCHIVE: ${{ github.workspace }}/siano-userland/build/android-aarch64/src/libusb-1.0.30.tar.bz2
+          MIRAKC_TEST_LIBUSB_ARCHIVE: ${{ github.workspace }}/.work/libusb-1.0.30.tar.bz2
           MIRAKC_TEST_SWAGGER_UI_ARCHIVE: ${{ runner.temp }}/mirakc-dependencies/swagger-ui-5.32.6.zip
           MIRAKC_TEST_AUTOTOOLS_CACHE: ${{ runner.temp }}/mirakc-arib-tools/autotools-sources
-          MIRAKC_TEST_ARCHIVE_OUTPUT: ${{ runner.temp }}/mirakc-corresponding-source.tar.gz
+          MIRAKC_TEST_ARCHIVE_OUTPUT: ${{ runner.temp }}/mirakc-fixture-source.tar.gz
         run: tools/mirakc/test-source-package.sh
-      - name: Clean-room complete native inventory and relink proof
+      - name: Build and audit corresponding source for checked-out commit
         env:
-          MIRAKC_REQUIRE_NETWORK_NAMESPACE: required
-        run: >-
-          tools/mirakc/test-source-native-rebuild.sh
-          "$RUNNER_TEMP/mirakc-corresponding-source.tar.gz"
-          "$GITHUB_WORKSPACE/mirakc/build/outputs/apk/debug/mirakc-debug.apk"
+          CARGO_HOME: ${{ runner.temp }}/cargo
+        run: |
+          set -euo pipefail
+          python3 tools/mirakc/package-source.py \
+            --output-dir "$RUNNER_TEMP" \
+            --dtv-root "$GITHUB_WORKSPACE" \
+            --dtv-ref HEAD \
+            --mirakc-root "$GITHUB_WORKSPACE/.work/mirakc-3.4.91" \
+            --arib-root "$GITHUB_WORKSPACE/.work/mirakc-arib-0.24.40" \
+            --siano-root "$GITHUB_WORKSPACE/siano-userland" \
+            --px4-root "$GITHUB_WORKSPACE/px4-userland" \
+            --asicen-root "$GITHUB_WORKSPACE/asicen-userland" \
+            --pix-root "$GITHUB_WORKSPACE/pix-userland" \
+            --core-root "$GITHUB_WORKSPACE/dtv-userland-core" \
+            --siano-px4-root "$GITHUB_WORKSPACE/siano-px4-userland" \
+            --px4-drv-root "$GITHUB_WORKSPACE/px4_drv" \
+            --libusb-archive "$GITHUB_WORKSPACE/.work/libusb-1.0.30.tar.bz2" \
+            --swagger-ui-archive "$RUNNER_TEMP/mirakc-dependencies/swagger-ui-5.32.6.zip" \
+            --autotools-cache "$RUNNER_TEMP/mirakc-arib-tools/autotools-sources"
+          python3 tools/mirakc/audit-source.py \
+            --expected-dtv-commit "$(git rev-parse HEAD)" \
+            "$RUNNER_TEMP/mirakc-corresponding-source.tar.gz"
+      - name: Test APK source metadata with pinned source fixtures
+        env:
+          MIRAKC_TEST_MIRAKC_ROOT: ${{ github.workspace }}/.work/mirakc-3.4.91
+          MIRAKC_TEST_ARIB_ROOT: ${{ github.workspace }}/.work/mirakc-arib-0.24.40
+          MIRAKC_TEST_SIANO_ROOT: ${{ github.workspace }}/siano-userland
+          MIRAKC_TEST_PX4_ROOT: ${{ github.workspace }}/px4-userland
+          MIRAKC_TEST_ASICEN_ROOT: ${{ github.workspace }}/asicen-userland
+          MIRAKC_TEST_PIX_ROOT: ${{ github.workspace }}/pix-userland
+          MIRAKC_TEST_CORE_ROOT: ${{ github.workspace }}/dtv-userland-core
+          MIRAKC_TEST_SIANO_PX4_ROOT: ${{ github.workspace }}/siano-px4-userland
+          MIRAKC_TEST_PX4_DRV_ROOT: ${{ github.workspace }}/px4_drv
+          MIRAKC_TEST_LIBUSB_ARCHIVE: ${{ github.workspace }}/.work/libusb-1.0.30.tar.bz2
+        run: tools/mirakc/test-apk-metadata.sh
       - name: Audit APK native and source metadata
         run: tools/mirakc/audit-apk.sh mirakc/build/outputs/apk/debug/mirakc-debug.apk "$GITHUB_SHA"
       - name: Verify the APK carries its module version
@@ -154,18 +347,82 @@ jobs:
             --apk mirakc/build/outputs/apk/debug/mirakc-debug.apk
       - uses: actions/upload-artifact@v4
         with:
+          name: mirakc-corresponding-source
+          path: ${{ runner.temp }}/mirakc-corresponding-source.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
           name: mirakc-debug-apk
           path: mirakc/build/outputs/apk/debug/mirakc-debug.apk
+
+  mirakc-native-clean-room:
+    name: mirakc cold native rebuild proof
+    needs: mirakc
+    runs-on: ubuntu-latest
+    env:
+      MIRAKC_REQUIRE_NETWORK_NAMESPACE: required
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: mirakc-corresponding-source
+          path: ${{ runner.temp }}/mirakc-proof/source
+      - uses: actions/download-artifact@v4
+        with:
+          name: mirakc-debug-apk
+          path: ${{ runner.temp }}/mirakc-proof/apk
+      - name: Install Rust 1.98.1 targets for the cold proof
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_VERSION" --profile minimal \
+            --target armv7-linux-androideabi,aarch64-linux-android
+          rustup default "$RUST_VERSION"
+          rustc --version | grep -E "^rustc ${RUST_VERSION} "
+          cargo --version | grep -E "^cargo ${RUST_VERSION} "
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install the pinned NDK for the cold proof
+        run: |
+          set -euo pipefail
+          printf 'y\n%.0s' $(seq 20) \
+            | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" >/dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+      - name: Install pinned Android CMake and bundled Ninja for the cold proof
+        run: |
+          set -euo pipefail
+          printf 'y\n%.0s' $(seq 20) \
+            | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "cmake;$ANDROID_CMAKE_VERSION" >/dev/null
+          cmake_bin="$ANDROID_SDK_ROOT/cmake/$ANDROID_CMAKE_VERSION/bin"
+          test "$("$cmake_bin/cmake" --version | sed -n '1s/^cmake version \([0-9][0-9.]*\).*/\1/p')" = "$ANDROID_CMAKE_VERSION"
+          test "$("$cmake_bin/ninja" --version)" = "1.10.2"
+          echo "$cmake_bin" >> "$GITHUB_PATH"
+      - name: Build and audit the uploaded cold source/APK pair
+        run: |
+          set -euo pipefail
+          proof_root="$RUNNER_TEMP/mirakc-proof"
+          source_archive=$(find "$proof_root/source" -maxdepth 2 -type f -name 'mirakc-corresponding-source.tar.gz' -print -quit)
+          apk=$(find "$proof_root/apk" -maxdepth 3 -type f -name 'mirakc-debug.apk' -print -quit)
+          test -n "$source_archive" && test -n "$apk"
+          tar -xzf "$source_archive" -C "$proof_root"
+          sh "$proof_root/sources/dtv-android/tools/mirakc/test-source-native-rebuild.sh" \
+            "$source_archive" "$apk"
 
   epgstation-server:
     name: EPGStation Server APK (debug)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Download and verify the pinned Temurin JDK
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/temurin-jdk.tar.gz"
+          curl --fail --location --retry 3 "$JAVA_ARCHIVE_URL" --output "$archive"
+          printf '%s  %s\n' "$JAVA_ARCHIVE_SHA256" "$archive" | sha256sum --check --strict
       - uses: actions/setup-java@v5
         with:
-          distribution: temurin
+          distribution: jdkfile
           java-version: ${{ env.JAVA_VERSION }}
+          jdkFile: ${{ runner.temp }}/temurin-jdk.tar.gz
+          architecture: x64
       - name: Verify exact JDK runtime
         run: |
           set -euo pipefail

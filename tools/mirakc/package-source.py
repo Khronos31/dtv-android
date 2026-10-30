@@ -39,9 +39,15 @@ FIRMWARE_URL = EXPECTED["linux-firmware-siano"]["url"]
 FIRMWARE_SHA256 = EXPECTED["linux-firmware-siano"]["sha256"]
 FIRMWARE_LICENSE_URL = EXPECTED["linux-firmware-siano"]["license_url"]
 FIRMWARE_LICENSE_SHA256 = EXPECTED["linux-firmware-siano"]["license_sha256"]
-CARGO_CONFIG = audit_module.CARGO_VENDOR_CONFIG
-PX4_ANDROID_PATCH_PATH = audit_module.PX4_ANDROID_PATCH_PATH
-PX4_ANDROID_PATCH_SHA256 = audit_module.PX4_ANDROID_PATCH_SHA256
+cargo_vendor_directory_inventory = audit_module.cargo_vendor_directory_inventory
+normalize_cargo_vendor_config = audit_module.normalize_cargo_vendor_config
+CORE_ANDROID_PATCH_PATH = audit_module.CORE_ANDROID_PATCH_PATH
+CORE_ANDROID_PATCH_SHA256 = audit_module.CORE_ANDROID_PATCH_SHA256
+PX4_BUILD_JOBS_PATCH_PATH = audit_module.PX4_BUILD_JOBS_PATCH_PATH
+PX4_BUILD_JOBS_PATCH_SHA256 = audit_module.PX4_BUILD_JOBS_PATCH_SHA256
+PIX_ANDROID_16K_PATCH_PATH = audit_module.PIX_ANDROID_16K_PATCH_PATH
+PIX_ANDROID_16K_PATCH_SHA256 = audit_module.PIX_ANDROID_16K_PATCH_SHA256
+SIANO_FIRMWARE_EXCLUSION_REASON = audit_module.SIANO_FIRMWARE_EXCLUSION_REASON
 
 
 def fail(message: str) -> None:
@@ -129,7 +135,11 @@ def copy_git_archive(root: Path, ref: str, stage: Path, prefix: str, normalized:
             data = target_entry[1]
             normalized.append({"path": (PurePosixPath(prefix) / name).as_posix(), "target": target})
         assert data is not None
-        if prefix == "sources/dtv-android" and name == "mirakc/src/main/assets/isdbt_rio.inp":
+        pix_firmware_member = f"{prefix}/{name}"
+        if (prefix == "sources/dtv-android" and name == "mirakc/src/main/assets/isdbt_rio.inp") or \
+           (prefix == "sources/asicen-userland" and name == "firmware/asicen-loader.bin") or \
+           (prefix == "sources/pix-userland" and name.startswith("firmware/") and name.endswith(".bin") and
+            pix_firmware_member not in audit_module.FIRMWARE_SOURCE_ASSETS):
             continue
         write_file(destination, data, member.mode & 0o7777)
 
@@ -208,12 +218,15 @@ def copy_cargo_vendor(source: Path, destination: Path) -> None:
         write_file(destination / relative, path.read_bytes(), path.stat().st_mode & 0o7777)
 
 
-def cargo_vendor_dependencies(mirakc_root: Path, stage: Path, supplied: Path | None) -> dict:
+def cargo_vendor_dependencies(mirakc_root: Path, stage: Path, supplied: Path | None,
+                              supplied_config: Path | None) -> dict:
     vendor_root = stage / "third_party/cargo/vendor"
     if supplied is None:
+        if supplied_config is not None:
+            fail("Cargo vendor config cannot be supplied without a Cargo vendor directory")
         vendor_root.parent.mkdir(parents=True, exist_ok=True)
         try:
-            subprocess.run(
+            result = subprocess.run(
                 ["cargo", "vendor", "--manifest-path", str(mirakc_root / "Cargo.toml"),
                  "--locked", "--versioned-dirs", str(vendor_root)],
                 check=True, cwd=mirakc_root, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -221,49 +234,18 @@ def cargo_vendor_dependencies(mirakc_root: Path, stage: Path, supplied: Path | N
             )
         except (OSError, subprocess.CalledProcessError) as error:
             fail(f"cargo vendor failed for pinned mirakc: {error}")
+        config_data = result.stdout.encode("utf-8")
     else:
+        if supplied_config is None or not supplied_config.is_file() or supplied_config.is_symlink():
+            fail("Cargo vendor config output is required with a supplied Cargo vendor directory")
         copy_cargo_vendor(supplied.resolve(), vendor_root)
-    write_file(stage / ".cargo/config.toml", CARGO_CONFIG)
-
-    packages = []
-    if not any(vendor_root.iterdir()):
-        fail("Cargo vendor produced no registry packages")
-    for package_root in sorted(vendor_root.iterdir()):
-        if not package_root.is_dir() or package_root.is_symlink():
-            fail(f"Cargo vendor root contains an unsafe package: {package_root}")
-        cargo_toml = package_root / "Cargo.toml"
-        checksum_path = package_root / ".cargo-checksum.json"
-        if not cargo_toml.is_file() or not checksum_path.is_file():
-            fail(f"Cargo vendor package is incomplete: {package_root}")
-        try:
-            package = tomllib.loads(cargo_toml.read_text(encoding="utf-8"))["package"]
-            checksum = json.loads(checksum_path.read_text(encoding="utf-8"))
-        except (OSError, KeyError, UnicodeDecodeError, json.JSONDecodeError, tomllib.TOMLDecodeError) as error:
-            fail(f"invalid Cargo vendor package {package_root}: {error}")
-        file_digests = checksum.get("files")
-        if (not isinstance(checksum.get("package"), str) or not isinstance(file_digests, dict)
-                or not isinstance(package.get("name"), str) or not isinstance(package.get("version"), str)):
-            fail(f"Cargo vendor package lacks registry identity: {package_root}")
-        files = sorted(path.relative_to(stage).as_posix() for path in package_root.rglob("*") if path.is_file())
-        if any(path.is_symlink() for path in package_root.rglob("*")):
-            fail(f"Cargo vendor package contains a symlink: {package_root}")
-        package_files = {path.relative_to(package_root).as_posix() for path in package_root.rglob("*")
-                         if path.is_file() and path.name != ".cargo-checksum.json"}
-        if (not all(isinstance(relative, str) and isinstance(digest, str)
-                    for relative, digest in file_digests.items())
-                or set(file_digests) != package_files):
-            fail(f"Cargo vendor package file checksum inventory mismatch: {package_root}")
-        for relative, digest in file_digests.items():
-            safe_name(relative)
-            if sha256(package_root / relative) != digest:
-                fail(f"Cargo vendor package file checksum mismatch: {package_root / relative}")
-        packages.append({
-            "name": package["name"],
-            "version": package["version"],
-            "path": package_root.relative_to(stage).as_posix(),
-            "checksum": checksum["package"],
-            "files": files,
-        })
+        config_data = supplied_config.read_bytes()
+    config_data = normalize_cargo_vendor_config(config_data, "third_party/cargo/vendor")
+    write_file(stage / ".cargo/config.toml", config_data)
+    lock_data = (stage / "sources/mirakc/Cargo.lock").read_bytes()
+    packages = cargo_vendor_directory_inventory(
+        vendor_root, lock_data, config_data, "third_party/cargo/vendor"
+    )
     return {
         "config": ".cargo/config.toml",
         "root": "third_party/cargo/vendor",
@@ -363,11 +345,44 @@ def build_manifest(stage: Path, commits: dict[str, str], normalized: list[dict[s
             component["commit"] = commits.get(name, expected.get("commit", ""))
             if name == "dtv-android":
                 component["tree"] = dtv_tree
+            if name == "dtv-userland-core":
+                component["android_integration_patch"] = {
+                    "path": CORE_ANDROID_PATCH_PATH,
+                    "sha256": CORE_ANDROID_PATCH_SHA256,
+                    "upstream_commit": expected["commit"],
+                }
+                component["license_relationships"] = {
+                    "project_sources": {"spdx": "MIT", "license_file": prefix + "LICENSE"},
+                    "statically_linked_adapters": [
+                        {
+                            "spdx": "GPL-2.0-only",
+                            "source_prefix": prefix + "adapters/host_daemon/",
+                            "license_file": prefix + "adapters/host_daemon/COPYING",
+                        },
+                        {
+                            "spdx": "GPL-2.0-only",
+                            "source_prefix": prefix + "adapters/host_ts/",
+                            "license_file": prefix + "adapters/host_ts/COPYING",
+                        },
+                    ],
+                }
             if name == "px4-userland":
                 component["android_build_patch"] = {
-                    "path": PX4_ANDROID_PATCH_PATH,
-                    "sha256": PX4_ANDROID_PATCH_SHA256,
+                    "path": PX4_BUILD_JOBS_PATCH_PATH,
+                    "sha256": PX4_BUILD_JOBS_PATCH_SHA256,
                     "upstream_commit": expected["commit"],
+                }
+            if name == "pix-userland":
+                component["android_build_patch"] = {
+                    "path": PIX_ANDROID_16K_PATCH_PATH,
+                    "sha256": PIX_ANDROID_16K_PATCH_SHA256,
+                    "upstream_commit": expected["commit"],
+                }
+            if name == "pix-userland":
+                component["license_relationships"] = {
+                    "project_sources": {"spdx": "MIT", "license_file": prefix + "LICENSE"},
+                    "linked_component_notice": prefix + "THIRD_PARTY_NOTICES.md",
+                    "firmware_terms": "third-party terms are separately recorded; not covered by the project MIT license",
                 }
             if name == "libarib25":
                 component["commit"] = "vendored-tree-sha256:" + tree_identity(stage, files)
@@ -402,7 +417,33 @@ def build_manifest(stage: Path, commits: dict[str, str], normalized: list[dict[s
             "siano_firmware_sha256": FIRMWARE_SHA256,
             "siano_firmware_license_url": FIRMWARE_LICENSE_URL,
             "siano_firmware_license_sha256": FIRMWARE_LICENSE_SHA256,
-            "reason": "binary firmware excluded because linux-firmware supplies no corresponding source; redistribution is permitted in binary form",
+            "reason": SIANO_FIRMWARE_EXCLUSION_REASON,
+        },
+        "bundled_firmware_assets": {
+            "sources/dtv-android/mirakc/src/main/assets/asicen-loader.bin": {
+                "sha256": "5db39facda140bdcb3a238dad10da5aac752a1ba3aaf17e2239f8d79a0ad6a2a",
+                "provenance_path": "sources/dtv-android/mirakc/src/main/assets/ASICEN-LOADER-NOTICE.txt",
+                "redistribution_rights": "unresolved",
+            },
+            "sources/pix-userland/firmware/dt181.bin": {
+                "sha256": "a8532036b2995c869f713714b85609d2d21508f8848b96e5c7528ab75f3dd7a0",
+                "provenance_path": "sources/pix-userland/firmware/metadata/dt181-source.json",
+            },
+            "sources/pix-userland/firmware/dt295.bin": {
+                "sha256": "3cabe15f585a8a7a7d7b9b3db548b677b0732c13926dc3a2b5270acf1bc6ffc8",
+                "provenance_path": "sources/pix-userland/firmware/metadata/dt295-satellite-generation.json",
+            },
+        "sources/pix-userland/firmware/preserved/verified-ts-iv.bin": {
+            "sha256": "69a206b3bbcd395b81b201f762355fb224c4e9e16439090663b8dfc1f5b03301",
+            "provenance_path": "sources/pix-userland/firmware/metadata/dt295-preservation.json",
+        },
+        },
+        "dependency_pins": {
+            "siano-userland/dtv-userland-core": EXPECTED["dtv-userland-core"]["commit"],
+            "siano-userland/px4-userland": EXPECTED["siano-px4-userland"]["commit"],
+            "asicen-userland/dtv-userland-core": EXPECTED["dtv-userland-core"]["commit"],
+            "asicen-userland/vendored-px4-userland": "dd1c1bea16a5871085d5f2a42c009364c1ec7345",
+            "pix-userland/dtv-userland-core": EXPECTED["dtv-userland-core"]["commit"],
         },
     }
     write_json(stage / "source-manifest.json", manifest)
@@ -420,6 +461,10 @@ def package(args: argparse.Namespace) -> Path:
         "mirakc-arib": args.arib_root,
         "siano-userland": args.siano_root,
         "px4-userland": args.px4_root,
+        "asicen-userland": args.asicen_root,
+        "pix-userland": args.pix_root,
+        "dtv-userland-core": args.core_root,
+        "siano-px4-userland": args.siano_px4_root,
         "px4_drv": args.px4_drv_root,
     }.items()}
     dtv_commit = str(run_git(repos["dtv-android"], "rev-parse", f"{args.dtv_ref}^{{commit}}")).strip()
@@ -432,13 +477,13 @@ def package(args: argparse.Namespace) -> Path:
     if not dtv_version:
         fail("mirakc/VERSION is empty in the DTV ref")
     ensure_pinned_clean(repos["dtv-android"], str(run_git(repos["dtv-android"], "rev-parse", "HEAD")).strip())
-    for name in ("mirakc", "mirakc-arib", "siano-userland", "px4-userland", "px4_drv"):
+    for name in ("mirakc", "mirakc-arib", "siano-userland", "px4-userland", "asicen-userland", "pix-userland", "dtv-userland-core", "siano-px4-userland", "px4_drv"):
         ensure_pinned_clean(repos[name], EXPECTED[name]["commit"], allow_dirty_submodules=name == "mirakc-arib")
     with tempfile.TemporaryDirectory(prefix="mirakc-source-") as temporary:
         stage = Path(temporary) / "stage"
         stage.mkdir()
         normalized: list[dict[str, str]] = []
-        for name in ("dtv-android", "mirakc", "mirakc-arib", "siano-userland", "px4-userland", "px4_drv"):
+        for name in ("dtv-android", "mirakc", "mirakc-arib", "siano-userland", "px4-userland", "asicen-userland", "pix-userland", "dtv-userland-core", "siano-px4-userland", "px4_drv"):
             ref = args.dtv_ref if name == "dtv-android" else EXPECTED[name]["commit"]
             snapshot_repository(repos[name], ref, stage, f"sources/{name}", normalized, recurse=name in ("mirakc-arib",))
         arib25_files = component_files(stage, "sources/dtv-android/mirakc/src/main/cpp/arib25")
@@ -447,7 +492,9 @@ def package(args: argparse.Namespace) -> Path:
             write_file(stage / "sources/libarib25" / relative, (stage / path).read_bytes(), (stage / path).stat().st_mode & 0o7777)
         copy_archive_contents(args.libusb_archive.resolve(), stage)
         copy_swagger_archive(args.swagger_ui_archive.resolve(), stage)
-        cargo_vendor = cargo_vendor_dependencies(repos["mirakc"], stage, args.cargo_vendor_dir)
+        cargo_vendor = cargo_vendor_dependencies(
+            repos["mirakc"], stage, args.cargo_vendor_dir, args.cargo_vendor_config
+        )
         copy_toolchain_archives(args.autotools_cache.resolve(), stage)
         write_json(stage / "toolchain-manifest.json", TOOLCHAIN)
         write_file(stage / "DEPENDENCY-NOTICE.txt", (
@@ -458,7 +505,7 @@ def package(args: argparse.Namespace) -> Path:
             f"firmware.license.sha256={FIRMWARE_LICENSE_SHA256}\n"
             "libusb.linkage=static\n"
             f"libusb.archive.sha256={LIBUSB_ARCHIVE_SHA256}\n"
-            "source.archive.contains=recursive-submodules,android-patches,build-inputs,relink-material\n"
+            "source.archive.contains=recursive-submodules,android-patches,build-inputs,relink-material,all-four-userland-products,nested-core-and-px4-snapshots\n"
         ).encode("utf-8"))
         commits = {name: EXPECTED[name]["commit"] for name in repos if name != "dtv-android"}
         commits["dtv-android"] = dtv_commit
@@ -474,15 +521,20 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--dtv-root", type=Path, default=Path("."))
     parser.add_argument("--dtv-ref", default="HEAD")
-    parser.add_argument("--mirakc-root", type=Path, default=Path(".work/mirakc-3.4.88"))
-    parser.add_argument("--arib-root", type=Path, default=Path(".work/mirakc-arib-0.24.39"))
+    parser.add_argument("--mirakc-root", type=Path, default=Path(".work/mirakc-3.4.91"))
+    parser.add_argument("--arib-root", type=Path, default=Path(".work/mirakc-arib-0.24.40"))
     parser.add_argument("--siano-root", type=Path, default=Path(".work/pinned-siano-userland"))
     parser.add_argument("--px4-root", type=Path, default=Path(".work/pinned-px4-userland"))
     parser.add_argument("--px4-drv-root", type=Path, default=Path(".work/pinned-px4_drv"))
-    parser.add_argument("--libusb-archive", type=Path, default=Path("/config/GitHub/siano-userland/build/android-aarch64/src/libusb-1.0.30.tar.bz2"))
-    parser.add_argument("--swagger-ui-archive", type=Path, default=Path("/config/.work/mirakc-swagger-ui/swagger-ui-5.32.6.zip"))
-    parser.add_argument("--autotools-cache", type=Path, default=Path("/config/.work/mirakc-arib-tools/autotools-sources"))
+    parser.add_argument("--asicen-root", type=Path, default=Path(".work/pinned-asicen-userland"))
+    parser.add_argument("--pix-root", type=Path, default=Path(".work/pinned-pix-userland"))
+    parser.add_argument("--core-root", type=Path, default=Path(".work/pinned-dtv-userland-core"))
+    parser.add_argument("--siano-px4-root", type=Path, default=Path(".work/pinned-siano-px4-userland"))
+    parser.add_argument("--libusb-archive", type=Path, default=Path(".work/libusb-1.0.30.tar.bz2"))
+    parser.add_argument("--swagger-ui-archive", type=Path, default=Path(".work/swagger-ui-5.32.6.zip"))
+    parser.add_argument("--autotools-cache", type=Path, default=Path(".work/autotools-sources"))
     parser.add_argument("--cargo-vendor-dir", type=Path)
+    parser.add_argument("--cargo-vendor-config", type=Path)
     args = parser.parse_args()
     output = package(args)
     print(f"aggregate source package: {output}")

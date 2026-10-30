@@ -13,8 +13,6 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-#define CCID_OUT 0x01
-#define CCID_IN 0x82
 #define TIMEOUT_MS 8000
 
 /* CCID message types */
@@ -31,9 +29,24 @@
 #define CCID_LEVEL_TPDU 0x00010000u
 #define CCID_TRANSFER_METADATA_LOG_LIMIT 32u
 
+/* USB descriptor fields used to locate the CCID bulk channel */
+#define USB_DT_DEVICE 0x01
+#define USB_DT_CONFIG 0x02
+#define USB_DT_INTERFACE 0x04
+#define USB_DT_ENDPOINT 0x05
+#define USB_DT_CCID_CLASS 0x21
+#define USB_CLASS_CCID 0x0B
+#define USB_ENDPOINT_DIR_IN 0x80
+#define USB_ENDPOINT_XFER_MASK 0x03
+#define USB_ENDPOINT_XFER_BULK 0x02
+
 #define T1_MAX_INF 254
 
 static int g_fd = -1;
+static int g_ep_out = -1; /* bulk OUT endpoint address, from the descriptor */
+static int g_ep_in = -1;  /* bulk IN endpoint address, from the descriptor */
+static int g_interface = -1; /* bInterfaceNumber of the selected CCID interface */
+static uint8_t g_slot;    /* CCID bSlot we address; slot 0 always exists */
 static uint8_t g_seq;
 static int g_tpdu = 1;    /* 1 = wrap APDUs in T=1 blocks ourselves */
 static uint8_t g_ns;      /* our T=1 send sequence number */
@@ -84,10 +97,11 @@ static int send_ccid(uint8_t type, const uint8_t *data, uint32_t len, uint8_t sp
                      uint8_t spec2) {
     uint8_t buf[10 + 1024];
     if (len > sizeof(buf) - 10) return -1;
+    if (g_ep_out < 0) return -1;
     uint8_t seq = g_seq++;
     buf[0] = type;
     put_le32(buf + 1, len);
-    buf[5] = 0;
+    buf[5] = g_slot;
     buf[6] = seq;
     buf[7] = spec0;
     buf[8] = spec1;
@@ -96,21 +110,22 @@ static int send_ccid(uint8_t type, const uint8_t *data, uint32_t len, uint8_t sp
     if (should_log_transfer_metadata()) {
         LOGI("OUT type=0x%02x len=%u seq=%u", type, len, seq);
     }
-    if (bulk(CCID_OUT, buf, (int)(10 + len)) != (int)(10 + len)) return -1;
+    if (bulk((uint8_t)g_ep_out, buf, (int)(10 + len)) != (int)(10 + len)) return -1;
     return seq;
 }
 
 static int recv_ccid(uint8_t expect_type, int seq, uint8_t *data, int max, uint8_t *extra) {
     uint8_t buf[10 + 2048];
+    if (g_ep_in < 0) return -1;
     for (int attempt = 0; attempt < 8; attempt++) {
-        int n = bulk(CCID_IN, buf, (int)sizeof(buf));
+        int n = bulk((uint8_t)g_ep_in, buf, (int)sizeof(buf));
         if (n < 10) {
             LOGE("CCID IN truncated n=%d errno=%d", n, errno);
             return -1;
         }
         uint32_t dlen = get_le32(buf + 1);
         while ((uint32_t)(n - 10) < dlen && n < (int)sizeof(buf)) {
-            int m = bulk(CCID_IN, buf + n, (int)sizeof(buf) - n);
+            int m = bulk((uint8_t)g_ep_in, buf + n, (int)sizeof(buf) - n);
             if (m <= 0) break;
             n += m;
         }
@@ -121,6 +136,10 @@ static int recv_ccid(uint8_t expect_type, int seq, uint8_t *data, int max, uint8
         if (should_log_transfer_metadata()) {
             LOGI("IN  type=0x%02x len=%u slot=%u seq=%u status=0x%02x(icc=%u cmd=%u) err=0x%02x chain=0x%02x n=%d",
                  buf[0], dlen, buf[5], buf[6], status, icc, cmd, error, buf[9], n);
+        }
+        if (buf[5] != g_slot) {
+            LOGE("bSlot mismatch got=%u want=%u, discarding", buf[5], g_slot);
+            continue;
         }
         if (seq >= 0 && buf[6] != (uint8_t)seq) {
             LOGE("bSeq mismatch got=%u want=%d, discarding", buf[6], seq);
@@ -155,32 +174,255 @@ static int ccid_xfr_block(const uint8_t *data, int len, uint8_t *resp, int resp_
     return recv_ccid(RDR_TO_PC_DATA_BLOCK, seq, resp, resp_max, NULL);
 }
 
-static void read_descriptors(void) {
+/* Parse state for one interface while walking the descriptor blob. */
+typedef struct {
+    int number;       /* bInterfaceNumber, -1 before any interface descriptor */
+    int alt;          /* bAlternateSetting, -1 before any interface descriptor */
+    int is_ccid;      /* bInterfaceClass == USB_CLASS_CCID */
+    int ambiguous;    /* duplicate bulk endpoint in one direction */
+    int ep_out;       /* bulk OUT endpoint address on this interface, -1 if none */
+    int ep_in;        /* bulk IN endpoint address on this interface, -1 if none */
+    int has_ccid;     /* a full CCID class descriptor was seen on this interface */
+    uint8_t max_slot; /* bMaxSlotIndex from the CCID class descriptor */
+    uint32_t protocols;
+    uint32_t max_ifsd;
+    uint32_t features;
+    uint32_t max_msg;
+} ccid_candidate;
+
+static void reset_candidate(ccid_candidate *candidate) {
+    memset(candidate, 0, sizeof(*candidate));
+    candidate->number = -1;
+    candidate->alt = -1;
+    candidate->ep_out = -1;
+    candidate->ep_in = -1;
+}
+
+/*
+ * Supported layout restriction: the reader must present its CCID channel on
+ * alternate setting 0 of the single device configuration.  The Android side
+ * claims CCID interfaces but never issues setInterface/setConfiguration, so
+ * only alternate 0 of the kernel-activated configuration can actually carry
+ * USBDEVFS_BULK transfers; anything else is rejected rather than guessed.
+ * A usable candidate also needs both bulk directions and a CCID class
+ * descriptor (the exchange level cannot be derived without it).
+ */
+static int candidate_usable(const ccid_candidate *candidate) {
+    return candidate->is_ccid && candidate->alt == 0 && !candidate->ambiguous &&
+           candidate->ep_out >= 0 && candidate->ep_in >= 0 && candidate->has_ccid;
+}
+
+static void adopt_candidate(const ccid_candidate *candidate, int *usable_count, int *adopted,
+                            ccid_candidate *chosen) {
+    if (!candidate_usable(candidate)) {
+        if (candidate->is_ccid && candidate->alt == 0) {
+            LOGI("skipping CCID interface %d: %s", candidate->number,
+                 candidate->ambiguous ? "ambiguous duplicate bulk endpoint"
+                 : !candidate->has_ccid ? "no CCID class descriptor"
+                                        : "missing bulk endpoint");
+        }
+        return;
+    }
+    ++*usable_count;
+    if (!*adopted) {
+        *chosen = *candidate;
+        *adopted = 1;
+    }
+}
+
+/*
+ * Selects the CCID interface and derives the bulk endpoints and slot domain
+ * from the device descriptor blob.  Returns 0 after filling g_ep_out,
+ * g_ep_in, g_interface and g_tpdu, or -1 when the blob is malformed, has an
+ * unsupported layout, or exposes no usable CCID interface (explicit
+ * rejection instead of fixed endpoints).
+ *
+ * The blob must look like a real USBFS descriptor read: exactly one device
+ * descriptor first (full length, advertising exactly one configuration),
+ * then the single complete configuration tree.  Interface, class and
+ * endpoint descriptors are only owned inside that configuration tree, so a
+ * tree outside it (or a second configuration hiding past the bounded read)
+ * can never lend endpoints to the selection.
+ */
+static int select_ccid_interface(void) {
     uint8_t d[1024];
     ssize_t n = pread(g_fd, d, sizeof(d), 0);
     if (n <= 0) {
-        LOGE("descriptor pread failed n=%zd errno=%d; assuming TPDU level", n, errno);
-        return;
+        LOGE("descriptor pread failed n=%zd errno=%d", n, errno);
+        return -1;
     }
-    for (ssize_t i = 0; i + 1 < n;) {
-        int len = d[i];
-        if (len < 2 || i + len > n) break;
-        if (d[i + 1] == 0x21 && len >= 54) {
-            const uint8_t *c = d + i;
-            uint32_t protocols = get_le32(c + 6);
-            uint32_t max_ifsd = get_le32(c + 28);
-            uint32_t features = get_le32(c + 40);
-            uint32_t max_msg = get_le32(c + 44);
-            uint32_t level = features & CCID_LEVEL_MASK;
-            LOGI("CCID desc dwProtocols=0x%08x dwMaxIFSD=%u dwFeatures=0x%08x dwMaxCCIDMessageLength=%u",
-                 protocols, max_ifsd, features, max_msg);
-            g_tpdu = (level == CCID_LEVEL_TPDU) || (level == 0);
-            LOGI("exchange level=0x%08x -> %s", level, g_tpdu ? "TPDU (we drive T=1)" : "APDU (reader drives T=1)");
-            return;
+    ccid_candidate current;
+    ccid_candidate chosen;
+    reset_candidate(&current);
+    reset_candidate(&chosen);
+    int usable_count = 0;
+    int adopted = 0;
+    int have_device = 0;
+    int in_config = 0;
+    int have_interface = 0;
+    int config_count = 0;
+    ssize_t config_start = -1;
+    uint32_t config_total = 0;
+    ssize_t i = 0;
+    while (i + 1 < n) {
+        const int len = d[i];
+        const int type = d[i + 1];
+        if (len < 2 || i + len > n) {
+            LOGE("malformed descriptor tail at offset %zd len=%d type=0x%02x", i, len, type);
+            return -1;
+        }
+        if (type == USB_DT_DEVICE) {
+            if (have_device) {
+                LOGE("duplicate device descriptor at offset %zd", i);
+                return -1;
+            }
+            if (i != 0) {
+                LOGE("device descriptor is not the blob prefix (offset %zd)", i);
+                return -1;
+            }
+            if (len < 18) {
+                LOGE("undersized device descriptor len=%d", len);
+                return -1;
+            }
+            if (d[i + 17] != 1) {
+                LOGE("unsupported: device advertises %u configurations", d[i + 17]);
+                return -1;
+            }
+            have_device = 1;
+        } else if (type == USB_DT_CONFIG) {
+            if (!have_device) {
+                LOGE("configuration descriptor before device descriptor");
+                return -1;
+            }
+            if (len < 9) {
+                LOGE("undersized configuration descriptor len=%d", len);
+                return -1;
+            }
+            ++config_count;
+            if (config_count > 1) {
+                LOGE("unsupported: multiple USB configurations in descriptor blob");
+                return -1;
+            }
+            /* Descriptor ownership restarts at the configuration boundary. */
+            in_config = 1;
+            have_interface = 0;
+            reset_candidate(&current);
+            config_start = i;
+            config_total = (uint32_t)d[i + 2] | ((uint32_t)d[i + 3] << 8);
+        } else if (type == USB_DT_INTERFACE) {
+            if (len < 9) {
+                LOGE("undersized interface descriptor len=%d", len);
+                return -1;
+            }
+            if (!in_config) {
+                LOGE("interface descriptor before any configuration");
+                return -1;
+            }
+            adopt_candidate(&current, &usable_count, &adopted, &chosen);
+            reset_candidate(&current);
+            have_interface = 1;
+            current.number = d[i + 2];
+            current.alt = d[i + 3];
+            current.is_ccid = (d[i + 5] == USB_CLASS_CCID);
+        } else if (type == USB_DT_CCID_CLASS) {
+            if (!in_config) {
+                LOGE("class descriptor before any configuration");
+                return -1;
+            }
+            /* 0x21 is class-specific; only a CCID interface owns it here. */
+            if (current.is_ccid && current.alt == 0) {
+                if (len < 54) {
+                    LOGE("undersized CCID class descriptor len=%d", len);
+                    return -1;
+                }
+                if (!current.has_ccid) {
+                    const uint8_t *c = d + i;
+                    current.has_ccid = 1;
+                    current.max_slot = c[4];
+                    current.protocols = get_le32(c + 6);
+                    current.max_ifsd = get_le32(c + 28);
+                    current.features = get_le32(c + 40);
+                    current.max_msg = get_le32(c + 44);
+                }
+            } else if (!have_interface) {
+                LOGE("orphaned class descriptor before any interface");
+                return -1;
+            }
+        } else if (type == USB_DT_ENDPOINT) {
+            if (len < 7) {
+                LOGE("undersized endpoint descriptor len=%d", len);
+                return -1;
+            }
+            if (!in_config) {
+                LOGE("endpoint descriptor before any configuration");
+                return -1;
+            }
+            if (!have_interface) {
+                LOGE("orphaned endpoint descriptor before any interface");
+                return -1;
+            }
+            if (current.is_ccid && current.alt == 0 &&
+                (d[i + 3] & USB_ENDPOINT_XFER_MASK) == USB_ENDPOINT_XFER_BULK) {
+                const uint8_t address = d[i + 2];
+                if ((address & USB_ENDPOINT_DIR_IN) != 0) {
+                    if (current.ep_in >= 0) {
+                        current.ambiguous = 1;
+                    } else {
+                        current.ep_in = address;
+                    }
+                } else {
+                    if (current.ep_out >= 0) {
+                        current.ambiguous = 1;
+                    } else {
+                        current.ep_out = address;
+                    }
+                }
+            }
         }
         i += len;
     }
-    LOGE("no CCID class descriptor found; assuming TPDU level");
+    if (i != n) {
+        LOGE("descriptor walk stopped at %zd of %zd bytes", i, n);
+        return -1;
+    }
+    if (!have_device) {
+        LOGE("no device descriptor prefix in blob");
+        return -1;
+    }
+    if (config_count == 0) {
+        LOGE("no configuration descriptor in blob");
+        return -1;
+    }
+    if (config_start < 0 || config_total != (uint32_t)(n - config_start)) {
+        LOGE("configuration wTotalLength=%u inconsistent with descriptor blob (%zd bytes "
+             "from its start)",
+             config_total, config_start >= 0 ? n - config_start : n);
+        return -1;
+    }
+    adopt_candidate(&current, &usable_count, &adopted, &chosen);
+    if (!adopted) {
+        LOGE("no usable CCID interface "
+             "(class 0x0B, alternate 0, bulk OUT/IN, CCID class descriptor)");
+        return -1;
+    }
+    if (usable_count > 1) {
+        LOGI("descriptor exposes %d usable CCID interfaces; using interface %d", usable_count,
+             chosen.number);
+    }
+    if (g_slot > chosen.max_slot) {
+        LOGE("CCID slot %u outside descriptor domain 0..%u", g_slot, chosen.max_slot);
+        return -1;
+    }
+    g_ep_out = chosen.ep_out;
+    g_ep_in = chosen.ep_in;
+    g_interface = chosen.number;
+    uint32_t level = chosen.features & CCID_LEVEL_MASK;
+    LOGI("CCID desc dwProtocols=0x%08x dwMaxIFSD=%u dwFeatures=0x%08x dwMaxCCIDMessageLength=%u",
+         chosen.protocols, chosen.max_ifsd, chosen.features, chosen.max_msg);
+    g_tpdu = (level == CCID_LEVEL_TPDU) || (level == 0);
+    LOGI("exchange level=0x%08x -> %s", level,
+         g_tpdu ? "TPDU (we drive T=1)" : "APDU (reader drives T=1)");
+    return 0;
 }
 
 int ccid_open(int usb_fd) {
@@ -190,6 +432,10 @@ int ccid_open(int usb_fd) {
     g_nr = 0;
     g_tpdu = 1;
     g_ifsc = 32;
+    g_ep_out = -1;
+    g_ep_in = -1;
+    g_interface = -1;
+    g_slot = 0;
     g_transfer_metadata_log_count = 0;
     g_transfer_metadata_log_limit_notice = 0;
     /*
@@ -199,8 +445,12 @@ int ccid_open(int usb_fd) {
      * claim can block while the Java-side owner is still active.  The Java
      * SianoReaderHandle owns the claim and releases it after this child exits.
      */
-    LOGI("CCID using Android-claimed interface 0 fd=%d", usb_fd);
-    read_descriptors();
+    if (select_ccid_interface() != 0) {
+        g_fd = -1;
+        return -1;
+    }
+    LOGI("CCID using Android-claimed interface %d fd=%d ep_out=0x%02x ep_in=0x%02x slot=%u",
+         g_interface, usb_fd, g_ep_out, g_ep_in, g_slot);
     return 0;
 }
 

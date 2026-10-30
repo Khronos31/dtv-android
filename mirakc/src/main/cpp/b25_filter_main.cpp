@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <signal.h>
 
 #include <fcntl.h>
 #include <sys/socket.h>
@@ -101,6 +102,13 @@ int request_reader_fd(const char* endpoint, const char* token) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    struct sigaction ignore_sigpipe{};
+    ignore_sigpipe.sa_handler = SIG_IGN;
+    if (sigemptyset(&ignore_sigpipe.sa_mask) != 0 ||
+        sigaction(SIGPIPE, &ignore_sigpipe, nullptr) != 0) {
+        return 70;
+    }
+
     if (argc == 2 && std::strncmp(argv[1], "--reader-fd=", 12) == 0) {
         const int reader_fd = parse_reader_fd(argv[1] + 12);
         if (reader_fd < 0) return 64;
@@ -120,7 +128,9 @@ int main(int argc, char** argv) {
             }
         }
         if (endpoint == nullptr || token == nullptr) return 64;
-        return request_reader_fd(endpoint, token) < 0 ? 65 : 0;
+        const int result = request_reader_fd(endpoint, token);
+        if (result < 0) return 65;
+        return result;
     }
 
     return 64;

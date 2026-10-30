@@ -12,6 +12,7 @@ import re
 import sys
 import tarfile
 import tomllib
+from urllib.parse import parse_qsl, urlsplit
 
 
 class AuditError(Exception):
@@ -19,19 +20,39 @@ class AuditError(Exception):
 
 
 _PAYLOAD_CACHE: dict[str, dict[str, bytes]] = {}
-CARGO_VENDOR_CONFIG = (
-    b"[source.crates-io]\n"
-    b"replace-with = \"vendored-sources\"\n\n"
-    b"[source.vendored-sources]\n"
-    b"directory = \"third_party/cargo/vendor\"\n"
-)
 SWAGGER_UI_ARCHIVE = "third_party/swagger-ui/swagger-ui-5.32.6.zip"
 SWAGGER_UI_ARCHIVE_SHA256 = "b3c07e091559b59a833f66547eb1fc18f2896f96e3f1f953e2f1efb328aa3394"
-PX4_ANDROID_PATCH_PATH = (
-    "sources/dtv-android/tools/mirakc/patches/"
-    "px4-userland-receiver-control-concurrency.patch"
+FIRMWARE_SOURCE_ASSETS = {
+    "sources/dtv-android/mirakc/src/main/assets/asicen-loader.bin": "5db39facda140bdcb3a238dad10da5aac752a1ba3aaf17e2239f8d79a0ad6a2a",
+    "sources/pix-userland/firmware/dt181.bin": "a8532036b2995c869f713714b85609d2d21508f8848b96e5c7528ab75f3dd7a0",
+    "sources/pix-userland/firmware/dt295.bin": "3cabe15f585a8a7a7d7b9b3db548b677b0732c13926dc3a2b5270acf1bc6ffc8",
+    "sources/pix-userland/firmware/preserved/verified-ts-iv.bin": "69a206b3bbcd395b81b201f762355fb224c4e9e16439090663b8dfc1f5b03301",
+}
+SIANO_FIRMWARE_EXCLUSION_REASON = (
+    "linux-firmware Siano binary excluded because it has no corresponding source; "
+    "redistribution is permitted in binary form"
 )
-PX4_ANDROID_PATCH_SHA256 = "c60214256a40b03f3469b5a508f149c12e599282edf103875a2170b816c4b697"
+CORE_ANDROID_PATCH_PATH = (
+    "sources/dtv-android/tools/mirakc/patches/"
+    "dtv-core-receiver-control-concurrency.patch"
+)
+CORE_ANDROID_PATCH_SHA256 = "9da0cf46a7727a5c7e20de165babd0bc2d78e47c119cad38c1f2c00abeb10521"
+PX4_BUILD_JOBS_PATCH_PATH = (
+    "sources/dtv-android/tools/mirakc/patches/px4-userland-build-jobs.patch"
+)
+PX4_BUILD_JOBS_PATCH_SHA256 = "ba9c4607e3411e706e537a38cc879990f46db04977ca717e714e0004553a4a42"
+PIX_ANDROID_16K_PATCH_PATH = (
+    "sources/dtv-android/tools/mirakc/patches/pix-userland-android-16k.patch"
+)
+PIX_ANDROID_16K_PATCH_SHA256 = "a1155cb6400c59222abc5348d3e31a89def378e24c5540e62aed272fb02590d2"
+CARGO_GIT_VENDOR_PINS = {
+    (
+        "git+https://github.com/mirakc/utoipa?branch=fix-zip-v9.0#"
+        "5243d0c6772b8585f2ffeabe31e941dab898b3eb",
+        "utoipa-swagger-ui",
+        "10.0.1",
+    ): "d5a9fc47a33afa3341f13e89633cb8e6be0b3fd7f5fe257d1f1ce7a611bb3381",
+}
 
 
 def fail(message: str) -> None:
@@ -40,6 +61,218 @@ def fail(message: str) -> None:
 
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def cargo_vendor_tree_sha256(files: dict[str, bytes]) -> str:
+    digest = hashlib.sha256()
+    for relative, data in sorted(files.items()):
+        path = relative.encode("utf-8")
+        digest.update(len(path).to_bytes(8, "big"))
+        digest.update(path)
+        digest.update(len(data).to_bytes(8, "big"))
+        digest.update(data)
+    return digest.hexdigest()
+
+
+def cargo_lock_dependencies(lock_data: bytes) -> list[dict]:
+    try:
+        lock = tomllib.loads(lock_data.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        fail(f"Cargo.lock is not valid TOML: {error}")
+    dependencies = []
+    for package in lock.get("package", []):
+        source = package.get("source")
+        if source is None:
+            continue
+        name = package.get("name")
+        version = package.get("version")
+        if not isinstance(name, str) or not isinstance(version, str):
+            fail("Cargo.lock dependency has no package name or version")
+        if source.startswith("registry+"):
+            checksum = package.get("checksum")
+            if not isinstance(checksum, str) or not re.fullmatch(r"[0-9a-f]{64}", checksum):
+                fail(f"registry Cargo package has no valid checksum: {name}")
+            dependencies.append({
+                "name": name,
+                "version": version,
+                "source": source,
+                "checksum": checksum,
+            })
+        elif source.startswith("git+"):
+            source_key, separator, revision = source.rpartition("#")
+            if not separator or not re.fullmatch(r"[0-9a-f]{40}", revision):
+                fail(f"Git Cargo package has no full locked commit: {name}")
+            raw_url = source_key.removeprefix("git+")
+            parsed = urlsplit(raw_url)
+            if parsed.scheme not in {"file", "git", "http", "https", "ssh"} or \
+                    (parsed.scheme != "file" and not parsed.netloc) or \
+                    parsed.username is not None or parsed.password is not None or parsed.fragment:
+                fail(f"Git Cargo package has an invalid source URL: {name}")
+            selectors = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+            if any(key not in {"branch", "tag", "rev"} for key, _ in selectors) or \
+                    len({key for key, _ in selectors}) != len(selectors):
+                fail(f"Git Cargo package has unsupported or duplicate source selectors: {name}")
+            if package.get("checksum") is not None:
+                fail(f"Git Cargo package unexpectedly has a registry checksum: {name}")
+            if (source, name, version) not in CARGO_GIT_VENDOR_PINS:
+                fail(f"Cargo.lock contains an unpinned Git package: {name} {version} ({source})")
+            dependencies.append({
+                "name": name,
+                "version": version,
+                "source": source,
+                "checksum": None,
+            })
+        else:
+            fail(f"Cargo.lock contains an unsupported dependency source: {source}")
+    return dependencies
+
+
+def verify_cargo_source_config(config_data: bytes, dependencies: list[dict], expected_directory: str) -> None:
+    try:
+        config = tomllib.loads(config_data.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        fail(f"Cargo vendor config is not valid TOML: {error}")
+    if set(config) != {"source"}:
+        fail("Cargo vendor config contains unsupported top-level settings")
+    sources = config.get("source")
+    if not isinstance(sources, dict):
+        fail("Cargo vendor config has no source mappings")
+    expected_git_sources = {item["source"].rsplit("#", 1)[0] for item in dependencies
+                            if item["source"].startswith("git+")}
+    expected_source_names = {"crates-io", "vendored-sources", *expected_git_sources}
+    if set(sources) != expected_source_names:
+        fail("Cargo vendor source mappings do not exactly match Cargo.lock")
+    if sources.get("crates-io") != {"replace-with": "vendored-sources"}:
+        fail("Cargo vendor config does not replace crates.io")
+    vendored = sources.get("vendored-sources")
+    if vendored != {"directory": expected_directory}:
+        fail("Cargo vendor directory mapping is missing or mismatched")
+    for source_key in expected_git_sources:
+        raw_url = source_key.removeprefix("git+")
+        parsed = urlsplit(raw_url)
+        selector_pairs = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+        mapping = {
+            "git": parsed._replace(query="").geturl(),
+            "replace-with": "vendored-sources",
+            **dict(selector_pairs),
+        }
+        if sources.get(source_key) != mapping:
+            fail(f"Cargo vendor Git mapping does not match Cargo.lock: {source_key}")
+
+
+def normalize_cargo_vendor_config(config_data: bytes, expected_directory: str) -> bytes:
+    try:
+        text = config_data.decode("utf-8")
+        config = tomllib.loads(text)
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        fail(f"Cargo vendor config is not valid TOML: {error}")
+    if set(config) != {"source"}:
+        fail("Cargo vendor config contains unsupported top-level settings")
+    sources = config.get("source")
+    if not isinstance(sources, dict) or not isinstance(sources.get("vendored-sources"), dict):
+        fail("Cargo vendor config has no vendored-sources directory")
+    block = re.compile(r"(?ms)(^\[source\.vendored-sources\]\s*\n)(.*?)(?=^\[|\Z)")
+    match = block.search(text)
+    if match is None:
+        fail("Cargo vendor config has no vendored-sources table")
+    body = match.group(2)
+    directory = re.compile(r'(?m)^directory\s*=\s*"(?:[^"\\]|\\.)*"\s*$')
+    if len(directory.findall(body)) != 1:
+        fail("Cargo vendor config must contain one vendored-sources directory")
+    replacement = f'directory = {json.dumps(expected_directory)}'
+    normalized_body = directory.sub(replacement, body)
+    return (text[:match.start(2)] + normalized_body + text[match.end(2):]).encode("utf-8")
+
+
+def cargo_lock_package(dependencies: list[dict], name: str, version: str, vendor_checksum: object,
+                       package_dir: str) -> dict:
+    matches = [item for item in dependencies if item["name"] == name and item["version"] == version]
+    if len(matches) != 1:
+        fail(f"Cargo vendor package does not have a unique locked source: {package_dir}")
+    locked = matches[0]
+    if vendor_checksum != locked["checksum"]:
+        fail(f"Cargo vendor package checksum does not match Cargo.lock: {package_dir}")
+    return locked
+
+
+def cargo_vendor_git_tree_pin(locked: dict, name: str, version: str, files: dict[str, bytes],
+                              package_dir: str) -> str | None:
+    if not locked["source"].startswith("git+"):
+        return None
+    expected = CARGO_GIT_VENDOR_PINS[(locked["source"], name, version)]
+    actual = cargo_vendor_tree_sha256(files)
+    if actual != expected:
+        fail(f"Cargo Git vendor tree digest mismatch: {package_dir}")
+    return actual
+
+
+def cargo_vendor_directory_inventory(vendor_root: Path, lock_data: bytes, config_data: bytes,
+                                     expected_directory: str) -> list[dict]:
+    dependencies = cargo_lock_dependencies(lock_data)
+    verify_cargo_source_config(config_data, dependencies, expected_directory)
+    if not vendor_root.is_dir() or vendor_root.is_symlink():
+        fail(f"Cargo vendor directory is missing or unsafe: {vendor_root}")
+    actual = []
+    for package_root in sorted(vendor_root.iterdir()):
+        if not package_root.is_dir() or package_root.is_symlink():
+            fail(f"Cargo vendor root contains an unsafe package: {package_root}")
+        cargo_toml = package_root / "Cargo.toml"
+        checksum_path = package_root / ".cargo-checksum.json"
+        if not cargo_toml.is_file() or not checksum_path.is_file():
+            fail(f"Cargo vendor package is incomplete: {package_root}")
+        try:
+            package = tomllib.loads(cargo_toml.read_text(encoding="utf-8"))["package"]
+            checksum = json.loads(checksum_path.read_text(encoding="utf-8"))
+        except (OSError, KeyError, UnicodeDecodeError, json.JSONDecodeError, tomllib.TOMLDecodeError) as error:
+            fail(f"invalid Cargo vendor package {package_root}: {error}")
+        file_digests = checksum.get("files")
+        if "package" not in checksum or not isinstance(file_digests, dict):
+            fail(f"Cargo vendor package checksum is missing: {package_root}")
+        name = package.get("name")
+        version = package.get("version")
+        if not isinstance(name, str) or not isinstance(version, str):
+            fail(f"Cargo vendor package identity is invalid: {package_root}")
+        locked = cargo_lock_package(dependencies, name, version, checksum["package"], package_root.name)
+        package_paths = list(package_root.rglob("*"))
+        if any(path.is_symlink() for path in package_paths):
+            fail(f"Cargo vendor package contains a symlink: {package_root}")
+        package_files = {
+            path.relative_to(package_root).as_posix() for path in package_paths
+            if path.is_file() and path.name != ".cargo-checksum.json"
+        }
+        if (not all(isinstance(relative, str) and isinstance(digest, str)
+                    and re.fullmatch(r"[0-9a-f]{64}", digest)
+                    for relative, digest in file_digests.items())
+                or set(file_digests) != package_files):
+            fail(f"Cargo vendor package file checksum inventory mismatch: {package_root}")
+        for relative, digest in file_digests.items():
+            safe_member(relative)
+            if sha256_bytes((package_root / relative).read_bytes()) != digest:
+                fail(f"Cargo vendor package file checksum mismatch: {package_root / relative}")
+        tree_files = {
+            path.relative_to(package_root).as_posix(): path.read_bytes()
+            for path in package_paths if path.is_file()
+        }
+        tree_sha256 = cargo_vendor_git_tree_pin(locked, name, version, tree_files, package_root.name)
+        inventory = {
+            "name": name,
+            "version": version,
+            "source": locked["source"],
+            "path": f"{expected_directory}/{package_root.name}",
+            "checksum": checksum["package"],
+            "files": sorted(f"{expected_directory}/{package_root.name}/"
+                             f"{path.relative_to(package_root).as_posix()}"
+                             for path in package_paths if path.is_file()),
+        }
+        if tree_sha256 is not None:
+            inventory["tree_sha256"] = tree_sha256
+        actual.append(inventory)
+    actual.sort(key=lambda item: item["path"])
+    if sorted((item["name"], item["version"], item["source"], item["checksum"])
+              for item in actual) != sorted((item["name"], item["version"], item["source"], item["checksum"])
+                                            for item in dependencies):
+        fail("Cargo vendor packages do not exactly match Cargo.lock sources and checksums")
+    return actual
 
 
 def safe_member(name: str) -> None:
@@ -63,7 +296,7 @@ def archive_members(path: Path) -> dict[str, tarfile.TarInfo]:
                 if re.search(r"(^|/)(?:\.git|__pycache__)(?:/|$)", member.name):
                     fail(f"forbidden generated member: {member.name}")
                 cargo_vendor_member = member.name.startswith("third_party/cargo/vendor/")
-                if not cargo_vendor_member and re.search(r"(?:\.o$|\.a$|\.so(?:\.|$)|\.dylib$|\.apk$|\.inp$|\.bin$|\.py[co]$)", member.name, re.I):
+                if not cargo_vendor_member and member.name not in FIRMWARE_SOURCE_ASSETS and re.search(r"(?:\.o$|\.a$|\.so(?:\.|$)|\.dylib$|\.apk$|\.inp$|\.bin$|\.py[co]$)", member.name, re.I):
                     fail(f"forbidden binary/generated member: {member.name}")
                 members[member.name] = member
     except (OSError, tarfile.TarError) as error:
@@ -135,38 +368,81 @@ EXPECTED = {
             "sources/dtv-android/mirakc-ui-contract/src/main/kotlin/dev/khronos31/mirakc/ui/contract/MirakcUiContract.kt",
             "sources/dtv-android/mirakc-tv-ui/build.gradle.kts",
             "sources/dtv-android/mirakc-tv-ui/src/main/java/dev/khronos31/mirakc/ui/MirakcTvScreen.kt",
-            PX4_ANDROID_PATCH_PATH,
+            CORE_ANDROID_PATCH_PATH,
+            PX4_BUILD_JOBS_PATCH_PATH,
+            PIX_ANDROID_16K_PATCH_PATH,
+            "sources/dtv-android/tools/mirakc/audit-apk-native.sh",
+            "sources/dtv-android/tools/mirakc/patches/px4-userland-build-jobs.patch",
+            "sources/dtv-android/tools/mirakc/fetch-pinned-userland-sources.sh",
+            "sources/dtv-android/mirakc/src/main/assets/asicen-loader.bin",
+            "sources/dtv-android/mirakc/src/main/assets/ASICEN-LOADER-NOTICE.txt",
             "sources/dtv-android/tools/mirakc-arib/build-android.sh",
             "sources/dtv-android/rust-toolchain.toml",
         ),
     },
     "mirakc": {
-        "version": "3.4.88",
-        "commit": "09664c2eefd0dccc38cabd3717b081ac84bf0833",
+        "version": "3.4.91",
+        "commit": "4f0767e87b109cabd17ed1ded0311355244fa018",
         "url": "https://github.com/mirakc/mirakc.git",
         "spdx": "Apache-2.0 OR MIT",
         "prefix": "sources/mirakc/",
     },
     "mirakc-arib": {
-        "version": "0.24.39",
-        "commit": "3266523d535b301141c533592a46d32617094439",
+        "version": "0.24.40",
+        "commit": "312168e85b30941a1fc0344900fd543a036ea341",
         "url": "https://github.com/mirakc/mirakc-arib.git",
         "spdx": "GPL-2.0-or-later",
         "prefix": "sources/mirakc-arib/",
     },
     "siano-userland": {
-        "version": "0.1.10",
-        "commit": "89c240b8af021d55d81b3b90fce79a3690605811",
+        "version": "1.0.0",
+        "commit": "33c3468e7e10781ae6c7e9a5fd57a0c1b0825288",
         "url": "https://github.com/Khronos31/siano-userland.git",
         "spdx": "GPL-2.0-or-later",
         "prefix": "sources/siano-userland/",
     },
     "px4-userland": {
-        "version": "0.1.10",
-        "commit": "7ad5f6691f77a9aa58c4097f8b6dfea77f6d9b6a",
+        "version": "1.0.0",
+        "commit": "5c91e8c57b288c0f490061789829e42dbbf61b3d",
         "url": "https://github.com/Khronos31/px4-userland.git",
         "spdx": "GPL-2.0-only",
         "prefix": "sources/px4-userland/",
+    },
+    "asicen-userland": {
+        "version": "1.0.0",
+        "commit": "e2a86ca194b60f1111ecfa0a020cd0944c351c76",
+        "url": "https://github.com/Khronos31/asicen-userland.git",
+        "spdx": "GPL-2.0-only",
+        "prefix": "sources/asicen-userland/",
+    },
+    "pix-userland": {
+        "version": "1.0.0",
+        "commit": "66f5a731784d205d1d306edda9cc57071c087f8e",
+        "url": "https://github.com/Khronos31/pix-userland.git",
+        "spdx": "MIT",
+        "prefix": "sources/pix-userland/",
+        "required_paths": (
+            "sources/pix-userland/THIRD_PARTY_NOTICES.md",
+            "sources/pix-userland/firmware/manifest.json",
+            "sources/pix-userland/firmware/metadata/dt181-source.json",
+            "sources/pix-userland/firmware/metadata/dt295-preservation.json",
+            "sources/pix-userland/firmware/metadata/dt295-satellite-generation.json",
+            "sources/pix-userland/firmware/preserved/verified-ts-iv.bin",
+        ),
+    },
+    "dtv-userland-core": {
+        "version": "1.0.0",
+        "commit": "67420d1c909e9205841612a186ae4c7fbf4dd092",
+        "url": "https://github.com/Khronos31/dtv-userland-core.git",
+        "spdx": "MIT",
+        "prefix": "sources/dtv-userland-core/",
+    },
+    "siano-px4-userland": {
+        "version": "0.2.1",
+        "commit": "90b08dfe79b0b40e393f015975c761863830866a",
+        "url": "https://github.com/Khronos31/px4-userland.git",
+        "spdx": "GPL-2.0-only",
+        "prefix": "sources/siano-px4-userland/",
     },
     "px4_drv": {
         "version": "0.2.1",
@@ -240,7 +516,7 @@ LIBARIB25_TREE_IDENTITY = "93c5d79f3aaa8215c28fbf5e44287f49d78dbc07df58c5199a53e
 TOOLCHAIN = {
     "schema": 2,
     "gradle": {"wrapper": "7.6.4", "distribution_url": "https://services.gradle.org/distributions/gradle-7.6.4-bin.zip", "distribution_sha256": "bed1da33cca0f557ab13691c77f38bb67388119e4794d113e051039b80af9bb1", "verification": "official Gradle release checksum"},
-    "jdk": {"distribution": "temurin", "selector": "17", "runtime_version": "17.0.20.1+1", "observed": "Temurin 17.0.20.1+1", "required_major": 17, "verification": "setup-java selector 17 plus exact runtime gate; no archive checksum recorded"},
+    "jdk": {"distribution": "temurin", "installer": "setup-java@v5 jdkfile", "selector": "17.0.20", "runtime_version": "17.0.20.1+1", "observed": "Temurin 17.0.20.1+1", "archive_url": "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.20.1%2B1/OpenJDK17U-jdk_x64_linux_hotspot_17.0.20.1_1.tar.gz", "archive_sha256": "3808d1d15e3ec6bd5b84057fb5d84c33d8a1536a258146bcea2e603fc726e08e", "required_major": 17, "verification": "pinned official Temurin archive SHA-256 and exact runtime gate"},
     "android_gradle_plugin": "7.4.2",
     "kotlin": "1.9.24",
     "android_ndk": {"version": "27.0.12077973", "verification": "sdkmanager exact package version; no installer archive checksum recorded"},
@@ -248,7 +524,7 @@ TOOLCHAIN = {
     "cmake": {"version": "3.22.1", "provider": "Android SDK cmake;3.22.1/bin/cmake", "verification": "binary version checked before clean build"},
     "ninja": {"version": "1.10.2", "provider": "bundled with Android SDK cmake;3.22.1", "verification": "binary version checked before clean build"},
     "rust": {"channel": "1.98.1", "toolchain_file": "rust-toolchain.toml", "targets": ["aarch64-linux-android", "armv7-linux-androideabi"], "rustc": "1.98.1", "rustc_commit": "48a229ceaefd4985c50990b14116b6d856af0985", "cargo": "1.98.1", "cargo_commit": "797e8a9bca276c1c9f9f738d2a20f484fa4eea9d", "verification": "exact rustup channel and targets; no installer archive checksum recorded"},
-    "cargo": {"lock_path": "sources/mirakc/Cargo.lock", "lock_sha256": "d31a12f832fcad3d916108910f1b2d23afdb665391fe2f912c01771a506e9842", "cargo_ndk": {"version": None, "provider": "not used; build invokes NDK clang/linker directly", "installer_pin": "NOT_APPLICABLE"}},
+    "cargo": {"lock_path": "sources/mirakc/Cargo.lock", "lock_sha256": "005a492cfdd0f6d44dd78585359caa0aa28b3c78eb46aaa6c55b18854f78a8b8", "cargo_ndk": {"version": None, "provider": "not used; build invokes NDK clang/linker directly", "installer_pin": "NOT_APPLICABLE"}},
     "autotools": {"m4": "1.4.19", "autoconf": "2.72", "automake": "1.17", "libtool": "2.5.4", "pkg-config": "0.29.2", "installer_pin": "source_archives_below"},
 }
 
@@ -266,19 +542,11 @@ def verify_cargo_vendor(path: Path, members: dict[str, tarfile.TarInfo], manifes
     if not isinstance(inventory, dict) or inventory.get("config") != ".cargo/config.toml" or \
        inventory.get("root") != "third_party/cargo/vendor" or inventory.get("lock") != "sources/mirakc/Cargo.lock":
         fail("Cargo vendor inventory is missing or stale")
-    if ".cargo/config.toml" not in members or member_bytes(path, ".cargo/config.toml") != CARGO_VENDOR_CONFIG:
-        fail("Cargo offline source configuration is missing or mismatched")
-    try:
-        lock = tomllib.loads(member_bytes(path, "sources/mirakc/Cargo.lock").decode("utf-8"))
-    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        fail(f"Cargo.lock is not valid TOML: {error}")
-    lock_packages = []
-    for package in lock.get("package", []):
-        source = package.get("source", "")
-        if source.startswith("registry+"):
-            if not isinstance(package.get("checksum"), str):
-                fail(f"registry Cargo package has no checksum: {package.get('name')}")
-            lock_packages.append((package.get("name"), package.get("version"), package["checksum"]))
+    if ".cargo/config.toml" not in members:
+        fail("Cargo offline source configuration is missing")
+    dependencies = cargo_lock_dependencies(member_bytes(path, "sources/mirakc/Cargo.lock"))
+    verify_cargo_source_config(member_bytes(path, ".cargo/config.toml"), dependencies,
+                               "third_party/cargo/vendor")
     prefix = "third_party/cargo/vendor/"
     vendor_members = sorted(name for name in members if name.startswith(prefix))
     if any("/" not in name[len(prefix):] for name in vendor_members):
@@ -297,8 +565,13 @@ def verify_cargo_vendor(path: Path, members: dict[str, tarfile.TarInfo], manifes
         except (UnicodeDecodeError, tomllib.TOMLDecodeError, json.JSONDecodeError, KeyError) as error:
             fail(f"Cargo vendor package metadata is invalid: {package_dir}: {error}")
         file_digests = checksum.get("files")
-        if not isinstance(checksum.get("package"), str) or not isinstance(file_digests, dict):
+        if "package" not in checksum or not isinstance(file_digests, dict):
             fail(f"Cargo vendor package checksum is missing: {package_dir}")
+        name = package.get("name")
+        version = package.get("version")
+        if not isinstance(name, str) or not isinstance(version, str):
+            fail(f"Cargo vendor package identity is invalid: {package_dir}")
+        locked = cargo_lock_package(dependencies, name, version, checksum["package"], package_dir)
         package_files = {
             name[len(package_prefix):] for name in vendor_members
             if name.startswith(package_prefix) and name != checksum_path
@@ -312,23 +585,49 @@ def verify_cargo_vendor(path: Path, members: dict[str, tarfile.TarInfo], manifes
             member_name = package_prefix + relative
             if member_name not in members or sha256_bytes(member_bytes(path, member_name)) != digest:
                 fail(f"Cargo vendor package file checksum mismatch: {package_dir}/{relative}")
-        actual.append({
-            "name": package.get("name"),
-            "version": package.get("version"),
+        tree_files = {
+            name[len(package_prefix):]: member_bytes(path, name)
+            for name in vendor_members if name.startswith(package_prefix)
+        }
+        tree_sha256 = cargo_vendor_git_tree_pin(locked, name, version, tree_files, package_dir)
+        package_inventory = {
+            "name": name,
+            "version": version,
+            "source": locked["source"],
             "path": prefix[:-1] + "/" + package_dir,
             "checksum": checksum["package"],
             "files": [name for name in vendor_members if name.startswith(package_prefix)],
-        })
+        }
+        if tree_sha256 is not None:
+            package_inventory["tree_sha256"] = tree_sha256
+        actual.append(package_inventory)
     actual.sort(key=lambda item: item["path"])
-    if inventory.get("packages") != actual:
+    manifest_packages = inventory.get("packages")
+    legacy_registry_inventory = not any(item["source"].startswith("git+") for item in dependencies) and \
+        isinstance(manifest_packages, list) and all(
+            isinstance(item, dict) and "source" not in item for item in manifest_packages
+        )
+    if legacy_registry_inventory:
+        comparable_actual = [{key: value for key, value in item.items() if key != "source"}
+                             for item in actual]
+    else:
+        comparable_actual = actual
+    if manifest_packages != comparable_actual:
         fail("Cargo vendor package inventory or file list mismatch")
-    if sorted((item["name"], item["version"], item["checksum"]) for item in actual) != sorted(lock_packages):
-        fail("Cargo vendor packages do not exactly match registry Cargo.lock checksums")
+    expected_packages = sorted((item["name"], item["version"], item["source"], item["checksum"])
+                               for item in dependencies)
+    actual_packages = sorted((item["name"], item["version"], item["source"], item["checksum"])
+                             for item in actual)
+    if actual_packages != expected_packages:
+        fail("Cargo vendor packages do not exactly match Cargo.lock sources and checksums")
 
 
 def audit_source_archive(path: Path, expected_dtv_commit: str | None = None) -> None:
     members = archive_members(path)
     verify_checksums(path, members)
+    for name, expected_digest in FIRMWARE_SOURCE_ASSETS.items():
+        if name not in members or sha256_bytes(member_bytes(path, name)) != expected_digest:
+            fail(f"firmware source asset is missing or mismatched: {name}")
     for required in ("source-manifest.json", "LICENSE-INVENTORY.json", "toolchain-manifest.json", "DEPENDENCY-NOTICE.txt"):
         if required not in members:
             fail(f"required aggregate member is missing: {required}")
@@ -337,6 +636,14 @@ def audit_source_archive(path: Path, expected_dtv_commit: str | None = None) -> 
     toolchain = parse_json(member_bytes(path, "toolchain-manifest.json"), "toolchain-manifest.json")
     if not isinstance(manifest, dict) or manifest.get("schema") != 1 or manifest.get("kind") != "mirakc-corresponding-source":
         fail("source manifest schema/kind mismatch")
+    if manifest.get("excluded_materials") != {
+        "siano_firmware_url": EXPECTED["linux-firmware-siano"]["url"],
+        "siano_firmware_sha256": EXPECTED["linux-firmware-siano"]["sha256"],
+        "siano_firmware_license_url": EXPECTED["linux-firmware-siano"]["license_url"],
+        "siano_firmware_license_sha256": EXPECTED["linux-firmware-siano"]["license_sha256"],
+        "reason": SIANO_FIRMWARE_EXCLUSION_REASON,
+    }:
+        fail("excluded Siano firmware provenance is missing or stale")
     if not isinstance(inventory, list) or manifest.get("license_inventory") != inventory:
         fail("license inventory is not identical to source manifest")
     if toolchain != TOOLCHAIN:
@@ -376,6 +683,47 @@ def audit_source_archive(path: Path, expected_dtv_commit: str | None = None) -> 
         if metadata.get("size") != len(member_bytes(path, name)):
             fail(f"source manifest size mismatch: {name}")
     verify_cargo_vendor(path, members, manifest)
+    if manifest.get("dependency_pins") != {
+        "siano-userland/dtv-userland-core": EXPECTED["dtv-userland-core"]["commit"],
+        "siano-userland/px4-userland": EXPECTED["siano-px4-userland"]["commit"],
+        "asicen-userland/dtv-userland-core": EXPECTED["dtv-userland-core"]["commit"],
+        "asicen-userland/vendored-px4-userland": "dd1c1bea16a5871085d5f2a42c009364c1ec7345",
+        "pix-userland/dtv-userland-core": EXPECTED["dtv-userland-core"]["commit"],
+    }:
+        fail("transitive Core/PX4 source pin inventory is missing or stale")
+    if manifest.get("bundled_firmware_assets") != {
+        "sources/dtv-android/mirakc/src/main/assets/asicen-loader.bin": {
+            "sha256": FIRMWARE_SOURCE_ASSETS["sources/dtv-android/mirakc/src/main/assets/asicen-loader.bin"],
+            "provenance_path": "sources/dtv-android/mirakc/src/main/assets/ASICEN-LOADER-NOTICE.txt",
+            "redistribution_rights": "unresolved",
+        },
+        "sources/pix-userland/firmware/dt181.bin": {
+            "sha256": FIRMWARE_SOURCE_ASSETS["sources/pix-userland/firmware/dt181.bin"],
+            "provenance_path": "sources/pix-userland/firmware/metadata/dt181-source.json",
+        },
+        "sources/pix-userland/firmware/dt295.bin": {
+            "sha256": FIRMWARE_SOURCE_ASSETS["sources/pix-userland/firmware/dt295.bin"],
+            "provenance_path": "sources/pix-userland/firmware/metadata/dt295-satellite-generation.json",
+        },
+        "sources/pix-userland/firmware/preserved/verified-ts-iv.bin": {
+            "sha256": FIRMWARE_SOURCE_ASSETS["sources/pix-userland/firmware/preserved/verified-ts-iv.bin"],
+            "provenance_path": "sources/pix-userland/firmware/metadata/dt295-preservation.json",
+        },
+    }:
+        fail("bundled firmware provenance is missing or stale")
+    if "sources/dtv-android/mirakc/src/main/assets/ASICEN-LOADER-NOTICE.txt" not in members:
+        fail("ASICEN loader provenance notice is missing")
+    for source_path, expected_pin in (
+        ("sources/siano-userland/cmake/dtv-userland-core.revision", EXPECTED["dtv-userland-core"]["commit"]),
+        ("sources/siano-userland/cmake/px4-userland.revision", EXPECTED["siano-px4-userland"]["commit"]),
+        ("sources/asicen-userland/cmake/dtv-userland-core.revision", EXPECTED["dtv-userland-core"]["commit"]),
+        ("sources/pix-userland/core-integration/dtv-userland-core.revision", EXPECTED["dtv-userland-core"]["commit"]),
+    ):
+        if source_path not in members or member_bytes(path, source_path).decode("ascii").strip() != expected_pin:
+            fail(f"transitive dependency revision mismatch: {source_path}")
+    vendor_manifest = "sources/asicen-userland/third_party/px4-userland/UPSTREAM.md"
+    if vendor_manifest not in members or "dd1c1bea16a5871085d5f2a42c009364c1ec7345" not in member_bytes(path, vendor_manifest).decode("utf-8"):
+        fail("ASICEN vendored PX4 reference provenance mismatch")
     components = manifest.get("components")
     if not isinstance(components, list) or {c.get("name") for c in components if isinstance(c, dict)} != set(EXPECTED):
         fail("source manifest component set mismatch")
@@ -432,20 +780,69 @@ def audit_source_archive(path: Path, expected_dtv_commit: str | None = None) -> 
                 fail(f"component {name} has invalid license path")
             if item.get("sha256") != sha256_bytes(member_bytes(path, item["path"])):
                 fail(f"component {name} license digest mismatch")
+        if name == "dtv-userland-core":
+            expected_relationships = {
+                "project_sources": {"spdx": "MIT", "license_file": prefix + "LICENSE"},
+                "statically_linked_adapters": [
+                    {"spdx": "GPL-2.0-only", "source_prefix": prefix + "adapters/host_daemon/", "license_file": prefix + "adapters/host_daemon/COPYING"},
+                    {"spdx": "GPL-2.0-only", "source_prefix": prefix + "adapters/host_ts/", "license_file": prefix + "adapters/host_ts/COPYING"},
+                ],
+            }
+            if component.get("license_relationships") != expected_relationships:
+                fail("Core source/license relationship inventory is missing or stale")
+        if name == "pix-userland":
+            expected_relationships = {
+                "project_sources": {"spdx": "MIT", "license_file": prefix + "LICENSE"},
+                "linked_component_notice": prefix + "THIRD_PARTY_NOTICES.md",
+                "firmware_terms": "third-party terms are separately recorded; not covered by the project MIT license",
+            }
+            if component.get("license_relationships") != expected_relationships:
+                fail("PIX source/license relationship inventory is missing or stale")
     for required_path in EXPECTED["dtv-android"]["required_paths"]:
         if required_path not in members:
             fail(f"required DTV packaging path is missing: {required_path}")
+    for required_path in EXPECTED["pix-userland"]["required_paths"]:
+        if required_path not in members:
+            fail(f"PIX firmware provenance path is missing: {required_path}")
     px4_component = by_name["px4-userland"]
     expected_px4_patch = {
-        "path": PX4_ANDROID_PATCH_PATH,
-        "sha256": PX4_ANDROID_PATCH_SHA256,
+        "path": PX4_BUILD_JOBS_PATCH_PATH,
+        "sha256": PX4_BUILD_JOBS_PATCH_SHA256,
         "upstream_commit": EXPECTED["px4-userland"]["commit"],
     }
     if px4_component.get("android_build_patch") != expected_px4_patch:
-        fail("px4-userland Android patch provenance is missing or mismatched")
-    if PX4_ANDROID_PATCH_PATH not in members or \
-            sha256_bytes(member_bytes(path, PX4_ANDROID_PATCH_PATH)) != PX4_ANDROID_PATCH_SHA256:
-        fail("px4-userland Android patch is missing or mismatched")
+        fail("PX4 bounded build-job patch provenance is missing or mismatched")
+    if PX4_BUILD_JOBS_PATCH_PATH not in members or \
+            sha256_bytes(member_bytes(path, PX4_BUILD_JOBS_PATCH_PATH)) != PX4_BUILD_JOBS_PATCH_SHA256:
+        fail("PX4 bounded build-job patch is missing or mismatched")
+    pix_component = by_name["pix-userland"]
+    expected_pix_patch = {
+        "path": PIX_ANDROID_16K_PATCH_PATH,
+        "sha256": PIX_ANDROID_16K_PATCH_SHA256,
+        "upstream_commit": EXPECTED["pix-userland"]["commit"],
+    }
+    if pix_component.get("android_build_patch") != expected_pix_patch:
+        fail("PIX Android 16 KiB patch provenance is missing or mismatched")
+    if PIX_ANDROID_16K_PATCH_PATH not in members or \
+            sha256_bytes(member_bytes(path, PIX_ANDROID_16K_PATCH_PATH)) != PIX_ANDROID_16K_PATCH_SHA256:
+        fail("PIX Android 16 KiB patch is missing or mismatched")
+    core_component = by_name["dtv-userland-core"]
+    expected_core_patch = {
+        "path": CORE_ANDROID_PATCH_PATH,
+        "sha256": CORE_ANDROID_PATCH_SHA256,
+        "upstream_commit": EXPECTED["dtv-userland-core"]["commit"],
+    }
+    if core_component.get("android_integration_patch") != expected_core_patch:
+        fail("Core concurrency patch provenance is missing or mismatched")
+    if CORE_ANDROID_PATCH_PATH not in members or \
+            sha256_bytes(member_bytes(path, CORE_ANDROID_PATCH_PATH)) != CORE_ANDROID_PATCH_SHA256:
+        fail("Core concurrency patch is missing or mismatched")
+    pix_iv = "sources/pix-userland/firmware/preserved/verified-ts-iv.bin"
+    if sha256_bytes(member_bytes(path, pix_iv)) != FIRMWARE_SOURCE_ASSETS[pix_iv]:
+        fail("PIX preserved DT295 TS IV digest mismatch")
+    pix_manifest = parse_json(member_bytes(path, "sources/pix-userland/firmware/manifest.json"), "PIX firmware manifest")
+    if not isinstance(pix_manifest, dict) or pix_manifest.get("models", {}).get("dt295", {}).get("sha256") != FIRMWARE_SOURCE_ASSETS["sources/pix-userland/firmware/dt295.bin"]:
+        fail("PIX DT295 manifest digest mismatch")
     for item in inventory:
         if not isinstance(item, dict) or item.get("sha256") != sha256_bytes(member_bytes(path, item.get("path", ""))):
             fail("license inventory digest mismatch")

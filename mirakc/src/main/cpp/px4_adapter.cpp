@@ -18,6 +18,7 @@
 #include "arib_std_b25.h"
 #include "b_cas_card.h"
 #include "px4_card_retry.h"
+#include "adapter_cli.h"
 #include "px4_tune_plan.h"
 #include "px4_receiver_retry.h"
 
@@ -294,14 +295,14 @@ int reap_child(pid_t child, int* status) {
         if (result < 0 && errno != EINTR) return -1;
         usleep(10 * 1000);
     }
-    kill(child, SIGTERM);
+    if (kill(-child, SIGTERM) != 0) kill(child, SIGTERM);
     for (int attempt = 0; attempt < 50; ++attempt) {
         const pid_t result = waitpid(child, status, WNOHANG);
         if (result == child) return 0;
         if (result < 0 && errno != EINTR) return -1;
         usleep(10 * 1000);
     }
-    kill(child, SIGKILL);
+    if (kill(-child, SIGKILL) != 0) kill(child, SIGKILL);
     while (waitpid(child, status, 0) < 0 && errno == EINTR) {
     }
     return 1;
@@ -316,7 +317,15 @@ int child_result(int status) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    struct sigaction ignore_sigpipe{};
+    ignore_sigpipe.sa_handler = SIG_IGN;
+    if (sigemptyset(&ignore_sigpipe.sa_mask) != 0 ||
+        sigaction(SIGPIPE, &ignore_sigpipe, nullptr) != 0) {
+        return 70;
+    }
+
     std::string px4_ts;
+    std::string ts_program;
     std::string base_serial;
     std::string instance_token;
     std::string model_text;
@@ -325,6 +334,7 @@ int main(int argc, char** argv) {
     std::string channel_text;
     std::string tsid_text;
     bool have_px4_ts = false;
+    bool have_ts_program = false;
     bool have_base_serial = false;
     bool have_instance_token = false;
     bool have_model = false;
@@ -335,7 +345,11 @@ int main(int argc, char** argv) {
 
     for (int index = 1; index < argc; ++index) {
         std::string value;
-        if (consume_option(argc, argv, &index, "--px4-ts", &value)) {
+        if (consume_option(argc, argv, &index, "--ts-program", &value)) {
+            if (have_ts_program || have_px4_ts) return fail("duplicate TS program");
+            ts_program = value;
+            have_ts_program = true;
+        } else if (consume_option(argc, argv, &index, "--px4-ts", &value)) {
             if (have_px4_ts) return fail("duplicate --px4-ts");
             px4_ts = value;
             have_px4_ts = true;
@@ -372,62 +386,44 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (!have_px4_ts || !have_base_serial || !have_instance_token || !have_model || !have_receiver || !have_runtime_dir || !have_channel ||
-        px4_ts.empty() || base_serial.empty() || runtime_dir.empty()) {
-        return fail("--px4-ts, --device, --instance, --model, --receiver, --runtime-dir and --channel are required");
+    const bool legacy_px4 = have_px4_ts || have_base_serial || have_model;
+    const std::string& program = have_ts_program ? ts_program : px4_ts;
+    if (program.empty() || !have_instance_token || !have_receiver || !have_runtime_dir || !have_channel ||
+        (legacy_px4 && (!have_px4_ts || !have_base_serial || !have_model || base_serial.empty()))) {
+        return fail("TS program, --instance, --receiver, --runtime-dir and --channel are required");
     }
     if (!valid_instance_token(instance_token)) return fail("--instance is not a valid runtime token");
     int receiver = 0;
     if (!parse_int(receiver_text, &receiver) || receiver_text != std::to_string(receiver)) {
         return fail("--receiver must be a receiver ID");
     }
-    const std::optional<px4_adapter::ReceiverMap> parsed_receiver_map =
-        px4_adapter::receiver_map_for_model(model_text);
-    if (!parsed_receiver_map.has_value()) return fail("--model is not a supported PX4 profile");
-    const px4_adapter::ReceiverMap receiver_map = *parsed_receiver_map;
-    if (!px4_adapter::base_serial_matches_model(receiver_map, base_serial)) {
-        return fail("--device serial length does not match --model");
+    px4_adapter::ReceiverMap receiver_map = px4_adapter::ReceiverMap::kPxQ3u4;
+    if (legacy_px4) {
+        const std::optional<px4_adapter::ReceiverMap> parsed_receiver_map =
+            px4_adapter::receiver_map_for_model(model_text);
+        if (!parsed_receiver_map.has_value()) return fail("--model is not a supported PX4 profile");
+        receiver_map = *parsed_receiver_map;
+        if (!px4_adapter::base_serial_matches_model(receiver_map, base_serial)) {
+            return fail("--device serial length does not match --model");
+        }
     }
-
     px4_adapter::TunePlan tune_plan;
     std::string tune_error;
     const std::optional<std::string_view> tsid = have_tsid
         ? std::optional<std::string_view>(tsid_text)
         : std::nullopt;
-    if (!px4_adapter::create_tune_plan(
+    if (legacy_px4 && !px4_adapter::create_tune_plan(
             receiver, channel_text, tsid, &tune_plan, &tune_error, receiver_map)) {
         return fail(tune_error.c_str());
     }
-    const std::string frequency = std::to_string(tune_plan.frequency_khz);
-    const std::string system = tune_plan.system == px4_adapter::BroadcastSystem::kIsdbT
-        ? "isdb-t"
-        : "isdb-s";
-    std::vector<std::string> child_storage;
-    child_storage.reserve(18);
-    child_storage.push_back(px4_ts);
-    child_storage.emplace_back("--instance");
-    child_storage.push_back(instance_token);
-    child_storage.emplace_back("--receiver");
-    child_storage.push_back(receiver_text);
-    child_storage.emplace_back("--system");
-    child_storage.push_back(system);
-    child_storage.emplace_back("--frequency-khz");
-    child_storage.push_back(frequency);
-    if (tune_plan.satellite_selector == px4_adapter::SatelliteSelector::kStreamId) {
-        child_storage.emplace_back("--stream-id");
-        child_storage.push_back(std::to_string(tune_plan.satellite_value));
-    } else if (tune_plan.satellite_selector == px4_adapter::SatelliteSelector::kSlot) {
-        child_storage.emplace_back("--slot");
-        child_storage.push_back(std::to_string(tune_plan.satellite_value));
+    mirakc_adapter::NormalizedSelection selection;
+    if (channel_text.size() > 32 ||
+        !mirakc_adapter::normalize_selection(channel_text, tsid_text, have_tsid,
+                                             &selection)) {
+        return fail("--channel or --tsid is not a canonical token");
     }
-    if (tune_plan.system == px4_adapter::BroadcastSystem::kIsdbS) {
-        child_storage.emplace_back("--lnb-voltage");
-        child_storage.emplace_back("0");
-    }
-    child_storage.emplace_back("--runtime-dir");
-    child_storage.push_back(runtime_dir);
-    child_storage.emplace_back("--output");
-    child_storage.emplace_back("-");
+    std::vector<std::string> child_storage = mirakc_adapter::build_ts_arguments(
+        program, instance_token, receiver_text, selection, runtime_dir);
 
     px4::userland::pcsc::PosixIfdCardClientFactory factory;
     px4::userland::pcsc::IfdEndpoint endpoint;
@@ -437,10 +433,10 @@ int main(int argc, char** argv) {
     // Keep the real downstream (mirakc) endpoint separate: each attempt wraps
     // STDOUT with a counting forwarder so a tune that produces no TS can be
     // detected and retried.
-    const int real_stdout = dup(STDOUT_FILENO);
+    const int real_stdout = fcntl(STDOUT_FILENO, F_DUPFD_CLOEXEC, 3);
     if (real_stdout < 0) return fail("cannot dup stdout");
     int scan_channel = 0;
-    const bool log_scan = tune_plan.system == px4_adapter::BroadcastSystem::kIsdbT &&
+    const bool log_scan = (!legacy_px4 || tune_plan.system == px4_adapter::BroadcastSystem::kIsdbT) &&
                           is_manual_gr_channel(channel_text, &scan_channel);
     const auto scan_started = std::chrono::steady_clock::now();
     std::atomic<bool> raw_ts_logged{false};
@@ -460,7 +456,7 @@ int main(int argc, char** argv) {
     // lease drains, the first tune attempt can race the receiver reset and
     // end with a clean but empty stream, so retry both cases.
     for (int attempt = 0; attempt < 50; ++attempt) {
-        if (!px4_adapter::set_child_receiver_for_attempt(
+        if (legacy_px4 && !px4_adapter::set_child_receiver_for_attempt(
                 &child_storage, receiver_map, tune_plan.system, receiver,
                 static_cast<std::size_t>(attempt))) {
             return fail("cannot select child receiver for retry");
@@ -482,15 +478,17 @@ int main(int argc, char** argv) {
         }
 
         if (child == 0) {
+            setpgid(0, 0);
             if (output_pipe[0] != STDIN_FILENO) close(output_pipe[0]);
             if (output_pipe[1] != STDOUT_FILENO) {
                 if (dup2(output_pipe[1], STDOUT_FILENO) < 0) _exit(127);
                 close(output_pipe[1]);
             }
-            execv(px4_ts.c_str(), child_argv.data());
+            execv(program.c_str(), child_argv.data());
             std::fprintf(stderr, "px4 adapter: exec failed: %s\n", std::strerror(errno));
             _exit(127);
         }
+        setpgid(child, child);
         close(output_pipe[1]);
 
         int count_pipe[2] = {-1, -1};
@@ -632,7 +630,10 @@ int main(int argc, char** argv) {
                 static_cast<std::uint64_t>(elapsed), busy_retries, empty_retries,
                 card_error_seen);
         }
-        if (finished) return exit_code;
+        if (finished) {
+            close(real_stdout);
+            return exit_code;
+        }
         usleep(500 * 1000);
     }
     return 1;

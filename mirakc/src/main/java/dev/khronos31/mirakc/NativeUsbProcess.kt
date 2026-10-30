@@ -116,6 +116,36 @@ internal object NativeUsbProcess {
         return StartedMirakc(pid, ParcelFileDescriptor.adoptFd(outputFd))
     }
 
+    fun startCommand(
+        executable: String,
+        arguments: List<String>,
+        firstUsbFd: Int = -1,
+        secondUsbFd: Int = -1
+    ): StartedMirakc {
+        require(firstUsbFd >= -1 && secondUsbFd >= -1)
+        require(secondUsbFd < 0 || firstUsbFd >= 0)
+        val handles = nativeStartCommand(executable, arguments.toTypedArray(), firstUsbFd, secondUsbFd)
+        check(handles != null && handles.size == 2) { "Unable to start userland command" }
+        val outputFd = handles[0]
+        val pid = handles[1]
+        check(outputFd >= 0 && pid > 0) { "Invalid userland command handle" }
+        return StartedMirakc(pid, ParcelFileDescriptor.adoptFd(outputFd))
+    }
+
+    fun startTsClient(executable: String, arguments: List<String>): StartedTsClient {
+        val handles = nativeStartTsClient(executable, arguments.toTypedArray())
+        check(handles != null && handles.size == 3) { "Unable to start Siano TS client" }
+        val tsFd = handles[0]
+        val diagnosticsFd = handles[1]
+        val pid = handles[2]
+        check(tsFd >= 0 && diagnosticsFd >= 0 && pid > 0) { "Invalid Siano TS client handle" }
+        return StartedTsClient(
+            pid,
+            ParcelFileDescriptor.adoptFd(tsFd),
+            ParcelFileDescriptor.adoptFd(diagnosticsFd)
+        )
+    }
+
     sealed class PollResult {
         data object ALIVE : PollResult()
         data class EXITED(val code: Int?, val signal: Int?) : PollResult()
@@ -138,6 +168,9 @@ internal object NativeUsbProcess {
         else -> PollResult.ERROR
     }
 
+    fun pollCommand(pid: Int): PollResult = pollMirakc(pid)
+    fun stopCommand(pid: Int) = nativeStop(pid)
+
     fun startPx4d(
         executable: String,
         firmware: String,
@@ -147,14 +180,16 @@ internal object NativeUsbProcess {
         firstUsbFd: Int,
         secondUsbFd: Int
     ): StartedPx4d {
-        val handles = nativeStartPx4d(
-            executable, firmware, baseSerial, instanceToken, runtimeDir, firstUsbFd, secondUsbFd
+        val arguments = mutableListOf("--fd", "3")
+        if (secondUsbFd >= 0) arguments += listOf("--fd", "4")
+        arguments += listOf(
+            "--device", "serial:$baseSerial",
+            "--instance", instanceToken,
+            "--firmware", firmware,
+            "--runtime-dir", runtimeDir
         )
-        check(handles != null && handles.size == 2) { "Unable to start px4d" }
-        val outputFd = handles[0]
-        val pid = handles[1]
-        check(outputFd >= 0 && pid > 0) { "Invalid px4d process handle" }
-        return StartedPx4d(pid, ParcelFileDescriptor.adoptFd(outputFd))
+        val started = startCommand(executable, arguments, firstUsbFd, secondUsbFd)
+        return StartedPx4d(started.pid, started.output)
     }
 
     fun pollPx4d(pid: Int): PollResult = when (val result = nativePollPx4d(pid)) {
@@ -182,6 +217,7 @@ internal object NativeUsbProcess {
         internal val diagnosticsFinished = AtomicBoolean(false)
     }
     data class StartedMirakc(val pid: Int, val output: ParcelFileDescriptor)
+    data class StartedTsClient(val pid: Int, val output: ParcelFileDescriptor, val diagnostics: ParcelFileDescriptor)
     data class StartedPx4d(val pid: Int, val output: ParcelFileDescriptor)
 
     private const val MAX_DIAGNOSTICS_BYTES = 64 * 1024
@@ -199,6 +235,13 @@ internal object NativeUsbProcess {
     ): IntArray?
     private external fun nativeStop(pid: Int)
     private external fun nativeStartMirakc(executable: String, config: String): IntArray?
+    private external fun nativeStartCommand(
+        executable: String,
+        arguments: Array<String>,
+        firstUsbFd: Int,
+        secondUsbFd: Int
+    ): IntArray?
+    private external fun nativeStartTsClient(executable: String, arguments: Array<String>): IntArray?
     private external fun nativePollMirakc(pid: Int): Int
     private external fun nativePollSiano(pid: Int): Int
     private external fun nativeStartPx4d(

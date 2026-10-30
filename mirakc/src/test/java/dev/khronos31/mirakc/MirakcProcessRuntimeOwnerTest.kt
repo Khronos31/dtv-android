@@ -3,6 +3,7 @@ package dev.khronos31.mirakc
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -132,17 +133,20 @@ class MirakcProcessRuntimeOwnerTest {
     fun failedCleanupKeepsAdmissionRevoked() {
         val owners = MirakcProcessRuntimeOwner()
         val owner = owners.acquireOwner()
+        val cleanupFinished = CountDownLatch(1)
         val cleanupExecutor = Executor { task ->
-            Thread(task, "runtime-owner-failing-cleanup").apply { isDaemon = true }.start()
+            Thread({
+                try {
+                    task.run()
+                } finally {
+                    cleanupFinished.countDown()
+                }
+            }, "runtime-owner-failing-cleanup").apply { isDaemon = true }.start()
         }
-        val failed = CountDownLatch(1)
         owners.beginStop(owner, cleanupExecutor) {
-            failed.countDown()
             throw IllegalStateException("cleanup failed")
         }
-        assertTrue(failed.await(1, TimeUnit.SECONDS))
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1)
-        while (owners.blockingFailure() == null && System.nanoTime() < deadline) Thread.yield()
+        assertTrue(cleanupFinished.await(1, TimeUnit.SECONDS))
         assertFalse(owners.isCurrent(owner))
         assertTrue(owners.blockingFailure() is IllegalStateException)
         assertNull(owners.acquireWork(owner))
@@ -166,17 +170,13 @@ class MirakcProcessRuntimeOwnerTest {
             Thread(runnable, "runtime-owner-retry-cleanup").apply { isDaemon = true }
         }
         val attempts = java.util.concurrent.atomic.AtomicInteger()
-        val failed = CountDownLatch(1)
         owners.beginStop(owner, cleanupExecutor) {
             if (attempts.incrementAndGet() == 1) {
-                failed.countDown()
                 throw IllegalStateException("transient cleanup failure")
             }
         }
         try {
-            assertTrue(failed.await(1, TimeUnit.SECONDS))
-            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1)
-            while (owners.blockingFailure() == null && System.nanoTime() < deadline) Thread.yield()
+            cleanupExecutor.submit {}.get(1, TimeUnit.SECONDS)
             assertNotNull(owners.blockingFailure())
             assertFalse(owners.isCurrent(owner))
             assertTrue(owners.retryFailedCleanup(owner))
@@ -187,6 +187,122 @@ class MirakcProcessRuntimeOwnerTest {
         } finally {
             cleanupExecutor.shutdown()
             assertTrue(cleanupExecutor.awaitTermination(1, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test
+    fun temporaryOperationMustCloseItsUsbHandleBeforeReplacementAdmission() {
+        val owners = MirakcProcessRuntimeOwner()
+        val first = owners.acquireOwner()
+        val operations = Executors.newSingleThreadExecutor()
+        val cleanupExecutor = Executors.newSingleThreadExecutor()
+        val operationStarted = CountDownLatch(1)
+        val operationInterrupted = CountDownLatch(1)
+        val allowHandleClose = CountDownLatch(1)
+        val handleClosed = AtomicBoolean(false)
+        operations.execute {
+            operationStarted.countDown()
+            try {
+                CountDownLatch(1).await()
+            } catch (_: InterruptedException) {
+                operationInterrupted.countDown()
+                allowHandleClose.await()
+            } finally {
+                handleClosed.set(true)
+            }
+        }
+        assertTrue(operationStarted.await(1, TimeUnit.SECONDS))
+        operations.shutdownNow()
+        val supervisorStopped = CountDownLatch(1)
+        val replacementEntered = CountDownLatch(1)
+        val replacement = Thread {
+            owners.acquireOwner().also {
+                replacementEntered.countDown()
+                owners.beginStop(it, cleanupExecutor) { }
+            }
+        }
+        owners.beginStop(first, cleanupExecutor) {
+            supervisorStopped.countDown()
+            RuntimeOperationDrain.awaitTermination(operations, 2_000)
+            check(handleClosed.get()) { "USB handle closed after replacement admission" }
+        }
+        replacement.start()
+        try {
+            assertTrue(supervisorStopped.await(1, TimeUnit.SECONDS))
+            assertTrue(operationInterrupted.await(1, TimeUnit.SECONDS))
+            assertFalse(replacementEntered.await(100, TimeUnit.MILLISECONDS))
+            allowHandleClose.countDown()
+            assertTrue(replacementEntered.await(2, TimeUnit.SECONDS))
+            assertTrue(handleClosed.get())
+        } finally {
+            allowHandleClose.countDown()
+            replacement.interrupt()
+            replacement.join(1_000)
+            operations.shutdownNow()
+            cleanupExecutor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun operationDrainTimeoutKeepsReplacementAdmissionBlockedUntilCleanupRetry() {
+        val owners = MirakcProcessRuntimeOwner()
+        val first = owners.acquireOwner()
+        val operations = Executors.newSingleThreadExecutor()
+        val cleanupExecutor = Executors.newSingleThreadExecutor()
+        val operationStarted = CountDownLatch(1)
+        val allowHandleClose = CountDownLatch(1)
+        val allowFailurePublication = CountDownLatch(1)
+        val handleClosed = AtomicBoolean(false)
+        operations.execute {
+            operationStarted.countDown()
+            try {
+                CountDownLatch(1).await()
+            } catch (_: InterruptedException) {
+                allowHandleClose.await()
+            } finally {
+                handleClosed.set(true)
+            }
+        }
+        assertTrue(operationStarted.await(1, TimeUnit.SECONDS))
+        operations.shutdownNow()
+        val cleanupFinished = CountDownLatch(1)
+        owners.beginStop(first, cleanupExecutor) {
+            try {
+                RuntimeOperationDrain.awaitTermination(operations, 50)
+            } finally {
+                cleanupFinished.countDown()
+                allowFailurePublication.await()
+            }
+        }
+        val replacementEntered = CountDownLatch(1)
+        val replacement = Thread {
+            val next = owners.acquireOwner()
+            replacementEntered.countDown()
+            owners.beginStop(next, cleanupExecutor) { }
+        }
+        replacement.start()
+        try {
+            assertTrue(cleanupFinished.await(1, TimeUnit.SECONDS))
+            assertNull(owners.blockingFailure())
+            allowFailurePublication.countDown()
+            cleanupExecutor.submit {}.get(1, TimeUnit.SECONDS)
+            val failure = owners.blockingFailure()
+            assertTrue(failure is IllegalStateException)
+            assertTrue(failure?.message?.contains("service operations did not terminate") == true)
+            assertFalse(handleClosed.get())
+            assertFalse(replacementEntered.await(100, TimeUnit.MILLISECONDS))
+            allowHandleClose.countDown()
+            assertTrue(operations.awaitTermination(1, TimeUnit.SECONDS))
+            assertTrue(handleClosed.get())
+            assertTrue(owners.retryFailedCleanup(first))
+            assertTrue(replacementEntered.await(1, TimeUnit.SECONDS))
+        } finally {
+            allowFailurePublication.countDown()
+            allowHandleClose.countDown()
+            replacement.interrupt()
+            replacement.join(1_000)
+            operations.shutdownNow()
+            cleanupExecutor.shutdownNow()
         }
     }
 

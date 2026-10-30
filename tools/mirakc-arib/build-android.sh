@@ -9,8 +9,8 @@ set -eu
 
 project_root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd -P)
 source_url=${MIRAKC_ARIB_SOURCE_URL:-https://github.com/mirakc/mirakc-arib.git}
-source_ref=${MIRAKC_ARIB_SOURCE_REF:-3266523d535b301141c533592a46d32617094439}
-source_dir=${MIRAKC_ARIB_SOURCE_DIR:-$project_root/.work/mirakc-arib-0.24.39}
+source_ref=${MIRAKC_ARIB_SOURCE_REF:-312168e85b30941a1fc0344900fd543a036ea341}
+source_dir=${MIRAKC_ARIB_SOURCE_DIR:-$project_root/.work/mirakc-arib-0.24.40}
 requested_abi=${ANDROID_ABI:-${MIRAKC_ARIB_ABI:-armeabi-v7a}}
 build_dir=${MIRAKC_ARIB_BUILD_DIR:-$project_root/.work/build-mirakc-arib-$requested_abi}
 output=${MIRAKC_ARIB_OUTPUT:-$project_root/mirakc/src/main/jniLibs/$requested_abi/libmirakc-arib.so}
@@ -18,11 +18,23 @@ abi=$requested_abi
 api=${MIRAKC_ARIB_API:-24}
 ndk=${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}
 clean_room=${MIRAKC_CLEAN_ROOM:-0}
+source_scratch=
 
 fail()
 {
     printf '%s\n' "mirakc-arib Android build: $*" >&2
     exit 1
+}
+
+cleanup_source_scratch()
+{
+    if [ -n "$source_scratch" ]; then
+        case "$source_scratch" in
+            "$work_root"/mirakc-arib-source-"$abi".*) rm -rf -- "$source_scratch" ;;
+            *) printf '%s\n' 'mirakc-arib Android build: refusing to remove unmanaged source scratch' >&2; return 1 ;;
+        esac
+        source_scratch=
+    fi
 }
 
 case "$clean_room" in
@@ -137,31 +149,72 @@ else
         git clone --recurse-submodules --no-shallow-submodules "$source_url" "$source_dir"
     fi
 
+    git -C "$source_dir" diff --ignore-submodules=all --quiet \
+        || fail "source tree has tracked modifications: $source_dir"
+    git -C "$source_dir" diff --ignore-submodules=all --cached --quiet \
+        || fail "source tree has staged modifications: $source_dir"
+    [ -z "$(git -C "$source_dir" status --porcelain=v1 --untracked-files=all)" ] \
+        || fail "source tree has untracked files: $source_dir"
+    git -C "$source_dir" submodule status --recursive \
+        | awk 'substr($1,1,1) == "+" || substr($1,1,1) == "-" || substr($1,1,1) == "U" { bad=1 } END { exit bad }' \
+        || fail 'one or more recursive submodules do not match the pinned gitlinks'
+    # The command is evaluated by each submodule, not this shell.
+    # shellcheck disable=SC2016
+    git -C "$source_dir" submodule foreach --quiet --recursive \
+        'test -z "$(git status --porcelain=v1 --untracked-files=all)"' \
+        || fail 'recursive source checkout must be clean before build'
+
     git -C "$source_dir" fetch --no-tags "$source_url" "$source_ref"
     git -C "$source_dir" checkout --detach "$source_ref"
     git -C "$source_dir" submodule sync --recursive
     git -C "$source_dir" submodule update --init --recursive
     [ "$(git -C "$source_dir" rev-parse HEAD)" = "$source_ref" ] || fail "source ref mismatch"
+
+    git -C "$source_dir" diff --ignore-submodules=all --quiet \
+        || fail "pinned source tree has tracked modifications: $source_dir"
+    git -C "$source_dir" diff --ignore-submodules=all --cached --quiet \
+        || fail "pinned source tree has staged modifications: $source_dir"
+    [ -z "$(git -C "$source_dir" status --porcelain=v1 --untracked-files=all)" ] \
+        || fail "pinned source tree has untracked files: $source_dir"
+    git -C "$source_dir" submodule status --recursive \
+        | awk 'substr($1,1,1) == "+" || substr($1,1,1) == "-" || substr($1,1,1) == "U" { bad=1 } END { exit bad }' \
+        || fail 'one or more recursive submodules do not match the pinned gitlinks'
+    # The command is evaluated by each submodule, not this shell.
+    # shellcheck disable=SC2016
+    git -C "$source_dir" submodule foreach --quiet --recursive \
+        'test -z "$(git status --porcelain=v1 --untracked-files=all)"' \
+        || fail 'recursive pinned source checkout must be clean'
+
+    source_scratch=$(mktemp -d "$work_root/mirakc-arib-source-$abi.XXXXXX")
+    trap cleanup_source_scratch EXIT
+    /bin/sh "$project_root/tools/mirakc-arib/prepare-build-source.sh" "$source_dir" "$source_scratch" "$work_root"
+    source_dir=$source_scratch
+    clean_room=1
+fi
+
+if [ "$clean_room" -eq 1 ]; then
+    for vendor in spdlog libisdb; do
+        vendor_dir=$source_dir/vendor/$vendor
+        vendor_root=$(git -C "$vendor_dir" rev-parse --show-toplevel 2>/dev/null) \
+            || fail "vendor source does not have a local Git repository: $vendor"
+        expected_root=$(CDPATH='' cd -- "$vendor_dir" && pwd -P) \
+            || fail "vendor source directory is inaccessible: $vendor"
+        [ "$vendor_root" = "$expected_root" ] \
+            || fail "vendor Git root is not isolated from parent checkouts: $vendor"
+    done
 fi
 
 # ExternalProject builds aribb24 in-source and TSDuck regenerates files in its
 # submodule.  Remove those outputs before each ABI build so no host objects or
 # stale generated headers can be reused.  Tracked edits in the top-level source
 # are refused; reviewed ExternalProject patches are reapplied below.
-# Ignore submodule worktree state for the parent check: ExternalProject
-# applies its reviewed source patches in-place, then reset every submodule
-# below to the gitlink before starting this build.
+# Apply source cleanup and ExternalProject mutations only in the per-invocation
+# scratch tree; the pinned checkout remains an immutable Gradle cache input.
 source_patch_backup=$work_root/mirakc-arib-source-CMakeLists-$abi
 if [ "$clean_room" -eq 1 ]; then
     cp -f "$source_dir/CMakeLists.txt" "$source_patch_backup"
 else
-    git -C "$source_dir" checkout -- CMakeLists.txt
-    git -C "$source_dir" diff --ignore-submodules=all --quiet \
-        || fail "source tree has tracked modifications: $source_dir"
-    git -C "$source_dir" diff --ignore-submodules=all --cached --quiet \
-        || fail "source tree has staged modifications: $source_dir"
-    git -C "$source_dir" clean -ffdqx
-    git -C "$source_dir" submodule foreach --recursive 'git reset --hard && git clean -ffdqx'
+    fail 'mutable ARIB builds require an isolated source scratch tree'
 fi
 
 android_patch=$project_root/tools/mirakc-arib/patches/tsduck-android.patch
@@ -177,6 +230,8 @@ restore_source_patch()
         fi
         source_patch_applied=0
     fi
+    rm -f -- "$source_patch_backup"
+    cleanup_source_scratch
 }
 trap restore_source_patch EXIT
 patch -d "$source_dir" -p0 < "$android_patch"

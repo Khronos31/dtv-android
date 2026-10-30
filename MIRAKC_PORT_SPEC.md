@@ -1,41 +1,53 @@
 # mirakc Android port specification
 
-Status: Draft; Phase 0 feasibility is complete; remaining acceptance evidence is open
-Date: 2026-10-02
+Status: Draft; four-product packaging implementation in progress; integration and acceptance evidence remain open
+Date: 2026-10-30
 
 ## Objective
 
 Replace the Kotlin Mirakurun-compatible server in the `mirakc` APK with an
 Android port of upstream mirakc, while keeping Android-specific lifecycle and
-USB-permission handling in a thin Kotlin/JNI supervisor. Package pinned,
-published releases of both tuner backends so one APK can operate Siano RIO devices
-and multiple PX4 enclosures without a kernel driver. The Android software
+USB-permission handling in a thin Kotlin/JNI supervisor. Package four pinned
+userland products so one APK can operate Siano RIO devices, PX4 enclosures,
+ASICEN enclosures and PIX tuners without a kernel driver. The Android software
 profile matrix covers every USB `DeviceProfile` in the pinned px4-userland
-source: all 16 products listed in its v0.1.10 `identity.cpp` table, including
+source: all 16 products listed in its pinned `identity.cpp` table, including
 the DTV/e-Better counterparts. This is a software mapping scope, not a claim
 that every model has passed Android hardware validation. The upstream README
 and its per-model validation evidence remain authoritative for hardware status.
 
-The dependency refresh pins the following published upstream tags (2026-10-08):
+The dependency refresh pins these exact product and shared-source commits (2026-10-30):
 
-- mirakc `3.4.88` (`09664c2eefd0dccc38cabd3717b081ac84bf0833`);
-- mirakc-arib `0.24.39` (`3266523d535b301141c533592a46d32617094439`);
-- siano-userland `v0.1.10` (`89c240b8af021d55d81b3b90fce79a3690605811`);
-- px4-userland `v0.1.10` (`7ad5f6691f77a9aa58c4097f8b6dfea77f6d9b6a`).
+- mirakc `3.4.91` (`4f0767e87b109cabd17ed1ded0311355244fa018`);
+- mirakc-arib `0.24.40` (`312168e85b30941a1fc0344900fd543a036ea341`);
+- px4-userland `1.0.0` (`5c91e8c57b288c0f490061789829e42dbbf61b3d`);
+- siano-userland `1.0.0` (`33c3468e7e10781ae6c7e9a5fd57a0c1b0825288`);
+- asicen-userland `1.0.0` (`e2a86ca194b60f1111ecfa0a020cd0944c351c76`);
+- pix-userland `1.0.0` (`66f5a731784d205d1d306edda9cc57071c087f8e`);
+- dtv-userland-core `1.0.0` (`67420d1c909e9205841612a186ae4c7fbf4dd092`).
+
+Siano also pins its nested px4-userland source at
+`90b08dfe79b0b40e393f015975c761863830866a`; ASICEN carries its tracked PX4
+reference at `dd1c1bea16a5871085d5f2a42c009364c1ec7345`. Product source pins do
+not replace these nested dependency pins.
 
 Builds remain reproducible by pinning these exact refs rather than following a
-moving branch. The v0.1.10 Siano update has only been statically inspected;
-integration and hardware behavior remain unverified.
-The new pins have only been statically inspected in this change. Required
-next-release verification is tracked in
+moving branch. The final Core receiver-control patch is pinned by SHA-256
+`9da0cf46a7727a5c7e20de165babd0bc2d78e47c119cad38c1f2c00abeb10521`; its
+deterministic host concurrency proof and upstream review are recorded in
+[dtv-userland-core PR 121](https://github.com/Khronos31/dtv-userland-core/pull/121).
+This host evidence does not establish tuner hardware behavior. Four-product
+hardware behavior remains unverified. Required verification is tracked in
 [`tools/mirakc/PENDING-DEPENDENCY-VALIDATION.md`](tools/mirakc/PENDING-DEPENDENCY-VALIDATION.md).
 
 ## Acceptance criteria
 
 1. `./gradlew --no-daemon :mirakc:assembleDebug` exits 0 from a clean checkout
-   and builds every bundled native program from the four pinned source trees.
+   and builds every bundled native program from the four product pins and exact
+   transitive Core/PX4 pins.
 2. An APK inventory check finds Android API 24 PIE executables for every enabled
-   ABI: `mirakc`, `mirakc-arib`, `siano-ts`, `px4d`, `px4-ts`, and `px4ctl`.
+   ABI: `mirakc`, `mirakc-arib`, each product's daemon, ctl and TS programs, and
+   the Siano, PX4 and ASICEN adapters.
    `readelf` must show the Android loader, 16 KiB-compatible `PT_LOAD`
    alignment, no `RPATH`/`RUNPATH`, and only an explicit allow-list of Bionic
    shared libraries.
@@ -51,7 +63,7 @@ next-release verification is tracked in
 4. `./gradlew --no-daemon test :mirakc:lintDebug` exits 0.  Existing tests and
    their expected values are not weakened or skipped.
 5. On the Google TV Streamer, the Android foreground service starts the bundled
-   upstream mirakc, `GET /api/version` reports `3.4.88`, and stopping/restarting
+   upstream mirakc, `GET /api/version` reports `3.4.91`, and stopping/restarting
    the service leaves no mirakc, mirakc-arib, siano or px4 child processes.
    Across ten tune/job/stop/reconnect cycles, `/proc/<pid>/fd` confirms that
    mirakc and unrelated children inherit no USB or smart-card descriptors and
@@ -65,8 +77,9 @@ next-release verification is tracked in
    mapping only. With a PX-Q3U4, Android grants both bridge permissions, one `px4d` owns both
    descriptors, mirakc exposes eight tuners (four GR and four BS/CS), and at
    least one GR and one BS service stream pass MPEG-TS integrity checks. The
-   built-in card path descrambles 12-seg content. Verified on the connected
-   PX-Q3U4 hardware.
+   built-in card path must descramble 12-seg content. This device acceptance
+   gate has not been completed for this four-product integration; host proofs do
+   not count as hardware validation.
 8. EPGStation Server using `http://127.0.0.1:40772/` can scan channels, receive
    schedule updates and start/stop live streams without API-shape workarounds
    in EPGStation.
@@ -121,8 +134,8 @@ next-release verification is tracked in
 | Candidate | Classification | Evidence |
 | --- | --- | --- |
 | Former Kotlin server in this repository | adapt/reference | Reuse its Android lifecycle, UsbManager and proven CCID/libarib25 code.  It is no longer the APK's HTTP, EPG or stream implementation. |
-| `mirakc/mirakc` 3.4.88 | adapt/port | Canonical server.  Its pinned Rust workspace is the source for the Android build; Android packaging and descriptor inheritance are not upstream features. |
-| `mirakc/mirakc-arib` 0.24.39 | adapt/port | Canonical companion commands used by mirakc jobs and filters.  The pinned source and submodules are built for Android by the repository harness. |
+| `mirakc/mirakc` 3.4.91 | adapt/port | Canonical server.  Its pinned Rust workspace is the source for the Android build; Android packaging and descriptor inheritance are not upstream features. |
+| `mirakc/mirakc-arib` 0.24.40 | adapt/port | Canonical companion commands used by mirakc jobs and filters.  The pinned source and submodules are built for Android by the repository harness. |
 | Linux/musl mirakc container binaries | reject | Wrong ABI/runtime for Bionic and cannot receive Android UsbManager descriptors. |
 | Public Android mirakc ports | build | GitHub repository and code searches on 2026-09-13 found no maintained Android port to adopt. |
 | `hassio-addons/mirakc` | adapt/reference | Reuse configuration and process topology concepts; its container/device access model cannot be adopted on Android. |
@@ -137,7 +150,7 @@ next-release verification is tracked in
    unverified because that device exposes no 64-bit ABI.  Risk: Linux
    assumptions compile but fail at runtime.
 2. **Mandatory mirakc-arib feasibility gate.** Before replacing any Kotlin
-   server path, cross-build the exact, unpruned `0.24.39` source and submodules
+   server path, cross-build the exact, unpruned `0.24.40` source and submodules
    for armv7a, package and execute it from `nativeLibraryDir`, and pass upstream
    or behavior-equivalent fixtures for `scan-services`, `sync-clocks`,
    `collect-eits`, `filter-service`, and `filter-program`.  Measure one live
@@ -216,10 +229,12 @@ bridge/receiver/T/S properties. Its README and validation table identify which
 hardware profiles are verified or unverified; APK mapping does not upgrade
 those statuses or claim Android hardware operation.
 
-The 2026-10-08 dependency refresh selects px4-userland v0.1.10
-(`7ad5f6691f77a9aa58c4097f8b6dfea77f6d9b6a`). Static inspection found the
-same 16 profile IDs, but mapping/build/runtime compatibility against that tag
-is not yet verified; see
+The 2026-10-30 dependency refresh selects px4-userland 1.0.0
+(`5c91e8c57b288c0f490061789829e42dbbf61b3d`). It still lists the 16 software
+profiles. The final pinned Core concurrency patch has deterministic host proof
+and upstream review in [PR 121](https://github.com/Khronos31/dtv-userland-core/pull/121);
+this is not Android hardware validation. Mapping/build/runtime compatibility and
+device behavior remain separate acceptance gates. See
 [`tools/mirakc/PENDING-DEPENDENCY-VALIDATION.md`](tools/mirakc/PENDING-DEPENDENCY-VALIDATION.md).
 
 Two-bridge Q3-family devices pair only within the exact same product profile,

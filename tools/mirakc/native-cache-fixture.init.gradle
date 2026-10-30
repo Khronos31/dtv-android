@@ -1,0 +1,16 @@
+gradle.settingsEvaluated { settings ->
+    settings.buildCache.local.directory = new File(System.getenv('MIRAKC_CACHE_FIXTURE_CACHE'))
+}
+
+gradle.projectsEvaluated {
+    def project = gradle.rootProject.project(':mirakc')
+    ['prepareMirakcBinary', 'prepareMirakcAribBinaries'].each { name ->
+        def task = project.tasks.named(name).get()
+        def output = new File(System.getenv('MIRAKC_CACHE_FIXTURE_OUTPUTS'), name + '.so')
+        task.actions.clear()
+        task.doLast {
+            output.parentFile.mkdirs()
+            output.text = "mock native compiler output for ${name}\n"
+        }
+    }
+}

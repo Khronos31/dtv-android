@@ -120,6 +120,93 @@ void test_normal_and_card_chaining() {
     }
 }
 
+void test_retransmission_succeeds_after_card_error() {
+    // The card reports transmission errors on an I-block, then accepts the
+    // byte-identical retransmission within the bounded retry budget.
+    FakeTransport transport;
+    transport.respond = [&](const Bytes& request) {
+        const std::size_t call = transport.requests.size();
+        if (call <= 2) {
+            expect(pcb(request) == 0x40, "retransmission keeps N(S) before success");
+            return block(0x91);
+        }
+        expect(call == 3 && pcb(request) == 0x40, "third attempt keeps N(S)");
+        return block(0x40, {0x77});
+    };
+    const Bytes apdu{0x11, 0x22};
+    std::uint8_t send = 1;
+    std::uint8_t receive = 1;
+    std::uint8_t response[8] = {};
+    const int length = t1_sm_transmit(apdu.data(), static_cast<int>(apdu.size()), response,
+                                      sizeof(response), &send, &receive, 32,
+                                      FakeTransport::exchange, &transport);
+    expect(length == 1 && response[0] == 0x77, "success after bounded retransmission");
+    expect(transport.requests.size() == 3, "two error retries then success");
+    expect(transport.requests[1] == transport.requests[0] &&
+               transport.requests[2] == transport.requests[0],
+           "byte-identical retransmission before success");
+    expect(send == 0 && receive == 0, "sequence committed once after recovered exchange");
+}
+
+void test_s_block_wtx_request_is_answered() {
+    // The card stalls with repeated S(WTX) requests before answering the
+    // I-block; the host must echo each WTX without touching T=1 state.
+    FakeTransport transport;
+    transport.respond = [&](const Bytes& request) {
+        const std::size_t call = transport.requests.size();
+        if (call == 1) {
+            expect(pcb(request) == 0, "wtx test request N(S)=0");
+            return block(0xc3, {0x05});
+        }
+        if (call == 2) {
+            expect(pcb(request) == 0xe3, "wtx response echoes the request type");
+            expect(request.size() == 5 && request[3] == 0x05, "wtx response echoes INF");
+            return block(0xc3, {0x05});
+        }
+        expect(call == 3 && pcb(request) == 0xe3, "second wtx response");
+        return block(0, {0x99});
+    };
+    const Bytes apdu{0x42};
+    std::uint8_t send = 0;
+    std::uint8_t receive = 0;
+    std::uint8_t response[8] = {};
+    const int length = t1_sm_transmit(apdu.data(), static_cast<int>(apdu.size()), response,
+                                      sizeof(response), &send, &receive, 32,
+                                      FakeTransport::exchange, &transport);
+    expect(length == 1 && response[0] == 0x99, "response after wtx extensions");
+    expect(transport.requests.size() == 3, "wtx handshake exchange count");
+    expect(send == 1 && receive == 1, "wtx handshake leaves sequence state to the I-blocks");
+}
+
+void test_s_block_wtx_during_card_chaining() {
+    // A WTX request may also arrive while the host acknowledges chained
+    // card blocks; it must be answered without disturbing the chain.
+    FakeTransport transport;
+    transport.respond = [&](const Bytes& request) {
+        const std::size_t call = transport.requests.size();
+        if (call == 1) {
+            expect(pcb(request) == 0, "chained wtx request N(S)=0");
+            return block(0x20, {0x10});
+        }
+        if (call == 2) {
+            expect(pcb(request) == 0x90, "chained acknowledgement N(R)=1");
+            return block(0xc3, {0x02});
+        }
+        expect(call == 3 && pcb(request) == 0xe3, "wtx response inside chaining");
+        return block(0x40, {0x11});
+    };
+    const Bytes apdu{0x07};
+    std::uint8_t send = 0;
+    std::uint8_t receive = 0;
+    std::uint8_t response[8] = {};
+    const int length = t1_sm_transmit(apdu.data(), static_cast<int>(apdu.size()), response,
+                                      sizeof(response), &send, &receive, 32,
+                                      FakeTransport::exchange, &transport);
+    expect(length == 2 && response[0] == 0x10 && response[1] == 0x11,
+           "chained response reassembled across wtx");
+    expect(send == 1 && receive == 0, "chained wtx sequence update");
+}
+
 void test_error_retransmission_and_resynch() {
     FakeTransport transport;
     transport.respond = [&](const Bytes& request) {
@@ -280,6 +367,9 @@ void test_invalid_resynch_response_fails_before_retry() {
 
 int main() {
     test_normal_and_card_chaining();
+    test_retransmission_succeeds_after_card_error();
+    test_s_block_wtx_request_is_answered();
+    test_s_block_wtx_during_card_chaining();
     test_error_retransmission_and_resynch();
     test_resynch_resets_nonzero_sequence();
     test_terminal_failure_and_unexpected_sequence();

@@ -18,6 +18,10 @@ mirakc/src/main/assets/isdbt_rio.inp
 .work/
 /siano-userland/
 /px4-userland/
+/asicen-userland/
+/pix-userland/
+/dtv-userland-core/
+/siano-px4-userland/
 /px4_drv/
 /legacy-dtv/
 /legacy-siano-userland/

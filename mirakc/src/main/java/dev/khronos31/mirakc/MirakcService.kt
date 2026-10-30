@@ -24,6 +24,7 @@ import java.io.File
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import dev.khronos31.updater.GitHubReleaseUpdater
 import dev.khronos31.mirakc.ui.contract.AboutUi
 import dev.khronos31.mirakc.ui.contract.MirakcUiAction
@@ -103,12 +104,14 @@ class MirakcService : Service() {
             destinationDirectory = { getExternalFilesDir(null) }
         )
     }
+    private val asicenProvisioning by lazy { AsicenProvisioningController(::invokeAsicenProvisioning) }
 
     private val usbPermissionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action != USB_PERMISSION_ACTION) return
             val responseScanId = intent.getLongExtra(USB_PERMISSION_SCAN_ID, 0L)
             val responseOwnerToken = intent.getStringExtra(USB_PERMISSION_OWNER_TOKEN)
+            val responseStageToken = intent.getStringExtra(USB_PERMISSION_STAGE_TOKEN)
             val owner = runtimeOwner ?: return
             if (responseOwnerToken != owner.token || !isCurrentOwner(owner)) return
             val device = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
@@ -133,6 +136,40 @@ class MirakcService : Service() {
                 }
                 UsbPermissionEvent(scanId, decision, device, granted)
             } ?: return
+            if (event.scanId == 0L && device != null &&
+                MirakcUsbEventPolicy.isAsicenTuner(device.vendorId, device.productId)
+            ) {
+                val currentDevice = userlandUsbDevices().singleOrNull {
+                    it.deviceName == device.deviceName && it.vendorId == device.vendorId && it.productId == device.productId
+                } ?: return
+                asicenProvisioning.refresh(userlandIdentities())
+                if (responseStageToken != asicenProvisioning.permissionTicket(currentDevice.deviceName)) return
+                executeOperation(owner) {
+                    try {
+                        asicenProvisioning.refresh(userlandIdentities())
+                        val stage = asicenProvisioning.permissionGranted(device.deviceName, event.granted)
+                        if (!isCurrentOwner(owner)) return@executeOperation
+                        if (event.granted && MirakcUsbEventPolicy.requiresAsicenReconfigureOnPermissionGrant(
+                            device.vendorId, device.productId, stage
+                        )) {
+                            mirakcSupervisor?.reconfigure()
+                        }
+                    } catch (error: Exception) {
+                        if (!isCurrentOwner(owner)) return@executeOperation
+                        asicenProvisioning.failed(device.deviceName, error.message ?: error.javaClass.simpleName)
+                        lastError = "ASICEN provisioning failed: ${error.message ?: error.javaClass.simpleName}"
+                    }
+                    publishStatus()
+                    if (isCurrentOwner(owner)) {
+                        hostHandler.post {
+                            if (!isCurrentOwner(owner)) return@post
+                            refreshUiController()
+                            if (event.granted) requestUsbPermissionIfNeeded()
+                        }
+                    }
+                }
+                return
+            }
             if (granted && device != null) {
                 val stillCurrent = synchronized(serviceLock) {
                     if (!isCurrentOwner(owner) || (event.scanId != 0L && pendingScanId != event.scanId)) {
@@ -180,6 +217,10 @@ class MirakcService : Service() {
             val isCcidReader = isSmartCardReader(device)
             if (!isAttached && MirakcUsbEventPolicy.isPx4Tuner(device.vendorId, device.productId)) {
                 mirakcSupervisor?.invalidatePx4Device(device.deviceName)
+            }
+            if (!isAttached && (MirakcUsbEventPolicy.isPixTuner(device.vendorId, device.productId) ||
+                    MirakcUsbEventPolicy.isAsicenTuner(device.vendorId, device.productId))) {
+                mirakcSupervisor?.invalidateUserlandDevice(device.deviceName)
             }
             if (isAttached && isUsbPermissionTarget(device)) requestUsbPermissionIfNeeded()
             if (MirakcUsbEventPolicy.requiresMirakcReconfigureOnLifecycle(
@@ -352,6 +393,9 @@ class MirakcService : Service() {
         px4Devices = ::permittedPx4Identities,
         openPx4 = ::openPx4ForDaemon,
         px4Firmware = ::ensurePx4Firmware,
+        userlandDevices = ::permittedUserlandIdentities,
+        openUserlandUsb = ::openUserlandUsb,
+        onUserlandReady = asicenProvisioning::confirmReady,
         onStateChanged = { if (isCurrentOwner(owner)) onSupervisorStateChanged(owner) },
         onStartupResult = { success ->
             if (isCurrentOwner(owner)) onSupervisorStartupResult(success) else false
@@ -369,6 +413,17 @@ class MirakcService : Service() {
     private fun isCurrentOwner(owner: MirakcProcessRuntimeOwner.Owner): Boolean =
         !serviceDestroyed && runtimeOwner == owner && PROCESS_RUNTIME_OWNER.isCurrent(owner)
 
+    private fun executeOperation(owner: MirakcProcessRuntimeOwner.Owner, operation: () -> Unit) {
+        if (!isCurrentOwner(owner)) return
+        try {
+            operations.execute {
+                if (isCurrentOwner(owner)) operation()
+            }
+        } catch (_: RejectedExecutionException) {
+            // A late callback can race Service destruction and executor shutdown.
+        }
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (!initialized) onCreate()
         when (intent?.action) {
@@ -377,7 +432,10 @@ class MirakcService : Service() {
                 if (!runtimeAdmissionReady) requestRuntimeAdmissionRetry()
                 if (requestedPublicRunning() && isSetupPrepared()) mirakcSupervisor?.start()
             }
-            ACTION_REQUEST_USB -> uiController.dispatch(MirakcUiAction.RequestUsbPermission)
+            ACTION_REQUEST_USB -> {
+                asicenProvisioning.retry()
+                uiController.dispatch(MirakcUiAction.RequestUsbPermission)
+            }
             ACTION_APPLY_TERRESTRIAL -> uiController.dispatch(
                 MirakcUiAction.SaveChannels(TerrestrialChannelSettings.inputText(terrestrialSettings.inputState().channels))
             )
@@ -408,6 +466,7 @@ class MirakcService : Service() {
             pendingScanStatus = null
         }
         ownerAcquisitionThread?.interrupt()
+        asicenProvisioning.cancel()
         hostHandler.removeCallbacks(controllerRefresh)
         if (::uiController.isInitialized) uiController.close()
         controllerExecutor.shutdownNow()
@@ -427,6 +486,7 @@ class MirakcService : Service() {
                         throw IllegalStateException("mirakc supervisor did not reach quiescence")
                     }
                 }
+                RuntimeOperationDrain.awaitTermination(operations, OPERATION_QUIESCENCE_TIMEOUT_MS)
                 if (runtimeOwner == owner) {
                     MirakcDiagnostics.triggerUpdateSchedules = null
                     grScanStatusProvider = null
@@ -504,16 +564,50 @@ class MirakcService : Service() {
     }
 
     private fun requestUsbPermissionIfNeeded() {
+        val owner = runtimeOwner ?: return
+        asicenProvisioning.refresh(userlandIdentities())
+        val asicenTarget = asicenProvisioning.nextPermissionTarget()
+        if (asicenTarget != null) {
+            val device = userlandUsbDevices().firstOrNull { it.deviceName == asicenTarget.deviceName } ?: return
+            if (usbManager.hasPermission(device)) {
+                executeOperation(owner) {
+                    try {
+                        val stage = asicenProvisioning.permissionGranted(device.deviceName, true)
+                        if (!isCurrentOwner(owner)) return@executeOperation
+                        if (MirakcUsbEventPolicy.requiresAsicenReconfigureOnPermissionGrant(
+                                device.vendorId, device.productId, stage
+                            )) mirakcSupervisor?.reconfigure()
+                    } catch (error: Exception) {
+                        if (!isCurrentOwner(owner)) return@executeOperation
+                        asicenProvisioning.failed(device.deviceName, error.message ?: error.javaClass.simpleName)
+                        lastError = "ASICEN provisioning failed: ${error.message ?: error.javaClass.simpleName}"
+                    }
+                    if (isCurrentOwner(owner)) {
+                        publishStatus()
+                        hostHandler.post {
+                            if (!isCurrentOwner(owner)) return@post
+                            refreshUiController()
+                            requestUsbPermissionIfNeeded()
+                        }
+                    }
+                }
+            } else {
+                val ticket = asicenProvisioning.permissionTicket(device.deviceName) ?: return
+                requestUsbPermission(device, owner, scanId = 0L, stageToken = ticket)
+                statusText = "USB permission dialog requested for ASICEN stage at ${device.deviceName}"
+                publishStatus()
+            }
+            return
+        }
         val pending = scanPermissionDevices().firstOrNull { !usbManager.hasPermission(it) }
         if (pending != null) {
-            val owner = runtimeOwner ?: return
             requestUsbPermission(pending, owner, scanId = 0L)
             statusText = "USB permission dialog requested for ${pending.deviceName}"
             publishStatus()
             return
         }
-        if (supportedDevices().isEmpty() && px4Devices().isEmpty()) {
-            lastError = "No supported tuner found (Siano or supported PX4 device)"
+        if (supportedDevices().isEmpty() && px4Devices().isEmpty() && userlandUsbDevices().isEmpty()) {
+            lastError = "No supported tuner found (Siano, PX4, PIX or ASICEN device)"
             publishStatus()
             return
         }
@@ -628,6 +722,85 @@ class MirakcService : Service() {
         it.vendorId == 0x0511 && it.productId in PX4_PRODUCT_IDS
     }.sortedBy { it.deviceName }
 
+    private fun userlandUsbDevices(): List<UsbDevice> = usbManager.deviceList.values.filter {
+        MirakcUsbEventPolicy.isPixTuner(it.vendorId, it.productId) ||
+            MirakcUsbEventPolicy.isAsicenTuner(it.vendorId, it.productId)
+    }.sortedBy { it.deviceName }
+
+    private fun userlandIdentities(): List<UserlandUsbIdentity> =
+        userlandUsbDevices().mapNotNull { device ->
+            val path = UserlandUsbTopology.resolve(device.deviceName)
+            if (path != null || MirakcUsbEventPolicy.isPixTuner(device.vendorId, device.productId)) {
+                UserlandUsbIdentity(device.deviceName, device.vendorId, device.productId, path, usbManager.hasPermission(device))
+            } else null
+        }
+
+    private fun userlandTopologyStatus(): String {
+        val unresolved = userlandUsbDevices().firstOrNull {
+            MirakcUsbEventPolicy.isAsicenTuner(it.vendorId, it.productId) &&
+                UserlandUsbTopology.resolve(it.deviceName) == null
+        }
+        return unresolved?.let {
+            "ASICEN waiting for unique sysfs USB port mapping at ${it.deviceName}"
+        } ?: "ASICEN physical paths are mapped; PIX uses exact granted USB nodes"
+    }
+
+    private fun permittedUserlandIdentities(): List<UserlandUsbIdentity> =
+        userlandIdentities().filter { it.permitted &&
+            (MirakcUsbEventPolicy.isPixTuner(it.vendorId, it.productId) || asicenProvisioning.permitsRuntime(it))
+        }
+
+    private fun invokeAsicenProvisioning(
+        identity: UserlandUsbIdentity,
+        instance: String,
+        firmware: Boolean
+    ): UserlandControl.InvocationResult {
+        val handle = openUserlandUsb(identity)
+        try {
+            val runtime = UserlandRuntimeLayout.runtimeDirectoryForEnclosure(
+                UserlandRuntimeLayout.rootDirectory(filesDir, UserlandProduct.ASICEN), instance
+            )
+            if (!runtime.isDirectory && !runtime.mkdirs()) throw IOException("cannot create ASICEN runtime directory")
+            val args = mutableListOf("--fd", "3", "--runtime-dir", runtime.absolutePath, "--instance", instance, "--group")
+            if (firmware) {
+                val image = File(filesDir, "asicen-loader.bin")
+                if (!image.isFile || image.length() == 0L) {
+                    assets.open("asicen-loader.bin").use { input -> image.outputStream().use { input.copyTo(it) } }
+                }
+                args += listOf("--firmware", image.absolutePath)
+            }
+            return UserlandControl.invoke(
+                File(applicationInfo.nativeLibraryDir, UserlandProduct.ASICEN.daemonLibrary).absolutePath,
+                args, handle.fd
+            )
+        } finally {
+            handle.close()
+        }
+    }
+
+    private fun openUserlandUsb(identity: UserlandUsbIdentity): UserlandOwnedUsb {
+        val device = userlandUsbDevices().firstOrNull {
+            it.deviceName == identity.deviceName && it.vendorId == identity.vendorId &&
+                it.productId == identity.productId && usbManager.hasPermission(it) &&
+                (identity.path == null && MirakcUsbEventPolicy.isPixTuner(it.vendorId, it.productId) ||
+                    identity.path != null && UserlandUsbTopology.resolve(it.deviceName) == identity.path)
+        } ?: throw IOException("No permitted userland USB function at ${identity.path?.canonical ?: identity.deviceName}")
+        val connection = usbManager.openDevice(device)
+            ?: throw IOException("UsbManager.openDevice failed for ${device.deviceName}")
+        val parcel = try {
+            ParcelFileDescriptor.fromFd(connection.fileDescriptor)
+        } catch (error: Exception) {
+            connection.close()
+            throw IOException("Unable to duplicate USB fd", error)
+        }
+        return object : UserlandOwnedUsb {
+            override val fd: Int = parcel.fd
+            override fun close() {
+                try { parcel.close() } finally { connection.close() }
+            }
+        }
+    }
+
     private fun permittedPx4Identities(): List<Px4DeviceIdentity> =
         px4Devices().filter { usbManager.hasPermission(it) }.mapNotNull { device ->
             val serial = try {
@@ -640,7 +813,9 @@ class MirakcService : Service() {
 
     private fun isSmartCardReader(device: UsbDevice): Boolean {
         if (device.vendorId == 0x3275 || device.vendorId == 0x187f ||
-            (device.vendorId == 0x0511 && device.productId in PX4_PRODUCT_IDS)) return false
+            (device.vendorId == 0x0511 && device.productId in PX4_PRODUCT_IDS) ||
+            MirakcUsbEventPolicy.isPixTuner(device.vendorId, device.productId) ||
+            MirakcUsbEventPolicy.isAsicenTuner(device.vendorId, device.productId)) return false
         if (device.vendorId == 0x04E6) return true
         if (device.deviceClass == 0x0B) return true
         for (index in 0 until device.interfaceCount) {
@@ -653,6 +828,7 @@ class MirakcService : Service() {
 
     private fun isUsbPermissionTarget(device: UsbDevice): Boolean =
         MirakcUsbEventPolicy.affectsTunerConfiguration(device.vendorId, device.productId) ||
+            MirakcUsbEventPolicy.isAsicenTuner(device.vendorId, device.productId) ||
             isSmartCardReader(device)
 
     private fun openUsbForTuner(index: Int, deviceName: String): SianoUsbHandle {
@@ -777,6 +953,9 @@ class MirakcService : Service() {
             } ?: "stopped")
             append("\nUpstream: ").append(mirakcSupervisor?.status() ?: "stopped")
             append("\nPX4: ").append(mirakcSupervisor?.px4Status() ?: "stopped")
+            append("\n").append(mirakcSupervisor?.userlandStatus() ?: "PIX / ASICEN: stopped")
+            append("\nUserland topology: ").append(userlandTopologyStatus())
+            append("\nASICEN provisioning: ").append(asicenProvisioning.status())
             append("\nLast error: ").append(lastError)
         }
     }
@@ -891,7 +1070,7 @@ class MirakcService : Service() {
                         true
                     }
                 }
-                if (admitted) operations.execute { startScanRuntime(scanId) }
+                if (admitted && owner != null) executeOperation(owner) { startScanRuntime(scanId) }
             }
             ScanPermissionContinuation.Decision.Denied -> {
                 synchronized(serviceLock) {
@@ -992,7 +1171,7 @@ class MirakcService : Service() {
                     requestedScanId.compareAndSet(scanId, 0L)
                 }
             }
-            if (stopFailedStart) operations.execute { supervisor.stop() }
+            if (stopFailedStart) executeOperation(owner) { supervisor.stop() }
         } catch (error: Exception) {
             val ownsFailure = synchronized(serviceLock) {
                 if (isCurrentOwner(owner) && pendingScanId == scanId && scanHandoff.finish(scanId)) {
@@ -1010,7 +1189,10 @@ class MirakcService : Service() {
     }
 
     private fun scanPermissionDevices(): List<UsbDevice> = combineUsbPermissionTargets(
-        supportedDevices() + px4Devices(),
+        supportedDevices() + px4Devices() + userlandUsbDevices().filter {
+            !MirakcUsbEventPolicy.isAsicenTuner(it.vendorId, it.productId) ||
+                MirakcUsbEventPolicy.isAsicenRuntimeTuner(it.vendorId, it.productId)
+        },
         readerDevices(),
         UsbDevice::getDeviceName
     )
@@ -1018,7 +1200,8 @@ class MirakcService : Service() {
     private fun requestUsbPermission(
         device: UsbDevice,
         owner: MirakcProcessRuntimeOwner.Owner,
-        scanId: Long
+        scanId: Long,
+        stageToken: String? = null
     ) {
         synchronized(serviceLock) {
             if (!isCurrentOwner(owner)) return
@@ -1029,14 +1212,18 @@ class MirakcService : Service() {
             }
             val flags = PendingIntent.FLAG_UPDATE_CURRENT or
                 if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0
+            val permissionUri = USB_PERMISSION_URI_SCHEME + "://" + USB_PERMISSION_URI_AUTHORITY +
+                "/" + owner.token + "/" + device.deviceId + "/" + scanId + (stageToken?.let { "/$it" } ?: "")
+            val permissionRequest = Intent(USB_PERMISSION_ACTION)
+                .setPackage(packageName)
+                .setData(android.net.Uri.parse(permissionUri))
+                .putExtra(USB_PERMISSION_SCAN_ID, scanId)
+                .putExtra(USB_PERMISSION_OWNER_TOKEN, owner.token)
+            if (stageToken != null) permissionRequest.putExtra(USB_PERMISSION_STAGE_TOKEN, stageToken)
             val permissionIntent = PendingIntent.getBroadcast(
                 this,
                 device.deviceId,
-                Intent(USB_PERMISSION_ACTION)
-                    .setPackage(packageName)
-                    .setData(android.net.Uri.parse("$USB_PERMISSION_URI_SCHEME://$USB_PERMISSION_URI_AUTHORITY/${owner.token}/${device.deviceId}/$scanId"))
-                    .putExtra(USB_PERMISSION_SCAN_ID, scanId)
-                    .putExtra(USB_PERMISSION_OWNER_TOKEN, owner.token),
+                permissionRequest,
                 flags
             )
             // Keep this short Android permission request inside the same lock as
@@ -1148,6 +1335,9 @@ class MirakcService : Service() {
         val hasPotentialScanTuner = supportedDevices().isNotEmpty() ||
             recognizedPx4Plan.tuners.isNotEmpty() || px4Devices().any { device ->
                 Px4DeviceSelector.modelForProductId(device.productId) != null
+            } || userlandUsbDevices().any { device ->
+                MirakcUsbEventPolicy.isPixTuner(device.vendorId, device.productId) ||
+                    MirakcUsbEventPolicy.isAsicenRuntimeTuner(device.vendorId, device.productId)
             }
         val canScan = !publicActive && !scanActive && hasPotentialScanTuner
         val canCancelScan = scanActive &&
@@ -1313,6 +1503,33 @@ class MirakcService : Service() {
                 permissionGranted = usbManager.hasPermission(device)
             )
         }.forEach(result::add)
+        val userlandGenerations = mirakcSupervisor?.userlandGenerations().orEmpty()
+        userlandGenerations.forEach { generation ->
+            result += TunerDeviceUi(
+                id = generation.instanceToken,
+                displayName = "${generation.product.label} ${generation.instanceToken}",
+                receiverCount = generation.tuners.size,
+                supportsTerrestrial = generation.tuners.any { BroadcastSystem.ISDB_T in it.systems },
+                supportsSatellite = generation.tuners.any { BroadcastSystem.ISDB_S in it.systems },
+                permissionGranted = true
+            )
+        }
+        val mappedUserlandDevices = userlandGenerations.flatMapTo(hashSetOf()) { it.deviceKeys }
+        userlandUsbDevices().forEach { device ->
+            val path = UserlandUsbTopology.resolve(device.deviceName)
+            val key = UserlandUsbIdentity(device.deviceName, device.vendorId, device.productId, path).deviceKey
+            if (key in mappedUserlandDevices) return@forEach
+            val product = if (MirakcUsbEventPolicy.isPixTuner(device.vendorId, device.productId)) UserlandProduct.PIX
+            else UserlandProduct.ASICEN
+            result += TunerDeviceUi(
+                id = "${product.label.lowercase()}:$key",
+                displayName = "${product.label} ${device.productName ?: device.deviceName}",
+                receiverCount = 0,
+                supportsTerrestrial = false,
+                supportsSatellite = false,
+                permissionGranted = usbManager.hasPermission(device)
+            )
+        }
         return result.toList()
     }
 
@@ -1321,7 +1538,10 @@ class MirakcService : Service() {
         val app = metadata?.component("dtv-android")
         val engine = listOfNotNull(metadata?.component("mirakc"))
             .map { VersionRowUi(it.name, it.version) }
-        val drivers = listOfNotNull(metadata?.component("siano-userland"), metadata?.component("px4-userland"))
+        val drivers = listOfNotNull(
+            metadata?.component("siano-userland"), metadata?.component("px4-userland"),
+            metadata?.component("pix-userland"), metadata?.component("asicen-userland")
+        )
             .map { VersionRowUi(it.name, it.version) }
         val unavailable = getString(R.string.about_metadata_unavailable)
         return AboutUi(
@@ -1376,7 +1596,11 @@ class MirakcService : Service() {
             lastError = "Could not save requested server state"
             return
         }
-        if (mirakcSupervisor?.start() == true) lastError = "none" else {
+        asicenProvisioning.beginSession()
+        if (mirakcSupervisor?.start() == true) {
+            lastError = "none"
+            requestUsbPermissionIfNeeded()
+        } else {
             getSharedPreferences(RUNTIME_SETTINGS, MODE_PRIVATE).edit()
                 .putBoolean(REQUESTED_PUBLIC_RUNNING_KEY, false).commit()
             lastError = "Stop the scan runtime before starting mirakc"
@@ -1395,22 +1619,27 @@ class MirakcService : Service() {
 
     private fun isSetupPrepared(): Boolean = terrestrialSettings.isSetupPrepared()
 
-    private fun hasSatelliteTuner(): Boolean = permittedPx4Identities().any { identity ->
-        val model = Px4DeviceSelector.modelForProductId(identity.productId) ?: return@any false
-        (0 until model.receiverCount).any { model.capabilitiesFor(it)?.satellite == true }
-    }
+    private fun hasSatelliteTuner(): Boolean = mirakcSupervisor?.prepareScanTuners()?.any {
+        BroadcastSystem.ISDB_S in it
+    } == true
 
-    private fun hasGrantedTerrestrialTuner(): Boolean = supportedDevices().any(usbManager::hasPermission) ||
-        Px4DeviceSelector.plan(permittedPx4Identities()).tuners.any { it.supportsTerrestrial }
+    private fun hasGrantedTerrestrialTuner(): Boolean = mirakcSupervisor?.prepareScanTuners()?.any {
+        BroadcastSystem.ISDB_T in it
+    } == true
 
     private fun hasUnpermittedTerrestrialTuner(): Boolean = supportedDevices().any { !usbManager.hasPermission(it) } ||
+        userlandUsbDevices().any { !usbManager.hasPermission(it) &&
+            (MirakcUsbEventPolicy.isPixTuner(it.vendorId, it.productId) ||
+                MirakcUsbEventPolicy.isAsicenRuntimeTuner(it.vendorId, it.productId)) } ||
         px4Devices().any { device ->
             if (usbManager.hasPermission(device)) return@any false
             val model = Px4DeviceSelector.modelForProductId(device.productId) ?: return@any false
             (0 until model.receiverCount).any { model.capabilitiesFor(it)?.terrestrial == true }
         }
 
-    private fun hasAttachedSupportedTuner(): Boolean = supportedDevices().isNotEmpty() || px4Devices().isNotEmpty()
+    private fun hasAttachedSupportedTuner(): Boolean = supportedDevices().isNotEmpty() || px4Devices().isNotEmpty() ||
+        userlandUsbDevices().any { MirakcUsbEventPolicy.isPixTuner(it.vendorId, it.productId) ||
+            it.productId in AsicenProvisioningMachine.RUNTIME_IDS }
 
     companion object {
         const val ACTION_HOST = "dev.khronos31.mirakc.HOST"
@@ -1428,11 +1657,13 @@ class MirakcService : Service() {
         private const val USB_PERMISSION_URI_AUTHORITY = "permission"
         private const val USB_PERMISSION_SCAN_ID = "dev.khronos31.mirakc.USB_PERMISSION_SCAN_ID"
         private const val USB_PERMISSION_OWNER_TOKEN = "dev.khronos31.mirakc.USB_PERMISSION_OWNER_TOKEN"
+        private const val USB_PERMISSION_STAGE_TOKEN = "dev.khronos31.mirakc.USB_PERMISSION_STAGE_TOKEN"
         private const val NOTIFICATION_CHANNEL = "mirakc-service"
         private const val NOTIFICATION_ID = 40772
         private const val UI_REFRESH_INTERVAL_MS = 500L
         private const val MAX_SCAN_STATUS_BYTES = 4_096L
         private const val SUPERVISOR_QUIESCENCE_TIMEOUT_MS = 30_000L
+        private const val OPERATION_QUIESCENCE_TIMEOUT_MS = 30_000L
         private const val EPG_SETTINGS = "epg-update-settings"
         private const val TAG = "MirakcService"
         private val updateNoticeSequence = java.util.concurrent.atomic.AtomicLong(0L)
