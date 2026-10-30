@@ -114,6 +114,7 @@ build_tool()
     version=$2
     url=$3
     expected=$4
+    tool_cflags=${5:-}
     archive=$cache_dir/$name-$version.tar.xz
     source=$work_dir/$name-$version
 
@@ -124,7 +125,11 @@ build_tool()
     [ -d "$source" ] || fail "archive did not contain $name-$version"
     (
         cd "$source"
-        ./configure --prefix="$prefix"
+        if [ -n "$tool_cflags" ]; then
+            CFLAGS="$tool_cflags" ./configure --prefix="$prefix"
+        else
+            ./configure --prefix="$prefix"
+        fi
         make -j "$jobs"
         make install
     )
@@ -132,7 +137,9 @@ build_tool()
 
 mkdir -p "$prefix/bin"
 # m4 must be first: autoconf, automake and libtool use it while configuring.
-build_tool m4 "$m4_version" "$m4_url" "$m4_sha256"
+m4_cflags=${CFLAGS:-}
+m4_cflags="${m4_cflags:+$m4_cflags }-std=gnu17"
+build_tool m4 "$m4_version" "$m4_url" "$m4_sha256" "$m4_cflags"
 PATH=$prefix/bin:$PATH
 export PATH
 build_tool autoconf "$autoconf_version" "$autoconf_url" "$autoconf_sha256"
