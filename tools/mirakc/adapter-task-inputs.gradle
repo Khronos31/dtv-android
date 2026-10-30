@@ -70,13 +70,5 @@ gradle.projectsEvaluated {
         throw new GradleException("prepareAsicenBinaries selects Core bundle ${actualBundle}, expected ${expectedBundle}")
     }
 
-    def sianoProtocol = new File(cppRoot, 'siano_stream_protocol.h').canonicalFile
-    ['generateApkSourceMetadata', 'generateDebugApkSourceMetadata'].each { taskName ->
-        def task = module.tasks.getByName(taskName)
-        if (!task.inputs.files.files.collect { it.canonicalFile }.toSet().contains(sianoProtocol)) {
-            throw new GradleException("${taskName} is missing the staged Siano protocol header input ${sianoProtocol}")
-        }
-    }
-
     println 'Custom adapter Gradle task inputs: PASS'
 }

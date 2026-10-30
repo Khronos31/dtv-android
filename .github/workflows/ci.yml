@@ -133,6 +133,8 @@ jobs:
         run: tools/mirakc/test-debug-dtv-deletion-input.sh
       - name: Custom adapter Gradle task input fixture
         run: sh tools/mirakc/test-adapter-task-inputs.sh
+      - name: Native rebuild helper ABI scope fixture
+        run: sh tools/mirakc/test-source-native-helper-scope.sh
       - name: Install Rust Android targets
         run: |
           set -euo pipefail

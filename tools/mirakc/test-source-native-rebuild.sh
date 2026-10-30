@@ -6,6 +6,120 @@
 # also requires the complete native payload inventory.
 set -eu
 
+build_asicen_core_bundle() (
+    tree=$1
+    core_bundle=$(dirname "$tree")/third_party/dtv-userland-core
+    revision=$(sed -n '1p' "$tree/cmake/dtv-userland-core.revision")
+    core_revision=$(python3 - "$core/DTV-PATCH-METADATA.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+print(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["base_commit"])
+PY
+)
+    [ "$revision" = "$core_revision" ] || {
+        printf '%s\n' "ASICEN Core pin differs from staged patched Core: $revision != $core_revision" >&2
+        return 1
+    }
+    mkdir -p "$core_bundle/repository"
+    cp -a "$core/." "$core_bundle/repository/"
+    printf '%s\n' "$revision" > "$core_bundle/SOURCE-REVISION"
+)
+
+build_asicen() (
+    tree=$1
+    abi=$2
+    output=$3
+    libusb_source=$4
+    build_asicen_core_bundle "$tree"
+    run_guarded env ANDROID_NDK_HOME="$ndk" PATH="$guard_path" \
+        "$tree/scripts/build-android.sh" --abi "$abi" --output "$output" \
+        --libusb-source "$libusb_source"
+)
+
+build_pix() (
+    tree=$1
+    abi=$2
+    output=$3
+    run_guarded env ANDROID_NDK_HOME="$ndk" ANDROID_ABI="$abi" \
+        PIX_EMBEDDED_ASSETS=ON JOBS=1 LIBUSB_SOURCE_TARBALL="$libusb_archive" \
+        DTV_USERLAND_CORE_SOURCE_DIR="$core" \
+        PIX_SOURCE_REVISION_OVERRIDE=66f5a731784d205d1d306edda9cc57071c087f8e \
+        PATH="$guard_path" \
+        "$tree/tools/build-portable.sh" android
+    built=$tree/build/android-$abi
+    mkdir -p "$output"
+    cp -f "$built/pixd" "$built/pixctl" "$built/pix-ts" "$output/"
+)
+
+if [ "${MIRAKC_TEST_HELPER_SCOPE_ONLY:-0}" = 1 ]; then
+    fixture=$(mktemp -d "${TMPDIR:-/tmp}/mirakc-helper-scope.XXXXXX")
+    trap 'rm -rf "$fixture"' EXIT HUP INT TERM
+    core=$fixture/core
+    ndk=$fixture/ndk
+    guard_path=/usr/bin:/bin
+    libusb_archive=$fixture/libusb.tar.bz2
+    mock_log=$fixture/calls.log
+    mkdir -p "$core"
+    build_asicen_core_bundle() { :; }
+    run_guarded() {
+        script=
+        mock_abi=
+        while [ "$#" -gt 0 ]; do
+            case "$1" in
+            --abi) mock_abi=$2; shift ;;
+            ANDROID_ABI=*) mock_abi=${1#*=} ;;
+            */scripts/build-android.sh|*/tools/build-portable.sh) script=$1 ;;
+            esac
+            shift
+        done
+        case "$script" in
+        */scripts/build-android.sh)
+            printf 'asicen:%s\n' "$mock_abi" >> "$mock_log"
+            ;;
+        */tools/build-portable.sh)
+            tree=${script%/tools/build-portable.sh}
+            built=$tree/build/android-$mock_abi
+            mkdir -p "$built"
+            printf '%s\n' mock > "$built/pixd"
+            printf '%s\n' mock > "$built/pixctl"
+            printf '%s\n' mock > "$built/pix-ts"
+            printf 'pix:%s\n' "$mock_abi" >> "$mock_log"
+            ;;
+        *) return 1 ;;
+        esac
+    }
+    for abi in aarch64 armv7a; do
+        case "$abi" in
+        aarch64) output_abi=arm64-v8a ;;
+        armv7a) output_abi=armeabi-v7a ;;
+        esac
+        expected_abi=$abi
+        expected_output_abi=$output_abi
+        build_asicen "$fixture/asicen" "$output_abi" "$fixture/asicen-output-$output_abi" "$fixture/libusb"
+        [ "$abi" = "$expected_abi" ] && [ "$output_abi" = "$expected_output_abi" ] || {
+            printf '%s\n' 'ASICEN helper changed its caller ABI variables' >&2
+            exit 1
+        }
+        build_pix "$fixture/pix" "$abi" "$fixture/pix-output-$abi"
+        [ "$abi" = "$expected_abi" ] && [ "$output_abi" = "$expected_output_abi" ] || {
+            printf '%s\n' 'PIX helper changed its caller ABI variables' >&2
+            exit 1
+        }
+        [ -s "$fixture/pix-output-$abi/pixd" ] &&
+            [ -s "$fixture/pix-output-$abi/pixctl" ] &&
+            [ -s "$fixture/pix-output-$abi/pix-ts" ] || {
+                printf '%s\n' "PIX helper did not stage mock outputs for $abi" >&2
+                exit 1
+            }
+    done
+    printf 'asicen:arm64-v8a\npix:aarch64\nasicen:armeabi-v7a\npix:armv7a\n' > "$fixture/expected.log"
+    cmp "$fixture/expected.log" "$mock_log"
+    printf '%s\n' 'native rebuild helper ABI scope: PASS'
+    exit 0
+fi
+
 archive=${1:-}
 [ -n "$archive" ] && [ -f "$archive" ] || {
     printf '%s\n' "usage: $0 CORRESPONDING_SOURCE_ARCHIVE [ORDINARY_APK]" >&2
@@ -306,7 +420,7 @@ PY
 modified_archive=$work/libusb-modified.tar.bz2
 cp -a "$modified_libusb" "$work/libusb-1.0.30"
 tar -cjf "$modified_archive" -C "$work" libusb-1.0.30
-patch_siano_script() {
+patch_siano_script() (
     tree=$1
     digest=$2
     script=$tree/scripts/build-android.sh
@@ -331,9 +445,9 @@ if data.count(needle) != 1:
     raise SystemExit("Siano build script download guard changed unexpectedly")
 path.write_text(data.replace(needle, replacement), encoding="utf-8")
 PY
-}
+)
 
-build_px4() {
+build_px4() (
     tree=$1
     abi=$2
     source_input=$3
@@ -342,9 +456,9 @@ build_px4() {
         DTV_USERLAND_CORE_SOURCE_DIR="$core" PATH="$guard_path" \
         "$tree/scripts/build-android.sh" --abi "$abi" --output "$output" \
         --libusb-source "$source_input"
-}
+)
 
-build_siano() {
+build_siano() (
     tree=$1
     abi=$2
     input_archive=$3
@@ -359,41 +473,9 @@ build_siano() {
         return 1
     fi
     printf '%s\n' "$tree/build/android-$abi"
-}
-
-build_asicen_core_bundle() {
-    tree=$1
-    core_bundle=$(dirname "$tree")/third_party/dtv-userland-core
-    revision=$(sed -n '1p' "$tree/cmake/dtv-userland-core.revision")
-    core_revision=$(python3 - "$core/DTV-PATCH-METADATA.json" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-print(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["base_commit"])
-PY
 )
-    [ "$revision" = "$core_revision" ] || {
-        printf '%s\n' "ASICEN Core pin differs from staged patched Core: $revision != $core_revision" >&2
-        return 1
-    }
-    mkdir -p "$core_bundle/repository"
-    cp -a "$core/." "$core_bundle/repository/"
-    printf '%s\n' "$revision" > "$core_bundle/SOURCE-REVISION"
-}
 
-build_asicen() {
-    tree=$1
-    abi=$2
-    output=$3
-    libusb_source=$4
-    build_asicen_core_bundle "$tree"
-    run_guarded env ANDROID_NDK_HOME="$ndk" PATH="$guard_path" \
-        "$tree/scripts/build-android.sh" --abi "$abi" --output "$output" \
-        --libusb-source "$libusb_source"
-}
-
-verify_asicen_offline_core() {
+verify_asicen_offline_core() (
     fixture=$work/asicen-offline-core
     tree=$fixture/project
     build=$fixture/build
@@ -437,22 +519,7 @@ PY
         return 1
     }
     printf '%s\n' 'ASICEN offline Core pin mismatch: rejected'
-}
-
-build_pix() {
-    tree=$1
-    abi=$2
-    output=$3
-    run_guarded env ANDROID_NDK_HOME="$ndk" ANDROID_ABI="$abi" \
-        PIX_EMBEDDED_ASSETS=ON JOBS=1 LIBUSB_SOURCE_TARBALL="$libusb_archive" \
-        DTV_USERLAND_CORE_SOURCE_DIR="$core" \
-        PIX_SOURCE_REVISION_OVERRIDE=66f5a731784d205d1d306edda9cc57071c087f8e \
-        PATH="$guard_path" \
-        "$tree/tools/build-portable.sh" android
-    built=$tree/build/android-$abi
-    mkdir -p "$output"
-    cp -f "$built/pixd" "$built/pixctl" "$built/pix-ts" "$output/"
-}
+)
 
 verify_asicen_offline_core
 if [ "${MIRAKC_TEST_ASICEN_OFFLINE_CORE_ONLY:-0}" = 1 ]; then
@@ -648,7 +715,7 @@ PY
 
     native_cmake_source=$dtv/mirakc/src/main/cpp
     ndk_cmake=$ndk/build/cmake/android.toolchain.cmake
-    build_cmake_native() {
+    build_cmake_native() (
         abi=$1
         target=$2
         name=$3
@@ -693,7 +760,7 @@ PY
                 --strip-unneeded "$destination"
         fi
         "$dtv/tools/mirakc/verify-android-elf.sh" "$destination" "$abi" "$kind"
-    }
+    )
 
     for abi in arm64-v8a armeabi-v7a; do
         build_cmake_native "$abi" usb_process libusb_process.so shared
