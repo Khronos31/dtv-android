@@ -48,5 +48,25 @@ gradle.projectsEvaluated {
         }
     }
 
+    def corePatch = new File(module.projectDir, '../tools/mirakc/patches/dtv-core-receiver-control-concurrency.patch').canonicalFile
+    def patchedCoreConsumers = [
+        'prepareSianoAdapterBinaries', 'preparePx4AdapterBinaries',
+        'prepareAsicenAdapterBinaries', 'preparePixAdapterBinaries',
+        'preparePx4Binaries', 'prepareSianoBinaries', 'prepareAsicenBinaries', 'preparePixBinaries'
+    ]
+    patchedCoreConsumers.each { taskName ->
+        def task = module.tasks.getByName(taskName)
+        if (!task.inputs.files.files.collect { it.canonicalFile }.toSet().contains(corePatch)) {
+            throw new GradleException("${taskName} is missing the patched Core source input ${corePatch}")
+        }
+    }
+
+    def asicenTask = module.tasks.getByName('prepareAsicenBinaries')
+    def expectedBundle = new File(module.rootProject.projectDir, '.work/third_party/dtv-userland-core').canonicalPath
+    def actualBundle = asicenTask.inputs.properties['asicenCoreBundlePath']
+    if (actualBundle != expectedBundle) {
+        throw new GradleException("prepareAsicenBinaries selects Core bundle ${actualBundle}, expected ${expectedBundle}")
+    }
+
     println 'Custom adapter Gradle task inputs: PASS'
 }

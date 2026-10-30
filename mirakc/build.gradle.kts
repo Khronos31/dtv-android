@@ -93,6 +93,7 @@ val pixAndroid16kPatch = layout.projectDirectory.file(
     "../tools/mirakc/patches/pix-userland-android-16k.patch"
 )
 val corePatchedSourceDir = project.rootDir.resolve(".work/dtv-userland-core-patched")
+val asicenCoreBundleDir = project.rootDir.resolve(".work/third_party/dtv-userland-core")
 val px4BuildSourceDir = project.rootDir.resolve(".work/px4-userland-build-source")
 val px4TunePlanSource = layout.projectDirectory.file("src/main/cpp/px4_tune_plan.cpp")
 val px4TunePlanHeader = layout.projectDirectory.file("src/main/cpp/px4_tune_plan.h")
@@ -260,7 +261,7 @@ val prepareMirakcAribBinaries = tasks.register("prepareMirakcAribBinaries") {
 
 val prepareSianoAdapterBinaries = tasks.register("prepareSianoAdapterBinaries") {
     dependsOn(preparePatchedCoreSource)
-    inputs.files(sianoAdapterSource, sianoAdapterCmake, sianoAdapterVerifier, coreTrackedSourceFiles)
+    inputs.files(sianoAdapterSource, sianoAdapterCmake, sianoAdapterVerifier, coreTrackedSourceFiles, coreConcurrencyPatch)
     outputs.files(
         nativeOutputDir.file("arm64-v8a/libmirakc-siano-adapter.so"),
         nativeOutputDir.file("armeabi-v7a/libmirakc-siano-adapter.so")
@@ -476,7 +477,7 @@ tasks.named("preparePx4AdapterBinaries") {
 
 val prepareAsicenAdapterBinaries = tasks.register("prepareAsicenAdapterBinaries") {
     dependsOn(preparePatchedCoreSource)
-    inputs.files(px4AdapterSource, px4AdapterCmake, px4AdapterVerifier, asicenTrackedSourceFiles, coreTrackedSourceFiles)
+    inputs.files(px4AdapterSource, px4AdapterCmake, px4AdapterVerifier, asicenTrackedSourceFiles, coreTrackedSourceFiles, coreConcurrencyPatch)
     inputs.files(
         adapterCliHeader,
         px4TunePlanSource,
@@ -537,7 +538,7 @@ val prepareAsicenAdapterBinaries = tasks.register("prepareAsicenAdapterBinaries"
 
 val preparePixAdapterBinaries = tasks.register("preparePixAdapterBinaries") {
     dependsOn(preparePatchedCoreSource)
-    inputs.files(pixAdapterSource, adapterCliHeader, px4AdapterCmake, px4AdapterVerifier, coreTrackedSourceFiles)
+    inputs.files(pixAdapterSource, adapterCliHeader, px4AdapterCmake, px4AdapterVerifier, coreTrackedSourceFiles, coreConcurrencyPatch)
     outputs.files(pixAdapterBinaries)
     doLast {
         val ndk = file(androidNdkRoot.get())
@@ -1027,7 +1028,7 @@ val prepareSianoBinaries = tasks.register("prepareSianoBinaries") {
     // diagnostic below should be what the user sees.
     inputs.files(sianoBuildScript)
     inputs.files(sianoTrackedSourceFiles)
-    inputs.files(coreTrackedSourceFiles, sianoPx4TrackedSourceFiles)
+    inputs.files(coreTrackedSourceFiles, coreConcurrencyPatch, sianoPx4TrackedSourceFiles)
     inputs.files(userlandCoreDir.map { file(it).resolve(".git/HEAD") }, sianoPx4UserlandDir.map { file(it).resolve(".git/HEAD") })
     outputs.files(nativeBinaries.filter { it.asFile.name in setOf("libsianod.so", "libsianoctl.so", "libsiano-ts.so") })
 
@@ -1215,7 +1216,8 @@ val prepareAsicenBinaries = tasks.register("prepareAsicenBinaries") {
     dependsOn(preparePatchedCoreSource)
     inputs.property("asicenUserlandDir", asicenUserlandDir)
     inputs.property("userlandCoreDir", userlandCoreDir)
-    inputs.files(asicenBuildScript, asicenTrackedSourceFiles, coreTrackedSourceFiles, asicenUserlandDir.map { file(it).resolve("third_party/px4-userland") })
+    inputs.property("asicenCoreBundlePath", asicenCoreBundleDir.absolutePath)
+    inputs.files(asicenBuildScript, asicenTrackedSourceFiles, coreTrackedSourceFiles, coreConcurrencyPatch, asicenUserlandDir.map { file(it).resolve("third_party/px4-userland") })
     inputs.files(libusbArchive, libusbSourceDir.map { file(it).resolve("configure") }, libusbSourceDir.map { file(it).resolve("COPYING") })
     outputs.files(nativeBinaries.filter { it.asFile.name in setOf("libasicend.so", "libasicenctl.so", "libasicen-ts.so") })
     dependsOn(prepareLibusbSource)
@@ -1228,10 +1230,22 @@ val prepareAsicenBinaries = tasks.register("prepareAsicenBinaries") {
         if (!stagedCore.resolve("DTV-PATCH-METADATA.json").isFile) {
             throw GradleException("patched Core source stage is missing: $stagedCore")
         }
-        val coreBundle = staged.resolve("third_party/dtv-userland-core")
+        val asicenCoreRevision = staged.resolve("cmake/dtv-userland-core.revision").readText().trim()
+        val coreMetadata = stagedCore.resolve("DTV-PATCH-METADATA.json").readText()
+        val coreBaseCommit = Regex("\\\"base_commit\\\"\\s*:\\s*\\\"([0-9a-f]{40})\\\"")
+            .find(coreMetadata)?.groupValues?.get(1)
+        if (!Regex("[0-9a-f]{40}").matches(asicenCoreRevision) ||
+            asicenCoreRevision != corePinnedRef || coreBaseCommit != asicenCoreRevision
+        ) {
+            throw GradleException(
+                "ASICEN Core revision pin does not match the staged patched Core: " +
+                    "ASICEN=$asicenCoreRevision, Core=${coreBaseCommit ?: "missing"}"
+            )
+        }
+        val coreBundle = asicenCoreBundleDir
         coreBundle.resolve("repository").mkdirs()
         project.copy { from(stagedCore); into(coreBundle.resolve("repository")) }
-        coreBundle.resolve("SOURCE-REVISION").writeText("$corePinnedRef\n")
+        coreBundle.resolve("SOURCE-REVISION").writeText("$asicenCoreRevision\n")
         val ndk = file(androidNdkRoot.get())
         val libusb = file(libusbSourceDir.get())
         if (!libusb.resolve("configure").isFile || !libusb.resolve("COPYING").isFile) {
@@ -1262,7 +1276,7 @@ val prepareAsicenBinaries = tasks.register("prepareAsicenBinaries") {
 val preparePixBinaries = tasks.register("preparePixBinaries") {
     dependsOn(preparePatchedCoreSource)
     inputs.property("pixUserlandDir", pixUserlandDir)
-    inputs.files(pixBuildScript, pixTrackedSourceFiles, coreTrackedSourceFiles, pixAndroid16kPatch)
+    inputs.files(pixBuildScript, pixTrackedSourceFiles, coreTrackedSourceFiles, coreConcurrencyPatch, pixAndroid16kPatch)
     inputs.files(pixFirmwareAssets)
     inputs.file(libusbArchive)
     outputs.files(nativeBinaries.filter { it.asFile.name in setOf("libpixd.so", "libpixctl.so", "libpix-ts.so") })

@@ -361,19 +361,82 @@ build_siano() {
     printf '%s\n' "$tree/build/android-$abi"
 }
 
+build_asicen_core_bundle() {
+    tree=$1
+    core_bundle=$(dirname "$tree")/third_party/dtv-userland-core
+    revision=$(sed -n '1p' "$tree/cmake/dtv-userland-core.revision")
+    core_revision=$(python3 - "$core/DTV-PATCH-METADATA.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+print(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["base_commit"])
+PY
+)
+    [ "$revision" = "$core_revision" ] || {
+        printf '%s\n' "ASICEN Core pin differs from staged patched Core: $revision != $core_revision" >&2
+        return 1
+    }
+    mkdir -p "$core_bundle/repository"
+    cp -a "$core/." "$core_bundle/repository/"
+    printf '%s\n' "$revision" > "$core_bundle/SOURCE-REVISION"
+}
+
 build_asicen() {
     tree=$1
     abi=$2
     output=$3
     libusb_source=$4
-    core_bundle=$tree/third_party/dtv-userland-core
-    mkdir -p "$core_bundle/repository"
-    cp -a "$core/." "$core_bundle/repository/"
-    printf '%s\n' "$(sed -n 's/.*"base_commit": "\([0-9a-f]*\)".*/\1/p' "$core/DTV-PATCH-METADATA.json" | head -n 1)" \
-        > "$core_bundle/SOURCE-REVISION"
+    build_asicen_core_bundle "$tree"
     run_guarded env ANDROID_NDK_HOME="$ndk" PATH="$guard_path" \
         "$tree/scripts/build-android.sh" --abi "$abi" --output "$output" \
         --libusb-source "$libusb_source"
+}
+
+verify_asicen_offline_core() {
+    fixture=$work/asicen-offline-core
+    tree=$fixture/project
+    build=$fixture/build
+    log=$fixture/configure.log
+    mkdir -p "$tree"
+    cp -a "$asicen/." "$tree/"
+    build_asicen_core_bundle "$tree"
+    if ! run_guarded env -i PATH=/usr/bin:/bin LC_ALL=C \
+        cmake --trace-expand --trace-source="$tree/cmake/DtvUserlandCoreDependency.cmake" \
+        -S "$tree" -B "$build" -G Ninja \
+        -DASICEN_ENABLE_LIBUSB=OFF -DASICEN_BUILD_TESTS=OFF -DASICEN_BUILD_TOOLS=OFF \
+        -DFETCHCONTENT_FULLY_DISCONNECTED=ON >"$log" 2>&1; then
+        cat "$log" >&2
+        return 1
+    fi
+    python3 - "$log" "$fixture/third_party/dtv-userland-core/repository" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+log = Path(sys.argv[1]).read_text(encoding="utf-8")
+expected = sys.argv[2]
+selection = next((line for line in log.splitlines()
+                  if "set(FETCHCONTENT_SOURCE_DIR_DTV_USERLAND_CORE" in line), "")
+match = re.search(r"set\(FETCHCONTENT_SOURCE_DIR_DTV_USERLAND_CORE (.*?) \)", selection)
+if not match or Path(match.group(1)).resolve() != Path(expected).resolve():
+    raise SystemExit("ASICEN CMake did not select the staged offline Core source")
+print("ASICEN offline Core configure selected the staged source")
+PY
+    printf '%040d\n' 0 > "$fixture/third_party/dtv-userland-core/SOURCE-REVISION"
+    if run_guarded env -i PATH=/usr/bin:/bin LC_ALL=C \
+        cmake --trace-expand --trace-source="$tree/cmake/DtvUserlandCoreDependency.cmake" \
+        -S "$tree" -B "$fixture/wrong-revision-build" -G Ninja \
+        -DASICEN_ENABLE_LIBUSB=OFF -DASICEN_BUILD_TESTS=OFF -DASICEN_BUILD_TOOLS=OFF \
+        -DFETCHCONTENT_FULLY_DISCONNECTED=ON >"$fixture/wrong-revision.log" 2>&1; then
+        printf '%s\n' 'ASICEN accepted a bundled Core with a mismatched revision marker' >&2
+        return 1
+    fi
+    grep -F 'Bundled Core revision differs from the product pin' "$fixture/wrong-revision.log" >/dev/null || {
+        cat "$fixture/wrong-revision.log" >&2
+        return 1
+    }
+    printf '%s\n' 'ASICEN offline Core pin mismatch: rejected'
 }
 
 build_pix() {
@@ -390,6 +453,11 @@ build_pix() {
     mkdir -p "$output"
     cp -f "$built/pixd" "$built/pixctl" "$built/pix-ts" "$output/"
 }
+
+verify_asicen_offline_core
+if [ "${MIRAKC_TEST_ASICEN_OFFLINE_CORE_ONLY:-0}" = 1 ]; then
+    exit 0
+fi
 
 for abi in aarch64 armv7a; do
     case "$abi" in
