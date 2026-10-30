@@ -120,6 +120,10 @@ jobs:
           test "$("$cmake_bin/cmake" --version | sed -n '1s/^cmake version \([0-9][0-9.]*\).*/\1/p')" = "$ANDROID_CMAKE_VERSION"
           test "$("$cmake_bin/ninja" --version)" = "1.10.2"
           echo "$cmake_bin" >> "$GITHUB_PATH"
+      - name: Install libusb development files for PIX CMake fixture
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libusb-1.0-0-dev
       - name: PIX source revision override fixture
         env:
           MIRAKC_TEST_PIX_ROOT: ${{ github.workspace }}/pix-userland
@@ -201,8 +205,32 @@ jobs:
           MIRAKC_TEST_LIBUSB_ARCHIVE: ${{ github.workspace }}/.work/libusb-1.0.30.tar.bz2
           MIRAKC_TEST_SWAGGER_UI_ARCHIVE: ${{ runner.temp }}/mirakc-dependencies/swagger-ui-5.32.6.zip
           MIRAKC_TEST_AUTOTOOLS_CACHE: ${{ runner.temp }}/mirakc-arib-tools/autotools-sources
-          MIRAKC_TEST_ARCHIVE_OUTPUT: ${{ runner.temp }}/mirakc-corresponding-source.tar.gz
+          MIRAKC_TEST_ARCHIVE_OUTPUT: ${{ runner.temp }}/mirakc-fixture-source.tar.gz
         run: tools/mirakc/test-source-package.sh
+      - name: Build and audit corresponding source for checked-out commit
+        env:
+          CARGO_HOME: ${{ runner.temp }}/cargo
+        run: |
+          set -euo pipefail
+          python3 tools/mirakc/package-source.py \
+            --output-dir "$RUNNER_TEMP" \
+            --dtv-root "$GITHUB_WORKSPACE" \
+            --dtv-ref HEAD \
+            --mirakc-root "$GITHUB_WORKSPACE/.work/mirakc-3.4.91" \
+            --arib-root "$GITHUB_WORKSPACE/.work/mirakc-arib-0.24.40" \
+            --siano-root "$GITHUB_WORKSPACE/siano-userland" \
+            --px4-root "$GITHUB_WORKSPACE/px4-userland" \
+            --asicen-root "$GITHUB_WORKSPACE/asicen-userland" \
+            --pix-root "$GITHUB_WORKSPACE/pix-userland" \
+            --core-root "$GITHUB_WORKSPACE/dtv-userland-core" \
+            --siano-px4-root "$GITHUB_WORKSPACE/siano-px4-userland" \
+            --px4-drv-root "$GITHUB_WORKSPACE/px4_drv" \
+            --libusb-archive "$GITHUB_WORKSPACE/.work/libusb-1.0.30.tar.bz2" \
+            --swagger-ui-archive "$RUNNER_TEMP/mirakc-dependencies/swagger-ui-5.32.6.zip" \
+            --autotools-cache "$RUNNER_TEMP/mirakc-arib-tools/autotools-sources"
+          python3 tools/mirakc/audit-source.py \
+            --expected-dtv-commit "$(git rev-parse HEAD)" \
+            "$RUNNER_TEMP/mirakc-corresponding-source.tar.gz"
       - name: Clean-room complete native inventory and relink proof
         env:
           MIRAKC_REQUIRE_NETWORK_NAMESPACE: required
@@ -229,6 +257,10 @@ jobs:
         run: |
           python3 tools/scripts/release_version.py check --component mirakc \
             --apk mirakc/build/outputs/apk/debug/mirakc-debug.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mirakc-corresponding-source
+          path: ${{ runner.temp }}/mirakc-corresponding-source.tar.gz
       - uses: actions/upload-artifact@v4
         with:
           name: mirakc-debug-apk

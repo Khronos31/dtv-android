@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tarfile
 import tempfile
 import io
@@ -18,8 +19,12 @@ core_revision = "67420d1c909e9205841612a186ae4c7fbf4dd092"
 
 
 def run(*command, cwd=None, **kwargs):
-    return subprocess.run(command, cwd=cwd, check=True, text=True,
-                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kwargs).stdout
+    result = subprocess.run(command, cwd=cwd, text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kwargs)
+    if result.returncode:
+        sys.stderr.write(result.stdout)
+        raise subprocess.CalledProcessError(result.returncode, command, output=result.stdout)
+    return result.stdout
 
 
 if run("git", "-C", str(pix_root), "rev-parse", "HEAD").strip() != pix_revision:

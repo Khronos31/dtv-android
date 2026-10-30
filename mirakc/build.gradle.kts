@@ -1139,12 +1139,23 @@ val prepareLibusbSource = tasks.register("prepareLibusbSource") {
         if (actual != expected) throw GradleException("libusb 1.0.30 archive digest mismatch: $actual")
         val source = file(libusbSourceDir.get())
         if (!source.resolve("configure").isFile || !source.resolve("COPYING").isFile) {
-            if (source.exists()) throw GradleException("libusb source directory is incomplete: $source")
+            if (source.exists() && source.listFiles()?.isEmpty() != true) {
+                throw GradleException("libusb source directory is incomplete: $source")
+            }
             source.parentFile.mkdirs()
-            project.exec { commandLine("tar", "-xjf", archive.absolutePath, "-C", source.parentFile.absolutePath) }
-            val extracted = source.parentFile.resolve("libusb-1.0.30")
-            if (extracted != source) {
+            val extractionRoot = Files.createTempDirectory(source.parentFile.toPath(), ".libusb-source-").toFile()
+            try {
+                project.exec { commandLine("tar", "-xjf", archive.absolutePath, "-C", extractionRoot.absolutePath) }
+                val extracted = extractionRoot.resolve("libusb-1.0.30")
+                if (!extracted.resolve("configure").isFile || !extracted.resolve("COPYING").isFile) {
+                    throw GradleException("libusb archive did not contain a complete source tree")
+                }
+                if (source.exists() && !source.delete()) {
+                    throw GradleException("cannot replace empty libusb source directory: $source")
+                }
                 if (!extracted.renameTo(source)) throw GradleException("cannot stage libusb source at $source")
+            } finally {
+                extractionRoot.deleteRecursively()
             }
         }
     }
