@@ -113,21 +113,12 @@ val px4UserlandDir = providers.gradleProperty("px4UserlandDir")
 
 val runPx4RuntimeSocketPathHostTests = tasks.register<Exec>("runPx4RuntimeSocketPathHostTests") {
     group = "verification"
-    description = "Checks Android PX4 socket paths against pinned px4-userland"
+    description = "Checks Android PX4 socket paths against pinned dtv-userland-core"
     workingDir(project.rootDir)
-    commandLine("/bin/sh", px4RuntimeSocketPathTestScript.asFile.absolutePath, px4UserlandDir.get())
+    commandLine("/bin/sh", px4RuntimeSocketPathTestScript.asFile.absolutePath, userlandCoreDir.get())
+    inputs.property("corePinnedRef", corePinnedRef)
+    inputs.property("coreHead", userlandCoreDir.map { gitOutput(file(it), "rev-parse", "HEAD").second })
     inputs.files(px4RuntimeSocketPathTest, px4RuntimeSocketPathTestScript)
-    inputs.files(px4UserlandDir.map { directoryName ->
-        val root = file(directoryName).resolve("userland")
-        listOf(
-            root.resolve("include/px4/error.h"),
-            root.resolve("include/px4/ipc.h"),
-            root.resolve("include/px4/posix_ipc.h"),
-            root.resolve("src/error.cpp"),
-            root.resolve("src/ipc.cpp"),
-            root.resolve("src/posix_ipc.cpp")
-        )
-    })
     inputs.files(coreTrackedSourceFiles)
 }
 

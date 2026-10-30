@@ -358,7 +358,7 @@ build_siano() {
         cat "$log" >&2
         return 1
     fi
-    printf '%s/%s\n' "$tree/build/android-$abi" siano-ts
+    printf '%s\n' "$tree/build/android-$abi"
 }
 
 build_asicen() {
@@ -398,28 +398,35 @@ for abi in aarch64 armv7a; do
     changed_siano=$work/siano-changed-$abi
     cp -a "$siano" "$base_siano"
     cp -a "$siano" "$changed_siano"
-    base_siano_bin=$(build_siano "$base_siano" "$abi" "$libusb_archive")
-    changed_siano_bin=$(build_siano "$changed_siano" "$abi" "$modified_archive")
-    [ -s "$base_siano_bin" ] && [ -s "$changed_siano_bin" ] || {
-        printf '%s\n' "Siano output is missing for $abi" >&2
-        find "$base_siano" "$changed_siano" -maxdepth 4 -type f -name 'siano-ts' -printf '%p %s bytes\n' >&2
+    base_siano_output=$(build_siano "$base_siano" "$abi" "$libusb_archive")
+    changed_siano_output=$(build_siano "$changed_siano" "$abi" "$modified_archive")
+    for program in sianod sianoctl siano-ts; do
+        [ -s "$base_siano_output/$program" ] && [ -s "$changed_siano_output/$program" ] || {
+            printf '%s\n' "Siano $program output is missing for $abi" >&2
+            find "$base_siano" "$changed_siano" -maxdepth 4 -type f \
+                \( -name sianod -o -name sianoctl -o -name siano-ts \) -printf '%p %s bytes\n' >&2
+            exit 1
+        }
+    done
+    base_siano_daemon=$base_siano_output/sianod
+    changed_siano_daemon=$changed_siano_output/sianod
+    [ "$(sha256sum "$base_siano_daemon" | awk '{print $1}')" != \
+       "$(sha256sum "$changed_siano_daemon" | awk '{print $1}')" ] || {
+        printf '%s\n' "Siano daemon relink did not change the $abi payload" >&2
         exit 1
     }
-    [ "$(sha256sum "$base_siano_bin" | awk '{print $1}')" != \
-       "$(sha256sum "$changed_siano_bin" | awk '{print $1}')" ] || {
-        printf '%s\n' "Siano relink did not change the $abi payload" >&2
+    strings "$changed_siano_daemon" | grep -F 'libusb.relink-test.invalid' >/dev/null || {
+        printf '%s\n' "Siano daemon $abi payload lacks the modified libusb marker" >&2
         exit 1
     }
-    strings "$changed_siano_bin" | grep -F 'libusb.relink-test.invalid' >/dev/null || {
-        printf '%s\n' "Siano $abi payload lacks the modified libusb marker" >&2
-        exit 1
-    }
-    if strings "$base_siano_bin" | grep -F 'libusb.relink-test.invalid' >/dev/null; then
-        printf '%s\n' "Siano baseline unexpectedly contains the modified marker: $abi" >&2
+    if strings "$base_siano_daemon" | grep -F 'libusb.relink-test.invalid' >/dev/null; then
+        printf '%s\n' "Siano daemon baseline unexpectedly contains the modified marker: $abi" >&2
         exit 1
     fi
     if [ "$full_gate" -eq 1 ]; then
-        cp -f "$base_siano_bin" "$full_native_root/lib/$output_abi/libsiano-ts.so"
+        for program in sianod sianoctl siano-ts; do
+            cp -f "$base_siano_output/$program" "$full_native_root/lib/$output_abi/lib$program.so"
+        done
     fi
 
     build_px4 "$px4" "$abi" "$libusb" "$work/px4-base-$abi"
@@ -710,4 +717,4 @@ PY
     printf '%s\n' 'clean-room complete native inventory gate: PASS'
 fi
 
-printf '%s\n' 'clean-room Siano/PX4 static libusb relink slice: PASS'
+printf '%s\n' 'clean-room Siano daemon/PX4 static libusb relink slice: PASS'
