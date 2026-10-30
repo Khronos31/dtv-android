@@ -45,6 +45,8 @@ CORE_ANDROID_PATCH_PATH = audit_module.CORE_ANDROID_PATCH_PATH
 CORE_ANDROID_PATCH_SHA256 = audit_module.CORE_ANDROID_PATCH_SHA256
 PX4_BUILD_JOBS_PATCH_PATH = audit_module.PX4_BUILD_JOBS_PATCH_PATH
 PX4_BUILD_JOBS_PATCH_SHA256 = audit_module.PX4_BUILD_JOBS_PATCH_SHA256
+PIX_ANDROID_16K_PATCH_PATH = audit_module.PIX_ANDROID_16K_PATCH_PATH
+PIX_ANDROID_16K_PATCH_SHA256 = audit_module.PIX_ANDROID_16K_PATCH_SHA256
 SIANO_FIRMWARE_EXCLUSION_REASON = audit_module.SIANO_FIRMWARE_EXCLUSION_REASON
 
 
@@ -368,6 +370,12 @@ def build_manifest(stage: Path, commits: dict[str, str], normalized: list[dict[s
                 component["android_build_patch"] = {
                     "path": PX4_BUILD_JOBS_PATCH_PATH,
                     "sha256": PX4_BUILD_JOBS_PATCH_SHA256,
+                    "upstream_commit": expected["commit"],
+                }
+            if name == "pix-userland":
+                component["android_build_patch"] = {
+                    "path": PIX_ANDROID_16K_PATCH_PATH,
+                    "sha256": PIX_ANDROID_16K_PATCH_SHA256,
                     "upstream_commit": expected["commit"],
                 }
             if name == "pix-userland":

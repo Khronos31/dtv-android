@@ -27,6 +27,7 @@ SOURCE_REFS = {
 PATCH_DIGESTS = {
     "dtv_userland_core_patch_sha256": "9da0cf46a7727a5c7e20de165babd0bc2d78e47c119cad38c1f2c00abeb10521",
     "px4_userland_build_patch_sha256": "ba9c4607e3411e706e537a38cc879990f46db04977ca717e714e0004553a4a42",
+    "pix_userland_build_patch_sha256": "a1155cb6400c59222abc5348d3e31a89def378e24c5540e62aed272fb02590d2",
 }
 VERSION_PATTERN = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 HEADER = "MIRAKC-ATTESTATION-V1"

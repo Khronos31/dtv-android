@@ -89,6 +89,9 @@ val coreConcurrencyPatch = layout.projectDirectory.file(
 val px4BuildJobsPatch = layout.projectDirectory.file(
     "../tools/mirakc/patches/px4-userland-build-jobs.patch"
 )
+val pixAndroid16kPatch = layout.projectDirectory.file(
+    "../tools/mirakc/patches/pix-userland-android-16k.patch"
+)
 val corePatchedSourceDir = project.rootDir.resolve(".work/dtv-userland-core-patched")
 val px4BuildSourceDir = project.rootDir.resolve(".work/px4-userland-build-source")
 val px4TunePlanSource = layout.projectDirectory.file("src/main/cpp/px4_tune_plan.cpp")
@@ -1207,7 +1210,7 @@ val prepareAsicenBinaries = tasks.register("prepareAsicenBinaries") {
 val preparePixBinaries = tasks.register("preparePixBinaries") {
     dependsOn(preparePatchedCoreSource)
     inputs.property("pixUserlandDir", pixUserlandDir)
-    inputs.files(pixBuildScript, pixTrackedSourceFiles, coreTrackedSourceFiles)
+    inputs.files(pixBuildScript, pixTrackedSourceFiles, coreTrackedSourceFiles, pixAndroid16kPatch)
     inputs.files(pixFirmwareAssets)
     inputs.file(libusbArchive)
     outputs.files(nativeBinaries.filter { it.asFile.name in setOf("libpixd.so", "libpixctl.so", "libpix-ts.so") })
@@ -1217,6 +1220,28 @@ val preparePixBinaries = tasks.register("preparePixBinaries") {
         val staged = project.rootDir.resolve(".work/staged-pix-userland")
         val stagedCore = corePatchedSourceDir
         stagePinnedSource(source, pixPinnedRef, staged)
+        val patch = pixAndroid16kPatch.asFile
+        val actualPatchHash = MessageDigest.getInstance("SHA-256")
+            .digest(patch.readBytes())
+            .joinToString("") { byte: Byte -> "%02x".format(byte.toInt() and 0xff) }
+        val expectedPatchHash = "a1155cb6400c59222abc5348d3e31a89def378e24c5540e62aed272fb02590d2"
+        if (actualPatchHash != expectedPatchHash) {
+            throw GradleException(
+                "PIX Android 16 KiB patch checksum mismatch: expected $expectedPatchHash, " +
+                    "found $actualPatchHash"
+            )
+        }
+        val patchCheck = ProcessBuilder(
+            "patch", "--dry-run", "--batch", "--fuzz=0", "--forward", "-p1", "-i", patch.absolutePath
+        ).directory(staged).redirectErrorStream(true).start()
+        val patchCheckOutput = patchCheck.inputStream.bufferedReader().use { it.readText() }.trim()
+        if (patchCheck.waitFor() != 0) {
+            throw GradleException("Pinned PIX Android 16 KiB patch does not apply cleanly: $patchCheckOutput")
+        }
+        project.exec {
+            workingDir(staged)
+            commandLine("patch", "--batch", "--fuzz=0", "--forward", "-p1", "-i", patch.absolutePath)
+        }
         if (!stagedCore.resolve("DTV-PATCH-METADATA.json").isFile) {
             throw GradleException("patched Core source stage is missing: $stagedCore")
         }
@@ -1308,6 +1333,7 @@ val apkSourceMetadataDtvFiles = apkSourceMetadataDtvRoot.map { directoryName ->
         "tools/mirakc/package-source.py", "tools/mirakc/test-source-package.sh", "tools/mirakc/test-source-native-rebuild.sh",
         "tools/mirakc/patches/dtv-core-receiver-control-concurrency.patch",
         "tools/mirakc/patches/px4-userland-build-jobs.patch",
+        "tools/mirakc/patches/pix-userland-android-16k.patch",
         "tools/mirakc-arib/build-android.sh", "tools/mirakc-arib/bootstrap-autotools.sh",
         "tools/mirakc-arib/android.toolchain.cmake", "tools/mirakc-arib/patches/tsduck-android.patch"
     ).map { relative -> file(directoryName).resolve(relative) }

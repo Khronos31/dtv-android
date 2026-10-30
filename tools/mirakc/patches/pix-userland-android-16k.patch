@@ -1,0 +1,13 @@
+diff --git a/tools/build-portable.sh b/tools/build-portable.sh
+index c3d3d5a..f1fdb9d 100755
+--- a/tools/build-portable.sh
++++ b/tools/build-portable.sh
+@@ -64,7 +64,7 @@ if [ "$mode" = android ]; then
+     [ -x "$cc" ] && [ -x "$cxx" ] || { echo "Android compiler missing: $cc or $cxx" >&2; exit 2; }
+     export AR="$toolchain/bin/llvm-ar" RANLIB="$toolchain/bin/llvm-ranlib"
+     configure_host=--host=$triplet
+-    extra_link=-llog
++    extra_link='-llog -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384'
+     toolchain_file=$ndk/build/cmake/android.toolchain.cmake
+ elif [ "$mode" = musl ]; then
+     "$cc" -E -dM -include features.h - < /dev/null > "$build/compiler-macros"

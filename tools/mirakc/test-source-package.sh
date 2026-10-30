@@ -122,6 +122,7 @@ cp "$package" "$audit" "$0" "$root/tools/mirakc/test-source-native-rebuild.sh" "
 mkdir -p "$temporary/dtv/tools/mirakc/patches"
 cp "$root/tools/mirakc/patches/dtv-core-receiver-control-concurrency.patch" \
    "$root/tools/mirakc/patches/px4-userland-build-jobs.patch" \
+   "$root/tools/mirakc/patches/pix-userland-android-16k.patch" \
    "$temporary/dtv/tools/mirakc/patches/"
 cp -R "$root/mirakc-ui-contract" "$root/mirakc-tv-ui" "$temporary/dtv/"
 cp "$root/rust-toolchain.toml" "$temporary/dtv/rust-toolchain.toml"
@@ -144,6 +145,7 @@ root, fixture = map(Path, sys.argv[1:])
 required = (
     "mirakc/src/main/assets/asicen-loader.bin",
     "mirakc/src/main/assets/ASICEN-LOADER-NOTICE.txt",
+    "tools/mirakc/patches/pix-userland-android-16k.patch",
     "mirakc/src/main/cpp/userland_process_launcher.h",
     "mirakc/src/main/cpp/tests/userland_process_launcher_test.cpp",
     "mirakc/src/main/cpp/adapter_cli.h",
@@ -218,6 +220,7 @@ required = (
     "mirakc/src/main/cpp/pix_adapter.cpp",
     "mirakc/src/main/java/dev/khronos31/mirakc/AsicenProvisioningController.kt",
     "tools/mirakc/test-userland-process-launch.sh",
+    "tools/mirakc/patches/pix-userland-android-16k.patch",
 )
 with tarfile.open(archive_path, "r:gz") as archive:
     manifest = json.load(archive.extractfile("source-manifest.json"))
@@ -401,6 +404,47 @@ with tarfile.open(destination, "w:gz") as archive:
 PY
 if python3 "$audit" "$temporary/px4-patch-mutated.tar.gz" >/dev/null 2>&1; then
     printf '%s\n' 'source audit accepted a modified pinned PX4 patch' >&2
+    exit 1
+fi
+
+python3 - "$temporary/one/mirakc-corresponding-source.tar.gz" "$temporary/pix-patch-mutated.tar.gz" <<'PY'
+import hashlib
+import io
+import json
+import sys
+import tarfile
+
+source, destination = sys.argv[1:]
+payloads = {}
+infos = {}
+with tarfile.open(source, "r:gz") as archive:
+    for info in archive.getmembers():
+        infos[info.name] = info
+        payloads[info.name] = archive.extractfile(info).read()
+patch_path = (
+    "sources/dtv-android/tools/mirakc/patches/"
+    "pix-userland-android-16k.patch"
+)
+payloads[patch_path] += b"\n# source-package tamper test\n"
+manifest = json.loads(payloads["source-manifest.json"])
+manifest["files"][patch_path] = {
+    "size": len(payloads[patch_path]),
+    "sha256": hashlib.sha256(payloads[patch_path]).hexdigest(),
+}
+payloads["source-manifest.json"] = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
+rows = []
+for name in sorted(payloads):
+    if name != "SHA256SUMS":
+        rows.append(f"{hashlib.sha256(payloads[name]).hexdigest()}  {name}")
+payloads["SHA256SUMS"] = ("\n".join(rows) + "\n").encode()
+with tarfile.open(destination, "w:gz") as archive:
+    for name in sorted(payloads):
+        info = infos[name]
+        info.size = len(payloads[name])
+        archive.addfile(info, io.BytesIO(payloads[name]))
+PY
+if python3 "$audit" "$temporary/pix-patch-mutated.tar.gz" >/dev/null 2>&1; then
+    printf '%s\n' 'source audit accepted a modified pinned PIX Android 16 KiB patch' >&2
     exit 1
 fi
 

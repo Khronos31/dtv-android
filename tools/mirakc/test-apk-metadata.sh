@@ -153,6 +153,7 @@ PY
 mkdir -p "$temporary/dtv/tools/mirakc/patches"
 cp "$root/tools/mirakc/patches/dtv-core-receiver-control-concurrency.patch" \
     "$root/tools/mirakc/patches/px4-userland-build-jobs.patch" \
+    "$root/tools/mirakc/patches/pix-userland-android-16k.patch" \
     "$temporary/dtv/tools/mirakc/patches/"
 (
     cd "$temporary/dtv"
@@ -211,6 +212,17 @@ with zipfile.ZipFile(destination, "w") as archive:
     archive.writestr("assets/asicen-loader.bin", destination.parent.joinpath("asicen-loader.bin").read_bytes())
 PY
 python3 "$auditor" --expected-dtv-commit "$dtv_commit" "$temporary/clean-allow.apk" >/dev/null
+cp "$temporary/dtv/tools/mirakc/patches/pix-userland-android-16k.patch" "$temporary/pix-patch.original"
+printf '\n# metadata tamper fixture\n' >> "$temporary/dtv/tools/mirakc/patches/pix-userland-android-16k.patch"
+# shellcheck disable=SC2086
+if python3 "$generator" --output "$temporary/pix-patch-tamper" $args --allow-development-worktree \
+    > /dev/null 2> "$temporary/pix-patch-tamper.stderr"; then
+    printf '%s\n' 'metadata generator accepted a modified pinned PIX Android 16 KiB patch' >&2
+    exit 1
+fi
+grep -F -- 'PIX Android 16 KiB patch does not match its pinned digest' \
+    "$temporary/pix-patch-tamper.stderr" >/dev/null
+cp "$temporary/pix-patch.original" "$temporary/dtv/tools/mirakc/patches/pix-userland-android-16k.patch"
 cp "$temporary/dtv/mirakc/build.gradle.kts" "$temporary/build.gradle.kts.original"
 printf '\n# debug worktree overlay fixture\n' >> "$temporary/dtv/mirakc/build.gradle.kts"
 # shellcheck disable=SC2086

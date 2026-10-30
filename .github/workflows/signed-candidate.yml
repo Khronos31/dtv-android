@@ -30,6 +30,7 @@ env:
   SIANO_USERLAND_REF: 33c3468e7e10781ae6c7e9a5fd57a0c1b0825288
   SIANO_PX4_USERLAND_REF: 90b08dfe79b0b40e393f015975c761863830866a
   PX4_BUILD_PATCH_SHA256: ba9c4607e3411e706e537a38cc879990f46db04977ca717e714e0004553a4a42
+  PIX_BUILD_PATCH_SHA256: a1155cb6400c59222abc5348d3e31a89def378e24c5540e62aed272fb02590d2
   PX4_DRV_REF: 2b3f79b5bc5db56e8556bb28397f7d8f74b2adeb
 
 jobs:
@@ -143,10 +144,13 @@ jobs:
           test "$(git -C px4_drv rev-parse HEAD)" = "$PX4_DRV_REF"
           core_patch_sha256="$(sha256sum tools/mirakc/patches/dtv-core-receiver-control-concurrency.patch | awk '{ print $1 }')"
           px4_build_patch_sha256="$(sha256sum tools/mirakc/patches/px4-userland-build-jobs.patch | awk '{ print $1 }')"
+          pix_build_patch_sha256="$(sha256sum tools/mirakc/patches/pix-userland-android-16k.patch | awk '{ print $1 }')"
           test "$core_patch_sha256" = "$CORE_PATCH_SHA256" \
             || { echo "DTV-owned Core integration patch hash does not match the release pin" >&2; exit 1; }
           test "$px4_build_patch_sha256" = "$PX4_BUILD_PATCH_SHA256" \
             || { echo "DTV-owned PX4 build patch hash does not match the release pin" >&2; exit 1; }
+          test "$pix_build_patch_sha256" = "$PIX_BUILD_PATCH_SHA256" \
+            || { echo "DTV-owned PIX Android 16 KiB patch hash does not match the release pin" >&2; exit 1; }
           ./gradlew --no-daemon --max-workers=1 \
             -PuserlandCoreDir="$GITHUB_WORKSPACE/dtv-userland-core" \
             -PasicenUserlandDir="$GITHUB_WORKSPACE/asicen-userland" \
@@ -177,6 +181,7 @@ jobs:
             echo "siano_px4_userland_ref=$SIANO_PX4_USERLAND_REF"
             echo "px4_drv_ref=$PX4_DRV_REF"
             echo "px4_userland_build_patch_sha256=$px4_build_patch_sha256"
+            echo "pix_userland_build_patch_sha256=$pix_build_patch_sha256"
             echo "unsigned_apk_sha256=$(sha256sum "$apk" | awk '{ print $1 }')"
           } > out/CANDIDATE_BUILD_INFO.txt
           python3 tools/mirakc/release-attestation.py verify-unsigned \

@@ -71,6 +71,9 @@ for field, component in (
     assert module.SOURCE_REFS[field] == source_audit.EXPECTED[component]["commit"]
 assert module.PATCH_DIGESTS["dtv_userland_core_patch_sha256"] == source_audit.CORE_ANDROID_PATCH_SHA256
 assert module.PATCH_DIGESTS["px4_userland_build_patch_sha256"] == source_audit.PX4_BUILD_JOBS_PATCH_SHA256
+assert module.PATCH_DIGESTS["pix_userland_build_patch_sha256"] == source_audit.PIX_ANDROID_16K_PATCH_SHA256
+assert "PIX_BUILD_PATCH_SHA256" in candidate_workflow
+assert "pix_userland_build_patch_sha256=$pix_build_patch_sha256" in candidate_workflow
 
 valid = module.format_message({
     "candidate_run_id": "123",
@@ -245,6 +248,14 @@ with tempfile.TemporaryDirectory(prefix="mirakc-release-attestation-") as tempor
         pass
     else:
         raise AssertionError("candidate with an altered Core patch digest was accepted")
+    mismatch = dict(unsigned_info)
+    mismatch["pix_userland_build_patch_sha256"] = "0" * 64
+    try:
+        module.verify_candidate_build(mismatch, "0.4.1")
+    except module.AttestationError:
+        pass
+    else:
+        raise AssertionError("candidate with an altered PIX patch digest was accepted")
     missing_product = dict(unsigned_info)
     del missing_product["pix_userland_ref"]
     try:

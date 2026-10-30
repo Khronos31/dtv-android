@@ -32,6 +32,8 @@ CORE_ANDROID_PATCH_PATH = audit.CORE_ANDROID_PATCH_PATH.removeprefix("sources/dt
 CORE_ANDROID_PATCH_SHA256 = audit.CORE_ANDROID_PATCH_SHA256
 PX4_BUILD_JOBS_PATCH_PATH = audit.PX4_BUILD_JOBS_PATCH_PATH.removeprefix("sources/dtv-android/")
 PX4_BUILD_JOBS_PATCH_SHA256 = audit.PX4_BUILD_JOBS_PATCH_SHA256
+PIX_ANDROID_16K_PATCH_PATH = audit.PIX_ANDROID_16K_PATCH_PATH.removeprefix("sources/dtv-android/")
+PIX_ANDROID_16K_PATCH_SHA256 = audit.PIX_ANDROID_16K_PATCH_SHA256
 
 
 class MetadataError(Exception):
@@ -330,6 +332,10 @@ def generate(args: argparse.Namespace) -> Path:
                     "THIRD_PARTY_NOTICES.md",
                 )
             ]
+            patch_bytes = (dtv_root / PIX_ANDROID_16K_PATCH_PATH).read_bytes() if development_source is not None else git_bytes(dtv_root, "show", f"{args.dtv_ref}:{PIX_ANDROID_16K_PATCH_PATH}")
+            if digest(patch_bytes) != PIX_ANDROID_16K_PATCH_SHA256:
+                fail("DTV-owned PIX Android 16 KiB patch does not match its pinned digest")
+            source_inputs.append({"path": PIX_ANDROID_16K_PATCH_PATH, "sha256": PIX_ANDROID_16K_PATCH_SHA256})
         elif name == "siano-userland":
             revision_path = root / "cmake/px4-userland.revision"
             revision_bytes = revision_path.read_bytes()

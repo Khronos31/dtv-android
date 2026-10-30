@@ -91,20 +91,23 @@ core_upstream=$source_root/sources/dtv-userland-core
 core_patch=$dtv/tools/mirakc/patches/dtv-core-receiver-control-concurrency.patch
 px4_upstream=$px4
 px4_patch=$dtv/tools/mirakc/patches/px4-userland-build-jobs.patch
+pix_patch=$dtv/tools/mirakc/patches/pix-userland-android-16k.patch
 core_patch_sha256=$(sha256sum "$core_patch" | awk '{print $1}')
 px4_patch_sha256=$(sha256sum "$px4_patch" | awk '{print $1}')
-python3 - "$source_root/source-manifest.json" "$core_patch" "$core_patch_sha256" "$px4_patch" "$px4_patch_sha256" <<'PY'
+pix_patch_sha256=$(sha256sum "$pix_patch" | awk '{print $1}')
+python3 - "$source_root/source-manifest.json" "$core_patch" "$core_patch_sha256" "$px4_patch" "$px4_patch_sha256" "$pix_patch" "$pix_patch_sha256" <<'PY'
 import hashlib
 import json
 import sys
 from pathlib import Path
 
-manifest_path, core_patch_path, core_patch_sha, px4_patch_path, px4_patch_sha = sys.argv[1:]
+manifest_path, core_patch_path, core_patch_sha, px4_patch_path, px4_patch_sha, pix_patch_path, pix_patch_sha = sys.argv[1:]
 manifest_root = Path(manifest_path).parent
 manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
 for component_name, field, relative, patch_path, patch_sha in (
     ("dtv-userland-core", "android_integration_patch", "sources/dtv-android/tools/mirakc/patches/dtv-core-receiver-control-concurrency.patch", core_patch_path, core_patch_sha),
     ("px4-userland", "android_build_patch", "sources/dtv-android/tools/mirakc/patches/px4-userland-build-jobs.patch", px4_patch_path, px4_patch_sha),
+    ("pix-userland", "android_build_patch", "sources/dtv-android/tools/mirakc/patches/pix-userland-android-16k.patch", pix_patch_path, pix_patch_sha),
 ):
     component = next(item for item in manifest["components"] if item["name"] == component_name)
     provenance = component.get(field)
@@ -458,6 +461,14 @@ for abi in aarch64 armv7a; do
 
         pix_tree=$work/pix-$abi
         cp -a "$pix" "$pix_tree"
+        expected_pix_patch_sha256=a1155cb6400c59222abc5348d3e31a89def378e24c5540e62aed272fb02590d2
+        actual_pix_patch_sha256=$(sha256sum "$pix_patch" | awk '{print $1}')
+        [ "$actual_pix_patch_sha256" = "$expected_pix_patch_sha256" ] || {
+            printf '%s\n' "PIX Android 16 KiB patch checksum mismatch: $actual_pix_patch_sha256" >&2
+            exit 1
+        }
+        patch --dry-run --batch --fuzz=0 --forward -p1 -d "$pix_tree" -i "$pix_patch"
+        patch --batch --fuzz=0 --forward -p1 -d "$pix_tree" -i "$pix_patch"
         pix_output=$work/pix-output-$output_abi
         build_pix "$pix_tree" "$abi" "$pix_output"
         for program in pixd pixctl pix-ts; do

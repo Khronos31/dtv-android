@@ -173,6 +173,14 @@ def read_apk(path, expected_dtv_commit: str | None, allow_development_worktree: 
                 }
                 if component.get("license_relationships") != expected_relationships:
                     fail("APK Core source/license relationship inventory mismatch")
+            if name == "pix-userland":
+                expected_source_inputs = [{
+                    "path": source_audit.PIX_ANDROID_16K_PATCH_PATH.removeprefix("sources/dtv-android/"),
+                    "sha256": source_audit.PIX_ANDROID_16K_PATCH_SHA256,
+                }]
+                source_inputs = component.get("source_inputs")
+                if not isinstance(source_inputs, list) or source_inputs[-1:] != expected_source_inputs:
+                    fail("APK PIX Android 16 KiB patch provenance mismatch")
             if name == "siano-userland":
                 expected_px4_revision = (
                     EXPECTED["siano-px4-userland"]["commit"] + "\n"
@@ -197,13 +205,21 @@ def read_apk(path, expected_dtv_commit: str | None, allow_development_worktree: 
                     {"path": "THIRD_PARTY_NOTICES.md", "sha256": "f5c8e0c590c08cf846b5976e561fd5c6c57ac8dd0dccfe06c22feaadfd633efd"},
                 ]
                 actual_assets = component.get("source_inputs")
-                if not isinstance(actual_assets, list) or [item.get("path") for item in actual_assets] != [item["path"] for item in expected_assets]:
+                expected_patch = {
+                    "path": source_audit.PIX_ANDROID_16K_PATCH_PATH.removeprefix("sources/dtv-android/"),
+                    "sha256": source_audit.PIX_ANDROID_16K_PATCH_SHA256,
+                }
+                if not isinstance(actual_assets, list) or \
+                        [item.get("path") for item in actual_assets[:-1]] != [item["path"] for item in expected_assets] or \
+                        actual_assets[-1:] != [expected_patch]:
                     fail("APK PIX embedded firmware provenance mismatch")
-                for expected_input, actual_input in zip(expected_assets, actual_assets):
+                for expected_input, actual_input in zip(expected_assets, actual_assets[:-1]):
                     if actual_input.get("sha256") != expected_input["sha256"]:
                         fail("APK PIX preserved firmware digest mismatch")
                     if not re.fullmatch(r"[0-9a-f]{64}", str(actual_input.get("sha256", ""))):
                         fail("APK PIX provenance input digest is invalid")
+                if not re.fullmatch(r"[0-9a-f]{64}", expected_patch["sha256"]):
+                    fail("APK PIX Android 16 KiB patch digest is invalid")
                 expected_relationships = {
                     "project_sources": {"spdx": "MIT", "license_file": "LICENSE"},
                     "linked_component_notice": "THIRD_PARTY_NOTICES.md",

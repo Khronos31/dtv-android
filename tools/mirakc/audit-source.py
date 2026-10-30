@@ -41,6 +41,10 @@ PX4_BUILD_JOBS_PATCH_PATH = (
     "sources/dtv-android/tools/mirakc/patches/px4-userland-build-jobs.patch"
 )
 PX4_BUILD_JOBS_PATCH_SHA256 = "ba9c4607e3411e706e537a38cc879990f46db04977ca717e714e0004553a4a42"
+PIX_ANDROID_16K_PATCH_PATH = (
+    "sources/dtv-android/tools/mirakc/patches/pix-userland-android-16k.patch"
+)
+PIX_ANDROID_16K_PATCH_SHA256 = "a1155cb6400c59222abc5348d3e31a89def378e24c5540e62aed272fb02590d2"
 CARGO_GIT_VENDOR_PINS = {
     (
         "git+https://github.com/mirakc/utoipa?branch=fix-zip-v9.0#"
@@ -366,6 +370,7 @@ EXPECTED = {
             "sources/dtv-android/mirakc-tv-ui/src/main/java/dev/khronos31/mirakc/ui/MirakcTvScreen.kt",
             CORE_ANDROID_PATCH_PATH,
             PX4_BUILD_JOBS_PATCH_PATH,
+            PIX_ANDROID_16K_PATCH_PATH,
             "sources/dtv-android/tools/mirakc/audit-apk-native.sh",
             "sources/dtv-android/tools/mirakc/patches/px4-userland-build-jobs.patch",
             "sources/dtv-android/tools/mirakc/fetch-pinned-userland-sources.sh",
@@ -810,6 +815,17 @@ def audit_source_archive(path: Path, expected_dtv_commit: str | None = None) -> 
     if PX4_BUILD_JOBS_PATCH_PATH not in members or \
             sha256_bytes(member_bytes(path, PX4_BUILD_JOBS_PATCH_PATH)) != PX4_BUILD_JOBS_PATCH_SHA256:
         fail("PX4 bounded build-job patch is missing or mismatched")
+    pix_component = by_name["pix-userland"]
+    expected_pix_patch = {
+        "path": PIX_ANDROID_16K_PATCH_PATH,
+        "sha256": PIX_ANDROID_16K_PATCH_SHA256,
+        "upstream_commit": EXPECTED["pix-userland"]["commit"],
+    }
+    if pix_component.get("android_build_patch") != expected_pix_patch:
+        fail("PIX Android 16 KiB patch provenance is missing or mismatched")
+    if PIX_ANDROID_16K_PATCH_PATH not in members or \
+            sha256_bytes(member_bytes(path, PIX_ANDROID_16K_PATCH_PATH)) != PIX_ANDROID_16K_PATCH_SHA256:
+        fail("PIX Android 16 KiB patch is missing or mismatched")
     core_component = by_name["dtv-userland-core"]
     expected_core_patch = {
         "path": CORE_ANDROID_PATCH_PATH,
