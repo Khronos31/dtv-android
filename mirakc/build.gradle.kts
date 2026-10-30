@@ -1,3 +1,4 @@
+import java.io.File
 import java.net.URI
 import java.nio.file.Files
 import java.security.MessageDigest
@@ -16,6 +17,8 @@ val appVersionParts = Regex("""^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$""").ma
     ?: throw GradleException("mirakc/VERSION must hold a semantic version such as 1.2.3, found \"$appVersionText\"")
 val (appMajor, appMinor, appPatch) = appVersionParts.destructured
 val appVersionCode = appMajor.toInt() * 10000 + appMinor.toInt() * 100 + appPatch.toInt()
+val ciNativeCacheEnabled = providers.gradleProperty("ciNativeCache").orNull == "true"
+val nativeCacheFixtureOutputDir = providers.gradleProperty("mirakcNativeCacheFixtureOutputDir").orNull?.let(::file)
 
 val nativeOutputDir = layout.projectDirectory.dir("src/main/jniLibs")
 val configuredNdkVersion = providers.environmentVariable("ANDROID_NDK_HOME").orNull
@@ -71,10 +74,32 @@ val sianoBuildScript = sianoUserlandDir.map { file(it).resolve("scripts/build-an
 val mirakcAribSourceDir = providers.gradleProperty("mirakcAribSourceDir")
     .orElse(layout.projectDirectory.dir("../.work/mirakc-arib-0.24.40").asFile.absolutePath)
 val mirakcAribBuildScript = layout.projectDirectory.file("../tools/mirakc-arib/build-android.sh")
+val mirakcAribSourceStageScript = layout.projectDirectory.file("../tools/mirakc-arib/prepare-build-source.sh")
 val mirakcAribBootstrapScript = layout.projectDirectory.file("../tools/mirakc-arib/bootstrap-autotools.sh")
 val mirakcAribToolchainFile = layout.projectDirectory.file("../tools/mirakc-arib/android.toolchain.cmake")
 val mirakcAribVerifierScript = layout.projectDirectory.file("../tools/mirakc-arib/verify-android-elf.sh")
 val mirakcAribAndroidPatch = layout.projectDirectory.file("../tools/mirakc-arib/patches/tsduck-android.patch")
+val mirakcAribPinnedRef = "312168e85b30941a1fc0344900fd543a036ea341"
+val mirakcAribVendorVersions = mirakcAribSourceDir.map { directoryName ->
+    val source = file(directoryName)
+    val versionScript = source.resolve("scripts/tag-or-hash")
+    val vendors = listOf("docopt", "fmt", "spdlog", "rapidjson", "cppcodec", "aribb24", "tsduck-arib", "libisdb", "googletest", "google-benchmark")
+    val versions = vendors.joinToString("\n") { vendor ->
+        val process = ProcessBuilder("/bin/sh", versionScript.absolutePath)
+            .directory(source.resolve("vendor/$vendor"))
+            .redirectErrorStream(true)
+            .start()
+        val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
+        if (process.waitFor() != 0) throw GradleException("unable to read pinned ARIB vendor version: $vendor")
+        "$vendor=$output"
+    }
+    val benchmark = ProcessBuilder(
+        "git", "describe", "--tags", "--match", "v[0-9]*.[0-9]*.[0-9]*", "--abbrev=8"
+    ).directory(source.resolve("vendor/google-benchmark")).redirectErrorStream(true).start()
+    val benchmarkVersion = benchmark.inputStream.bufferedReader().use { it.readText() }.trim()
+    if (benchmark.waitFor() != 0) throw GradleException("unable to read pinned Google Benchmark Git version")
+    "$versions\ngoogle-benchmark-cmake=$benchmarkVersion"
+}
 val sianoAdapterSource = layout.projectDirectory.file("src/main/cpp/siano_adapter.cpp")
 val sianoAdapterCmake = layout.projectDirectory.file("src/main/cpp/CMakeLists.txt")
 val sianoAdapterVerifier = layout.projectDirectory.file("../tools/mirakc/verify-android-elf.sh")
@@ -128,6 +153,25 @@ val runPx4RuntimeSocketPathHostTests = tasks.register<Exec>("runPx4RuntimeSocket
 val androidNdkRoot = providers.environmentVariable("ANDROID_NDK_HOME")
     .orElse(providers.environmentVariable("ANDROID_NDK_ROOT"))
     .orElse("/config/.tools/android-sdk/ndk/$configuredNdkVersion")
+fun toolFromPath(name: String): File {
+    return System.getenv("PATH").split(File.pathSeparator)
+        .map { File(it, name) }
+        .firstOrNull { it.isFile && it.canExecute() }
+        ?: throw GradleException("required cache tool is missing from PATH: $name")
+}
+val nativeToolchainExecutables = providers.provider {
+    val toolchain = file(androidNdkRoot.get()).resolve("toolchains/llvm/prebuilt/linux-x86_64/bin")
+    listOf("clang", "clang++", "llvm-ar", "llvm-strip").map { toolchain.resolve(it) }
+}
+val rustToolchainExecutables = providers.provider {
+    listOf("rustc", "cargo").map { name ->
+        val process = ProcessBuilder("rustup", "which", name).redirectErrorStream(true).start()
+        val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
+        if (process.waitFor() != 0) throw GradleException("unable to resolve Rust toolchain executable: $name")
+        file(output)
+    }
+}
+val cmakeToolchainExecutables = providers.provider { listOf(toolFromPath("cmake"), toolFromPath("ninja")) }
 
 val t1StateMachineSource = layout.projectDirectory.file("src/main/cpp/t1_state_machine.c")
 val t1StateMachineHeader = layout.projectDirectory.file("src/main/cpp/t1_state_machine.h")
@@ -242,12 +286,45 @@ val prepareMirakcAribBinaries = tasks.register("prepareMirakcAribBinaries") {
     inputs.property("mirakcAribSourceDir", mirakcAribSourceDir)
     inputs.files(
         mirakcAribBuildScript,
+        mirakcAribSourceStageScript,
         mirakcAribBootstrapScript,
         mirakcAribToolchainFile,
         mirakcAribVerifierScript,
         mirakcAribAndroidPatch
     )
-    outputs.files(mirakcAribBinaries)
+    inputs.files(mirakcAribSourceDir.map { directoryName ->
+        val source = file(directoryName)
+        val tracked = gitOutput(source, "ls-files", "-z", "--recurse-submodules")
+        if (tracked.first != 0) project.files() else project.files(
+            tracked.second.split('\u0000').filter { it.isNotEmpty() }.map { source.resolve(it) }
+        )
+    })
+    inputs.property("mirakcAribPinnedRef", mirakcAribPinnedRef)
+    inputs.property("mirakcAribVendorVersions", mirakcAribVendorVersions)
+    inputs.property("mirakcAribAbis", "arm64-v8a,armeabi-v7a")
+    inputs.property("mirakcAribApi", 24)
+    inputs.property("androidNdkVersion", configuredNdkVersion)
+    inputs.property("androidCmakeVersion", "3.22.1")
+    inputs.property("androidNinjaVersion", "1.10.2")
+    inputs.property("androidNdkRevision", providers.provider {
+        file(androidNdkRoot.get()).resolve("source.properties").readLines()
+            .firstOrNull { it.startsWith("Pkg.Revision = ") }?.substringAfter("= ") ?: "missing"
+    })
+    inputs.property("aribHostToolchain", providers.provider {
+        listOf(listOf("cc", "--version"), listOf("make", "--version"), listOf("pkg-config", "--version"))
+            .joinToString("\n") { command ->
+                val process = ProcessBuilder(command).redirectErrorStream(true).start()
+                val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
+                if (process.waitFor() != 0) throw GradleException("unable to fingerprint ARIB host tool: ${command.first()}")
+                output
+            }
+    })
+    inputs.files(nativeToolchainExecutables, cmakeToolchainExecutables)
+    inputs.property("mirakcAribRecursiveGitlinks", providers.provider {
+        gitOutput(file(mirakcAribSourceDir.get()), "submodule", "status", "--recursive").second
+    })
+    outputs.files(nativeCacheFixtureOutputDir?.resolve("prepareMirakcAribBinaries.so") ?: mirakcAribBinaries)
+    outputs.cacheIf("CI native cache is enabled") { ciNativeCacheEnabled }
 
     doLast {
         val script = mirakcAribBuildScript.asFile
@@ -261,6 +338,7 @@ val prepareMirakcAribBinaries = tasks.register("prepareMirakcAribBinaries") {
             project.exec {
                 workingDir(project.rootDir)
                 commandLine("/bin/sh", script.absolutePath)
+                environment("ANDROID_ABI", abi)
                 environment("MIRAKC_ARIB_ABI", abi)
                 environment("MIRAKC_ARIB_SOURCE_DIR", sourceDir.absolutePath)
                 environment("MIRAKC_ARIB_BUILD_DIR", project.rootDir.resolve(".work/build-mirakc-arib-gradle-$abi").absolutePath)
@@ -639,7 +717,16 @@ val prepareMirakcBinary = tasks.register("prepareMirakcBinary") {
     inputs.property("mirakcSourceState", mirakcSourceState)
     inputs.files(mirakcBuildScript, mirakcVerifierScript, mirakcAndroidPatch)
     inputs.files(mirakcTrackedSourceFiles)
-    outputs.files(mirakcBinaries)
+    inputs.files(nativeToolchainExecutables, rustToolchainExecutables)
+    inputs.property("androidNdkVersion", configuredNdkVersion)
+    inputs.property("androidApi", 24)
+    inputs.property("androidAbis", "arm64-v8a,armeabi-v7a")
+    inputs.property("cargoBuildJobs", providers.environmentVariable("CARGO_BUILD_JOBS").orElse("1"))
+    inputs.property("rustcVersion", providers.provider { providers.exec { commandLine("rustc", "--version", "--verbose") }.standardOutput.asText.get() })
+    inputs.property("cargoVersion", providers.provider { providers.exec { commandLine("cargo", "--version") }.standardOutput.asText.get() })
+    inputs.property("rustLinkFlags", "16k-page-size;relro;now;thin-lto")
+    outputs.files(nativeCacheFixtureOutputDir?.resolve("prepareMirakcBinary.so") ?: mirakcBinaries)
+    outputs.cacheIf("CI native cache is enabled") { ciNativeCacheEnabled }
 
     doLast {
         val sourceDir = file(mirakcSourceDir.get())
@@ -673,6 +760,121 @@ val prepareMirakcBinary = tasks.register("prepareMirakcBinary") {
 
         buildAbi("arm64-v8a")
         buildAbi("armeabi-v7a")
+    }
+}
+
+val validateMirakcNativeCacheInputs = tasks.register("validateMirakcNativeCacheInputs") {
+    doLast {
+        val source = file(mirakcSourceDir.get())
+        val cargoHome = System.getenv("CARGO_HOME")?.let(::file)
+            ?: if (file("/config/.tools").isDirectory) file("/config/.tools/cargo")
+            else file(System.getProperty("user.home")).resolve(".cargo")
+        val cargoConfigPaths = mutableListOf<File>()
+        var ancestor: File? = source.absoluteFile
+        while (ancestor != null) {
+            cargoConfigPaths.add(ancestor.resolve(".cargo/config"))
+            cargoConfigPaths.add(ancestor.resolve(".cargo/config.toml"))
+            ancestor = ancestor.parentFile
+        }
+        cargoConfigPaths.add(cargoHome.resolve("config"))
+        cargoConfigPaths.add(cargoHome.resolve("config.toml"))
+        if (cargoConfigPaths.any { it.exists() }) {
+            throw GradleException("Cargo configuration overrides are unsupported for mirakc native cache")
+        }
+        val environment = System.getenv()
+        val overrideNames = setOf(
+            "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_RUSTFLAGS", "CARGO_BUILD_TARGET",
+            "RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTUP_TOOLCHAIN", "RUSTC_BOOTSTRAP",
+            "MIRAKC_SOURCE_URL", "MIRAKC_SOURCE_REF", "MIRAKC_CLEAN_ROOM", "MIRAKC_GIT_BIN"
+        )
+        val overrides = environment.keys.filter {
+            it in overrideNames || it.startsWith("CARGO_PROFILE_") || it.startsWith("CARGO_TARGET_")
+        }
+        if (overrides.isNotEmpty()) throw GradleException("unsupported Rust environment overrides: ${overrides.joinToString()}")
+        val head = gitOutput(source, "rev-parse", "HEAD")
+        if (head.first != 0 || head.second != mirakcPinnedRef) {
+            throw GradleException("mirakc cache source pin mismatch: expected $mirakcPinnedRef, found ${head.second}")
+        }
+        if (gitStatusOutput(source).let { it.first != 0 || it.second.isNotEmpty() }) {
+            throw GradleException("mirakc cache source checkout must be clean: $source")
+        }
+        val lockSha = MessageDigest.getInstance("SHA-256").digest(source.resolve("Cargo.lock").readBytes())
+            .joinToString("") { byte: Byte -> "%02x".format(byte.toInt() and 0xff) }
+        if (lockSha != "005a492cfdd0f6d44dd78585359caa0aa28b3c78eb46aaa6c55b18854f78a8b8") {
+            throw GradleException("mirakc cache Cargo.lock digest mismatch: $lockSha")
+        }
+        val patchSha = MessageDigest.getInstance("SHA-256").digest(mirakcAndroidPatch.asFile.readBytes())
+            .joinToString("") { byte: Byte -> "%02x".format(byte.toInt() and 0xff) }
+        if (patchSha != "7b0de81b73a3e8f1da35ca4a3f6ad70865a97b9c057c4b35dd22fc1af67fe0af") {
+            throw GradleException("mirakc cache patch digest mismatch: $patchSha")
+        }
+        val ndk = file(androidNdkRoot.get())
+        val ndkRevision = ndk.resolve("source.properties").readLines()
+            .firstOrNull { it.startsWith("Pkg.Revision = ") }?.substringAfter("= ")
+        val rustc = providers.exec { commandLine("rustc", "--version", "--verbose") }.standardOutput.asText.get()
+        val cargo = providers.exec { commandLine("cargo", "--version") }.standardOutput.asText.get()
+        if (ndkRevision != "27.0.12077973" || !rustc.startsWith("rustc 1.98.1 ") || !cargo.startsWith("cargo 1.98.1 ")) {
+            throw GradleException("mirakc cache requires NDK 27.0.12077973 and Rust/Cargo 1.98.1")
+        }
+        if (System.getenv("CARGO_BUILD_JOBS") != "1") throw GradleException("mirakc native cache requires CARGO_BUILD_JOBS=1")
+    }
+}
+
+val validateMirakcAribCacheInputs = tasks.register("validateMirakcAribCacheInputs") {
+    doLast {
+        val source = file(mirakcAribSourceDir.get())
+        val head = gitOutput(source, "rev-parse", "HEAD")
+        if (head.first != 0 || head.second != mirakcAribPinnedRef) {
+            throw GradleException("mirakc-arib cache source pin mismatch: expected $mirakcAribPinnedRef, found ${head.second}")
+        }
+        val patchSha = MessageDigest.getInstance("SHA-256").digest(mirakcAribAndroidPatch.asFile.readBytes())
+            .joinToString("") { byte: Byte -> "%02x".format(byte.toInt() and 0xff) }
+        if (patchSha != "8ce7be5fc624ff1b456948c0dc015ca883c1c6a9635b73106f6a7532f8da5b88") {
+            throw GradleException("mirakc-arib cache patch digest mismatch: $patchSha")
+        }
+        val status = gitStatusOutput(source)
+        if (status.first != 0 || status.second.isNotEmpty()) {
+            throw GradleException("mirakc-arib cache source checkout must be clean: $source")
+        }
+        val submodules = gitOutput(source, "submodule", "status", "--recursive")
+        if (submodules.first != 0 || submodules.second.lineSequence().any { it.firstOrNull() in listOf('+', '-', 'U') }) {
+            throw GradleException("mirakc-arib recursive submodules do not match pinned gitlinks")
+        }
+        val nestedStatus = gitOutput(source, "submodule", "foreach", "--quiet", "--recursive", "test -z \"$(git status --porcelain=v1 --untracked-files=all)\"")
+        if (nestedStatus.first != 0) throw GradleException("mirakc-arib recursive source checkout must be clean")
+        val ndk = file(androidNdkRoot.get())
+        val ndkRevision = ndk.resolve("source.properties").readLines()
+            .firstOrNull { it.startsWith("Pkg.Revision = ") }?.substringAfter("= ")
+        val cmake = providers.exec { commandLine("cmake", "--version") }.standardOutput.asText.get()
+            .lineSequence().first().substringAfter("cmake version ").substringBefore('-')
+        val ninja = providers.exec { commandLine("ninja", "--version") }.standardOutput.asText.get().trim()
+        if (ndkRevision != "27.0.12077973" || cmake != "3.22.1" || ninja != "1.10.2") {
+            throw GradleException("mirakc-arib cache requires NDK 27.0.12077973, CMake 3.22.1, and Ninja 1.10.2")
+        }
+        val overrides = listOf("CMAKE", "NINJA", "CMAKE_PREFIX_PATH", "CMAKE_GENERATOR", "CMAKE_TOOLCHAIN_FILE", "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "PKG_CONFIG_PATH", "PKG_CONFIG", "CC", "CXX", "AR", "RANLIB", "STRIP", "ANDROID_ABI", "MIRAKC_ARIB_ABI", "MIRAKC_ARIB_API", "MIRAKC_ARIB_SOURCE_REF", "MIRAKC_ARIB_SOURCE_URL", "MIRAKC_ARIB_AUTOTOOLS_PREFIX", "MIRAKC_ARIB_AUTOTOOLS_WORK", "MIRAKC_ARIB_AUTOTOOLS_JOBS", "MIRAKC_CLEAN_ROOM")
+        val present = overrides.filter { System.getenv(it) != null }
+        if (present.isNotEmpty()) throw GradleException("unsupported mirakc-arib cache environment overrides: ${present.joinToString()}")
+    }
+}
+
+if (ciNativeCacheEnabled) {
+    prepareMirakcBinary.configure { dependsOn(validateMirakcNativeCacheInputs) }
+    prepareMirakcAribBinaries.configure { dependsOn(validateMirakcAribCacheInputs) }
+}
+
+val verifyCachedMirakcNativeBinaries = tasks.register("verifyCachedMirakcNativeBinaries") {
+    dependsOn(prepareMirakcBinary, prepareMirakcAribBinaries)
+    doLast {
+        listOf("arm64-v8a", "armeabi-v7a").forEach { abi ->
+            project.exec {
+                commandLine("/bin/sh", mirakcVerifierScript.asFile.absolutePath,
+                    nativeOutputDir.file("$abi/libmirakc.so").asFile.absolutePath, abi)
+            }
+            project.exec {
+                commandLine("/bin/sh", mirakcAribVerifierScript.asFile.absolutePath,
+                    nativeOutputDir.file("$abi/libmirakc-arib.so").asFile.absolutePath, abi)
+            }
+        }
     }
 }
 
@@ -1560,6 +1762,7 @@ tasks.named("writeDebugDtvStatusInputFixture") {
 plugins.withId("com.android.application") {
     tasks.matching { it.name == "preBuild" || it.name.endsWith("JniLibFolders") }
         .configureEach {
+            if (ciNativeCacheEnabled) dependsOn(verifyCachedMirakcNativeBinaries)
             dependsOn(prepareSianoBinaries)
             dependsOn(prepareAsicenBinaries)
             dependsOn(preparePixBinaries)
