@@ -34,6 +34,9 @@ internal class MirakcSupervisor(
     private val px4Devices: () -> List<Px4DeviceIdentity>,
     private val openPx4: (Px4DeviceIdentity) -> Px4UsbHandle,
     private val px4Firmware: () -> File,
+    private val userlandDevices: () -> List<UserlandUsbIdentity>,
+    private val openUserlandUsb: (UserlandUsbIdentity) -> UserlandOwnedUsb,
+    private val onUserlandReady: (UserlandGeneration) -> Unit,
     private val onStateChanged: () -> Unit,
     private val onStartupResult: (Boolean) -> Boolean,
     private val onGrScanStatus: (GrScanStatus) -> Unit = {}
@@ -60,22 +63,33 @@ internal class MirakcSupervisor(
     private val grScanRequests = GrScanRequestLifecycle()
     private var registeredScanId: Long? = null
     private var registeringScanId: Long? = null
-    private data class RuntimeAdapters(val broker: SianoTunerBroker, val px4: Px4DaemonSupervisor)
+    private data class RuntimeAdapters(
+        val broker: SianoTunerBroker,
+        val px4: Px4DaemonSupervisor,
+        val pix: UserlandProductSupervisor,
+        val asicen: UserlandProductSupervisor
+    )
     private val runtimeAdapters = RuntimeResourceCycle(createRuntimeAdapters(), ::createRuntimeAdapters)
     private val broker: SianoTunerBroker get() = runtimeAdapters.current().broker
     private val px4: Px4DaemonSupervisor get() = runtimeAdapters.current().px4
+    private val pix: UserlandProductSupervisor get() = runtimeAdapters.current().pix
+    private val asicen: UserlandProductSupervisor get() = runtimeAdapters.current().asicen
 
     private fun createRuntimeAdapters(): RuntimeAdapters {
         lateinit var created: RuntimeAdapters
         val broker = SianoTunerBroker(
             sianoExecutable = { File(context.applicationInfo.nativeLibraryDir, "libsiano-ts.so") },
+            sianodExecutable = { File(context.applicationInfo.nativeLibraryDir, "libsianod.so") },
+            ctlExecutable = { File(context.applicationInfo.nativeLibraryDir, "libsianoctl.so") },
             firmware = firmware,
+            runtimeDir = File(context.filesDir, "s1"),
             tunerDevices = tunerDevices,
             openTuner = openTuner,
             openReader = openReader
         )
         val px4 = Px4DaemonSupervisor(
             executable = { File(context.applicationInfo.nativeLibraryDir, "libpx4d.so") },
+            ctlExecutable = { File(context.applicationInfo.nativeLibraryDir, "libpx4ctl.so") },
             firmware = px4Firmware,
             identities = px4Devices,
             openDevice = openPx4,
@@ -90,7 +104,23 @@ internal class MirakcSupervisor(
                 }
             }
         )
-        created = RuntimeAdapters(broker, px4)
+        fun userlandBackend() = NativeUserlandOwnerBackend(
+            openUsb = openUserlandUsb,
+            executable = { product -> File(context.applicationInfo.nativeLibraryDir, product.daemonLibrary) },
+            ctlExecutable = { product -> File(context.applicationInfo.nativeLibraryDir, product.controlLibrary) }
+        )
+        val pix = UserlandProductSupervisor(
+            UserlandProduct.PIX, UserlandRuntimeLayout.rootDirectory(context.filesDir, UserlandProduct.PIX),
+            userlandDevices, userlandBackend(),
+            onFailure = { if (runtimeAdapters.current() === created) reconfigure() }
+        )
+        val asicen = UserlandProductSupervisor(
+            UserlandProduct.ASICEN, UserlandRuntimeLayout.rootDirectory(context.filesDir, UserlandProduct.ASICEN),
+            userlandDevices, userlandBackend(),
+            onFailure = { if (runtimeAdapters.current() === created) reconfigure() },
+            onReady = onUserlandReady
+        )
+        created = RuntimeAdapters(broker, px4, pix, asicen)
         return created
     }
 
@@ -106,6 +136,8 @@ internal class MirakcSupervisor(
         val adapters = runtimeAdapters.current()
         adapters.broker.close()
         adapters.px4.stop()
+        adapters.pix.stop()
+        adapters.asicen.stop()
         runtimeAdapters.markTerminallyClosed(adapters)
     }
 
@@ -287,9 +319,36 @@ internal class MirakcSupervisor(
 
     fun px4Status(): String = px4.status()
 
+    fun userlandStatus(): String = "${pix.status()}\n${asicen.status()}"
+
+    fun userlandGenerations(): List<UserlandGeneration> = pix.generations() + asicen.generations()
+
+    fun prepareScanTuners(): List<Set<BroadcastSystem>> {
+        val sianoGeneration = broker.start()
+        val px4Generations = px4.startAllOrGet()
+        val userlandGenerations = pix.startReady() + asicen.startReady()
+        return buildList {
+            addAll(sianoGeneration.devices.map { it.receiver.systems })
+            addAll(px4Generations.flatMap { generation ->
+                generation.tuners.map { tuner ->
+                    buildSet {
+                        if (tuner.supportsTerrestrial) add(BroadcastSystem.ISDB_T)
+                        if (tuner.supportsSatellite) add(BroadcastSystem.ISDB_S)
+                    }
+                }
+            })
+            addAll(userlandGenerations.flatMap { generation -> generation.tuners.map { it.systems } })
+        }
+    }
+
     /** Invalidate a PX4 owner's descriptors directly from Android's detach event. */
     fun invalidatePx4Device(deviceName: String) {
         px4.invalidateDetachedDevice(deviceName)
+    }
+
+    fun invalidateUserlandDevice(deviceName: String) {
+        pix.invalidateForDetach(deviceName)
+        asicen.invalidateForDetach(deviceName)
     }
 
     /** Ask the running upstream JobManager to invoke its real EIT job once. */
@@ -443,6 +502,7 @@ internal class MirakcSupervisor(
             }
             val generation = broker.start()
             val px4Generation = px4.startAllOrGet()
+            val userlandGenerations = pix.startReady() + asicen.startReady()
             val abortAfterBrokerStart = synchronized(lock) { stopping }
             if (abortAfterBrokerStart) {
                 // stop() may have raced with broker.start(); do not leave a
@@ -457,7 +517,7 @@ internal class MirakcSupervisor(
             val config = layout.runtimeDirectory.resolve("config.yml")
             val temporaryConfig = config.resolveSibling("config.yml.tmp")
             temporaryConfig.writeText(
-                buildConfig(layout, strings, generation, px4Generation, mode),
+                buildConfig(layout, strings, generation, px4Generation, userlandGenerations, mode),
                 StandardCharsets.UTF_8
             )
             if (!temporaryConfig.renameTo(config)) {
@@ -689,7 +749,7 @@ internal class MirakcSupervisor(
                 try {
                     val body = connection.inputStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
                     if (connection.responseCode == HttpURLConnection.HTTP_OK &&
-                        body.contains("\"current\":\"3.4.88\"")) return
+                        body.contains("\"current\":\"3.4.91\"")) return
                     lastError = "unexpected version response"
                 } finally {
                     connection.disconnect()
@@ -1036,6 +1096,7 @@ internal class MirakcSupervisor(
         strings: File,
         generation: SianoGeneration,
         px4Generations: List<Px4Generation>,
+        userlandGenerations: List<UserlandGeneration>,
         mode: MirakcRuntimeMode
     ): String {
         val arib = File(context.applicationInfo.nativeLibraryDir, "libmirakc-arib.so")
@@ -1046,15 +1107,23 @@ internal class MirakcSupervisor(
         val aribPath = yamlPath(arib)
         val b25FilterPath = yamlPath(b25Filter)
         val tunerConfig = buildString {
-            if (generation.tunerCount == 0 && px4Generations.isEmpty()) {
+            if (generation.tunerCount == 0 && px4Generations.isEmpty() && userlandGenerations.isEmpty()) {
                 append("tuners: []\n")
             } else {
                 append("tuners:\n")
             }
             if (generation.tunerCount > 0) {
                 repeat(generation.tunerCount) { index ->
+                    val receiver = generation.devices[index].receiver
+                    val types = buildList {
+                        if (BroadcastSystem.ISDB_T in receiver.systems) add("GR")
+                        if (BroadcastSystem.ISDB_S in receiver.systems) {
+                            add("BS")
+                            add("CS")
+                        }
+                    }
                     append("  - name: Siano-$index\n")
-                    append("    types: [GR]\n")
+                    append("    types: [${types.joinToString(", ")}]\n")
                     append("    command: ")
                     append(yamlPath(adapter))
                     append(" --socket=@")
@@ -1081,20 +1150,20 @@ internal class MirakcSupervisor(
                     append("    decoded: true\n")
                     append("    command: ")
                     append(yamlPath(px4Adapter))
-                    append(" --px4-ts=")
+                    append(" --ts-program=")
                     append(px4Ts)
                     append(" ")
                     append(px4.adapterArguments(tuner.receiver).joinToString(" "))
-                    append(" --runtime-dir=")
-                    append(yamlPath(px4.runtimeDir))
                     append(" --channel={{{channel}}}")
                     if (tuner.supportsSatellite) append(" {{{extra_args}}}")
                     append("\n")
                 }
             }
+            append(renderUserlandTunerCommands(File(context.applicationInfo.nativeLibraryDir), userlandGenerations))
         }
-        val hasSatellitePx4 = px4Generations.any { px4 -> px4.tuners.any { it.supportsSatellite } }
-        val satelliteChannelConfig = if (!hasSatellitePx4 || mode == MirakcRuntimeMode.SCAN_ONLY) {
+        val hasSatelliteTuner = px4Generations.any { px4 -> px4.tuners.any { it.supportsSatellite } } ||
+            userlandGenerations.any { generation -> generation.tuners.any { BroadcastSystem.ISDB_S in it.systems } }
+        val satelliteChannelConfig = if (!hasSatelliteTuner || mode == MirakcRuntimeMode.SCAN_ONLY) {
             ""
         } else {
             renderPx4SatelliteChannelConfig()
@@ -1104,7 +1173,8 @@ internal class MirakcSupervisor(
         } else {
             renderTerrestrialChannelConfig(
                 terrestrialChannels(),
-                appendListHeaderWhenEmpty = px4Generations.any { px4 -> px4.tuners.any { it.supportsTerrestrial } }
+                appendListHeaderWhenEmpty = px4Generations.any { px4 -> px4.tuners.any { it.supportsTerrestrial } } ||
+                    userlandGenerations.any { generation -> generation.tuners.any { BroadcastSystem.ISDB_T in it.systems } }
             )
         }
         val epgIntervalMinutes = EpgUpdateIntervalStore(

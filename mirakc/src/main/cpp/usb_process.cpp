@@ -10,6 +10,8 @@
 #include <algorithm>
 #include <cstring>
 #include <string>
+#include "userland_process_launcher.h"
+#include <vector>
 
 namespace {
 
@@ -293,63 +295,101 @@ Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStartMirakc(
     const std::string executablePath = stringFromJni(env, executable);
     const std::string configPath = stringFromJni(env, config);
     if (executablePath.empty() || configPath.empty()) return nullptr;
-
-    // Keep the upstream process' bounded logs observable by the Android
-    // service. A pipe is preferable to native logcat: Kotlin can cap each
-    // line and retain the exact startup diagnostics alongside the exit code.
-    int logPipe[2];
-    if (pipe(logPipe) != 0) return nullptr;
-    const pid_t mirakc = fork();
-    if (mirakc < 0) {
-        close(logPipe[0]);
-        close(logPipe[1]);
-        return nullptr;
-    }
-    if (mirakc == 0) {
-        setpgid(0, 0);
-        // Do not bind this child to the short-lived Kotlin startup worker:
-        // Linux applies PDEATHSIG when that parent thread exits. Normal
-        // shutdown uses NativeUsbProcess.stop() and process-group cleanup;
-        // Android app teardown is handled by the process cgroup.
-        // Preserve only the write end while dropping Binder/socket FDs from
-        // the app process. Kotlin consumes this pipe on a daemon reader.
-        close_inherited_descriptors(logPipe[1]);
-        close(logPipe[0]);
-        if (dup2(logPipe[1], STDOUT_FILENO) < 0 ||
-            dup2(logPipe[1], STDERR_FILENO) < 0) {
-            _exit(127);
-        }
-        if (logPipe[1] > STDERR_FILENO) close(logPipe[1]);
-        const int nullFd = open("/dev/null", O_RDONLY);
-        if (nullFd >= 0) {
-            dup2(nullFd, STDIN_FILENO);
-            if (nullFd > STDERR_FILENO) close(nullFd);
-        }
-        // All generated paths are absolute, but a stable app-private cwd
-        // prevents an upstream relative fallback resolving under /data/local/tmp.
-        const std::string::size_type slash = configPath.rfind('/');
-        if (slash != std::string::npos && slash > 0) {
-            const std::string directory = configPath.substr(0, slash);
-            if (chdir(directory.c_str()) != 0) {
-                dprintf(STDERR_FILENO, "mirakc: chdir(%s): %s\n", directory.c_str(), strerror(errno));
-                _exit(127);
-            }
-        }
-        execl(executablePath.c_str(), executablePath.c_str(), "--config", configPath.c_str(), nullptr);
-        dprintf(STDERR_FILENO, "mirakc: exec %s: %s\n", executablePath.c_str(), strerror(errno));
-        _exit(127);
-    }
-    setpgid(mirakc, mirakc);
-    close(logPipe[1]);
-    jint values[] = {logPipe[0], mirakc};
+    const std::string::size_type slash = configPath.rfind('/');
+    const std::string directory = slash != std::string::npos && slash > 0
+        ? configPath.substr(0, slash) : std::string();
+    const char* arguments[] = {executablePath.c_str(), "--config", configPath.c_str(), nullptr};
+    const auto started = mirakc::userland_process::start_command(
+        executablePath.c_str(), arguments, -1, -1, directory.empty() ? nullptr : directory.c_str());
+    if (started.pid <= 0 || started.output_fd < 0) return nullptr;
+    jint values[] = {started.output_fd, started.pid};
     jintArray result = env->NewIntArray(2);
     if (result == nullptr) {
-        close(logPipe[0]);
-        kill(-mirakc, SIGTERM);
-        waitpid(mirakc, nullptr, 0);
+        close(started.output_fd);
+        kill(-started.pid, SIGTERM);
+        waitpid(started.pid, nullptr, 0);
         return nullptr;
     }
     env->SetIntArrayRegion(result, 0, 2, values);
+    return result;
+}
+
+extern "C" JNIEXPORT jintArray JNICALL
+Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStartCommand(
+    JNIEnv* env, jclass, jstring executable, jobjectArray arguments, jint firstUsbFd, jint secondUsbFd) {
+    const std::string executablePath = stringFromJni(env, executable);
+    const bool hasFirst = firstUsbFd >= 0;
+    const bool hasSecond = secondUsbFd >= 0;
+    if (executablePath.empty() || (hasSecond && !hasFirst) ||
+        (hasFirst && hasSecond && firstUsbFd == secondUsbFd)) return nullptr;
+
+    const jsize argumentCount = env->GetArrayLength(arguments);
+    if (argumentCount < 0 || argumentCount > 128) return nullptr;
+    std::vector<std::string> argumentStorage;
+    argumentStorage.reserve(static_cast<std::size_t>(argumentCount));
+    for (jsize index = 0; index < argumentCount; ++index) {
+        auto value = static_cast<jstring>(env->GetObjectArrayElement(arguments, index));
+        if (value == nullptr) return nullptr;
+        std::string argument = stringFromJni(env, value);
+        env->DeleteLocalRef(value);
+        if (argument.find('\0') != std::string::npos) return nullptr;
+        argumentStorage.push_back(std::move(argument));
+    }
+    std::vector<char*> argv;
+    argv.reserve(argumentStorage.size() + 2U);
+    argv.push_back(const_cast<char*>(executablePath.c_str()));
+    for (std::string& argument : argumentStorage) argv.push_back(argument.data());
+    argv.push_back(nullptr);
+
+    const auto started = mirakc::userland_process::start_command(
+        executablePath.c_str(), const_cast<const char* const*>(argv.data()),
+        hasFirst ? firstUsbFd : -1, hasSecond ? secondUsbFd : -1);
+    if (started.pid <= 0 || started.output_fd < 0) return nullptr;
+    jint values[] = {started.output_fd, static_cast<jint>(started.pid)};
+    jintArray result = env->NewIntArray(2);
+    if (result == nullptr) {
+        close(started.output_fd);
+        kill(-started.pid, SIGTERM);
+        waitpid(started.pid, nullptr, 0);
+        return nullptr;
+    }
+    env->SetIntArrayRegion(result, 0, 2, values);
+    return result;
+}
+
+extern "C" JNIEXPORT jintArray JNICALL
+Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStartTsClient(
+    JNIEnv* env, jclass, jstring executable, jobjectArray arguments) {
+    const std::string executablePath = stringFromJni(env, executable);
+    if (executablePath.empty()) return nullptr;
+    const jsize argumentCount = env->GetArrayLength(arguments);
+    if (argumentCount < 0 || argumentCount > 128) return nullptr;
+    std::vector<std::string> argumentStorage;
+    argumentStorage.reserve(static_cast<std::size_t>(argumentCount));
+    for (jsize index = 0; index < argumentCount; ++index) {
+        auto value = static_cast<jstring>(env->GetObjectArrayElement(arguments, index));
+        if (value == nullptr) return nullptr;
+        std::string argument = stringFromJni(env, value);
+        env->DeleteLocalRef(value);
+        if (argument.find('\0') != std::string::npos) return nullptr;
+        argumentStorage.push_back(std::move(argument));
+    }
+    std::vector<char*> argv;
+    argv.reserve(argumentStorage.size() + 2U);
+    argv.push_back(const_cast<char*>(executablePath.c_str()));
+    for (std::string& argument : argumentStorage) argv.push_back(argument.data());
+    argv.push_back(nullptr);
+    const auto started = mirakc::userland_process::start_ts_client(
+        executablePath.c_str(), const_cast<const char* const*>(argv.data()));
+    if (started.pid <= 0 || started.ts_fd < 0 || started.diagnostic_fd < 0) return nullptr;
+    jint values[] = {started.ts_fd, started.diagnostic_fd, started.pid};
+    jintArray result = env->NewIntArray(3);
+    if (result == nullptr) {
+        close(started.ts_fd); close(started.diagnostic_fd);
+        kill(-started.pid, SIGTERM); waitpid(started.pid, nullptr, 0);
+        return nullptr;
+    }
+    env->SetIntArrayRegion(result, 0, 3, values);
     return result;
 }
 
@@ -384,79 +424,35 @@ Java_dev_khronos31_mirakc_NativeUsbProcess_nativeStartPx4d(
         return nullptr;
     }
 
-    int logPipe[2];
-    if (pipe2(logPipe, O_CLOEXEC) != 0) return nullptr;
-    const pid_t px4d = fork();
-    if (px4d < 0) {
-        close(logPipe[0]);
-        close(logPipe[1]);
-        return nullptr;
+    std::vector<std::string> argumentStorage{"--fd", "3"};
+    if (!single) {
+        argumentStorage.emplace_back("--fd");
+        argumentStorage.emplace_back("4");
     }
-    if (px4d == 0) {
-        // Kotlin startup workers are intentionally short-lived. Android's
-        // process cgroup and explicit nativeStop own teardown instead of a
-        // thread-scoped PR_SET_PDEATHSIG.
-        setpgid(0, 0);
+    argumentStorage.emplace_back("--device");
+    argumentStorage.emplace_back("serial:" + baseSerialValue);
+    argumentStorage.emplace_back("--instance");
+    argumentStorage.push_back(instanceTokenValue);
+    argumentStorage.emplace_back("--firmware");
+    argumentStorage.push_back(firmwarePath);
+    argumentStorage.emplace_back("--runtime-dir");
+    argumentStorage.push_back(runtimeDirPath);
+    std::vector<char*> argv;
+    argv.reserve(argumentStorage.size() + 2U);
+    argv.push_back(const_cast<char*>(executablePath.c_str()));
+    for (std::string& argument : argumentStorage) argv.push_back(argument.data());
+    argv.push_back(nullptr);
 
-        // The Android USB descriptors may already be numbered 3 or 4, and
-        // the log pipe can occupy those numbers too. Duplicate every source
-        // first so no dup2() target can overwrite a source still needed.
-        const int first = duplicate_for_exec(firstUsbFd);
-        const int second = single ? -1 : duplicate_for_exec(secondUsbFd);
-        const int log = duplicate_for_exec(logPipe[1]);
-        if (first < 0 || (!single && second < 0) || log < 0 || dup2(first, 3) < 0 ||
-            (!single && dup2(second, 4) < 0) || dup2(log, STDOUT_FILENO) < 0 ||
-            dup2(log, STDERR_FILENO) < 0) {
-            dprintf(log >= 0 ? log : logPipe[1],
-                    "px4d: unable to prepare USB descriptors: %s\n", strerror(errno));
-            _exit(127);
-        }
-        close(logPipe[0]);
-        if (logPipe[1] > STDERR_FILENO) close(logPipe[1]);
-        if (log > STDERR_FILENO) close(log);
-        if (first > STDERR_FILENO) close(first);
-        if (!single && second > STDERR_FILENO && second != first) close(second);
-        const int nullFd = open("/dev/null", O_RDONLY);
-        if (nullFd >= 0) {
-            dup2(nullFd, STDIN_FILENO);
-            if (nullFd > STDERR_FILENO) close(nullFd);
-        }
-        // Keep only stdio and the USB descriptors px4d was given.
-        close_inherited_descriptors(3, single ? -1 : 4);
-
-        char* argv_storage[14];
-        int argc = 0;
-        argv_storage[argc++] = const_cast<char*>(executablePath.c_str());
-        argv_storage[argc++] = const_cast<char*>("--fd");
-        argv_storage[argc++] = const_cast<char*>("3");
-        if (!single) {
-            argv_storage[argc++] = const_cast<char*>("--fd");
-            argv_storage[argc++] = const_cast<char*>("4");
-        }
-        argv_storage[argc++] = const_cast<char*>("--device");
-        argv_storage[argc++] = const_cast<char*>(baseSerialValue.c_str());
-        argv_storage[argc++] = const_cast<char*>("--instance");
-        argv_storage[argc++] = const_cast<char*>(instanceTokenValue.c_str());
-        argv_storage[argc++] = const_cast<char*>("--firmware");
-        argv_storage[argc++] = const_cast<char*>(firmwarePath.c_str());
-        argv_storage[argc++] = const_cast<char*>("--runtime-dir");
-        argv_storage[argc++] = const_cast<char*>(runtimeDirPath.c_str());
-        argv_storage[argc] = nullptr;
-        char* const* argv = argv_storage;
-        dprintf(STDERR_FILENO, "px4d: exec starting\n");
-        execv(executablePath.c_str(), argv);
-        const int error = errno;
-        dprintf(STDERR_FILENO, "px4d: exec %s: %s\n", executablePath.c_str(), strerror(error));
-        _exit(127);
-    }
-    setpgid(px4d, px4d);
-    close(logPipe[1]);
-    jint values[] = {logPipe[0], px4d};
+    const auto started = mirakc::userland_process::start_command(
+        executablePath.c_str(), const_cast<const char* const*>(argv.data()),
+        firstUsbFd, single ? -1 : secondUsbFd);
+    if (started.pid <= 0 || started.output_fd < 0) return nullptr;
+    jint values[] = {started.output_fd, static_cast<jint>(started.pid)};
     jintArray result = env->NewIntArray(2);
     if (result == nullptr) {
-        close(logPipe[0]);
-        kill(-px4d, SIGTERM);
-        waitpid(px4d, nullptr, 0);
+        close(started.output_fd);
+        kill(-started.pid, SIGTERM);
+        waitpid(started.pid, nullptr, 0);
         return nullptr;
     }
     env->SetIntArrayRegion(result, 0, 2, values);

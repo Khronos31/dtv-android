@@ -1,5 +1,7 @@
 import java.net.URI
+import java.nio.file.Files
 import java.security.MessageDigest
+import java.util.Base64
 import org.gradle.api.tasks.Exec
 import org.gradle.api.provider.Provider
 
@@ -25,21 +27,48 @@ val configuredNdkVersion = providers.environmentVariable("ANDROID_NDK_HOME").orN
         ?.name
     ?: "27.0.12077973"
 val nativeBinaries = listOf(
-    nativeOutputDir.file("arm64-v8a/libsiano-ts.so"),
-    nativeOutputDir.file("armeabi-v7a/libsiano-ts.so")
+    "arm64-v8a" to listOf("px4d", "px4-ts", "px4ctl", "sianod", "sianoctl", "siano-ts", "asicend", "asicenctl", "asicen-ts", "pixd", "pixctl", "pix-ts"),
+    "armeabi-v7a" to listOf("px4d", "px4-ts", "px4ctl", "sianod", "sianoctl", "siano-ts", "asicend", "asicenctl", "asicen-ts", "pixd", "pixctl", "pix-ts")
+).flatMap { (abi, programs) -> programs.map { program -> nativeOutputDir.file("$abi/lib$program.so") } }
+val userlandCoreDir = providers.gradleProperty("userlandCoreDir")
+    .orElse(layout.projectDirectory.dir("../.work/pinned-dtv-userland-core").asFile.absolutePath)
+val asicenUserlandDir = providers.gradleProperty("asicenUserlandDir")
+    .orElse(layout.projectDirectory.dir("../.work/pinned-asicen-userland").asFile.absolutePath)
+val pixUserlandDir = providers.gradleProperty("pixUserlandDir")
+    .orElse(layout.projectDirectory.dir("../.work/pinned-pix-userland").asFile.absolutePath)
+val sianoPx4UserlandDir = providers.gradleProperty("sianoPx4UserlandDir")
+    .orElse(layout.projectDirectory.dir("../.work/pinned-siano-px4-userland").asFile.absolutePath)
+val pixBuildScript = pixUserlandDir.map { file(it).resolve("tools/build-portable.sh") }
+val pixAdapterBinaries = listOf(
+    nativeOutputDir.file("arm64-v8a/libmirakc-pix-adapter.so"),
+    nativeOutputDir.file("armeabi-v7a/libmirakc-pix-adapter.so")
 )
+val px4PinnedRef = "5c91e8c57b288c0f490061789829e42dbbf61b3d"
+val sianoPinnedRef = "33c3468e7e10781ae6c7e9a5fd57a0c1b0825288"
+val asicenPinnedRef = "e2a86ca194b60f1111ecfa0a020cd0944c351c76"
+val pixPinnedRef = "66f5a731784d205d1d306edda9cc57071c087f8e"
+val corePinnedRef = "67420d1c909e9205841612a186ae4c7fbf4dd092"
+val sianoPx4PinnedRef = "90b08dfe79b0b40e393f015975c761863830866a"
+val asicenBuildScript = asicenUserlandDir.map { file(it).resolve("scripts/build-android.sh") }
+val libusbSourceDir = providers.gradleProperty("libusbSourceDir")
+    .orElse(layout.projectDirectory.dir("../.work/libusb-1.0.30").asFile.absolutePath)
+val libusbArchive = providers.gradleProperty("libusbArchive")
+    .orElse(layout.projectDirectory.dir("../.work/libusb-1.0.30.tar.bz2").asFile.absolutePath)
+val asicenFirmwareAsset = layout.projectDirectory.file("src/main/assets/asicen-loader.bin")
+val pixFirmwareAssets = pixUserlandDir.map { directoryName ->
+    listOf("firmware/dt181.bin", "firmware/dt295.bin").map { file(directoryName).resolve(it) }
+}
 val mirakcAribBinaries = listOf(
     nativeOutputDir.file("arm64-v8a/libmirakc-arib.so"),
     nativeOutputDir.file("armeabi-v7a/libmirakc-arib.so")
 )
 
 val sianoUserlandDir = providers.gradleProperty("sianoUserlandDir")
-    .orElse("/config/GitHub/siano-userland")
+    .orElse(layout.projectDirectory.dir("../.work/pinned-siano-userland").asFile.absolutePath)
 val sianoBuildScript = sianoUserlandDir.map { file(it).resolve("scripts/build-android.sh") }
-val sianoPinnedRef = "89c240b8af021d55d81b3b90fce79a3690605811"
 
 val mirakcAribSourceDir = providers.gradleProperty("mirakcAribSourceDir")
-    .orElse(layout.projectDirectory.dir("../.work/mirakc-arib-0.24.39").asFile.absolutePath)
+    .orElse(layout.projectDirectory.dir("../.work/mirakc-arib-0.24.40").asFile.absolutePath)
 val mirakcAribBuildScript = layout.projectDirectory.file("../tools/mirakc-arib/build-android.sh")
 val mirakcAribBootstrapScript = layout.projectDirectory.file("../tools/mirakc-arib/bootstrap-autotools.sh")
 val mirakcAribToolchainFile = layout.projectDirectory.file("../tools/mirakc-arib/android.toolchain.cmake")
@@ -52,10 +81,16 @@ val b25FilterSource = layout.projectDirectory.file("src/main/cpp/b25_filter_main
 val b25FilterCmake = layout.projectDirectory.file("src/main/cpp/CMakeLists.txt")
 val b25FilterVerifier = layout.projectDirectory.file("../tools/mirakc/verify-android-elf.sh")
 val px4AdapterSource = layout.projectDirectory.file("src/main/cpp/px4_adapter.cpp")
-val px4ConcurrencyPatch = layout.projectDirectory.file(
-    "../tools/mirakc/patches/px4-userland-receiver-control-concurrency.patch"
+val pixAdapterSource = layout.projectDirectory.file("src/main/cpp/pix_adapter.cpp")
+val adapterCliHeader = layout.projectDirectory.file("src/main/cpp/adapter_cli.h")
+val coreConcurrencyPatch = layout.projectDirectory.file(
+    "../tools/mirakc/patches/dtv-core-receiver-control-concurrency.patch"
 )
-val px4PatchedSourceDir = project.rootDir.resolve(".work/px4-userland-receiver-control")
+val px4BuildJobsPatch = layout.projectDirectory.file(
+    "../tools/mirakc/patches/px4-userland-build-jobs.patch"
+)
+val corePatchedSourceDir = project.rootDir.resolve(".work/dtv-userland-core-patched")
+val px4BuildSourceDir = project.rootDir.resolve(".work/px4-userland-build-source")
 val px4TunePlanSource = layout.projectDirectory.file("src/main/cpp/px4_tune_plan.cpp")
 val px4TunePlanHeader = layout.projectDirectory.file("src/main/cpp/px4_tune_plan.h")
 val px4TunePlanTests = layout.projectDirectory.file("src/main/cpp/tests/px4_tune_plan_test.cpp")
@@ -71,7 +106,7 @@ val px4RuntimeSocketPathTestScript =
 val px4AdapterCmake = layout.projectDirectory.file("src/main/cpp/CMakeLists.txt")
 val px4AdapterVerifier = layout.projectDirectory.file("../tools/mirakc/verify-android-elf.sh")
 val px4UserlandDir = providers.gradleProperty("px4UserlandDir")
-    .orElse("/config/GitHub/px4-userland")
+    .orElse(layout.projectDirectory.dir("../.work/pinned-px4-userland").asFile.absolutePath)
 
 val runPx4RuntimeSocketPathHostTests = tasks.register<Exec>("runPx4RuntimeSocketPathHostTests") {
     group = "verification"
@@ -90,6 +125,7 @@ val runPx4RuntimeSocketPathHostTests = tasks.register<Exec>("runPx4RuntimeSocket
             root.resolve("src/posix_ipc.cpp")
         )
     })
+    inputs.files(coreTrackedSourceFiles)
 }
 
 val androidNdkRoot = providers.environmentVariable("ANDROID_NDK_HOME")
@@ -140,9 +176,9 @@ val mirakcBinaries = listOf(
     nativeOutputDir.file("arm64-v8a/libmirakc.so"),
     nativeOutputDir.file("armeabi-v7a/libmirakc.so")
 )
-val mirakcPinnedRef = "09664c2eefd0dccc38cabd3717b081ac84bf0833"
+val mirakcPinnedRef = "4f0767e87b109cabd17ed1ded0311355244fa018"
 val mirakcSourceDir = providers.gradleProperty("mirakcSourceDir")
-    .orElse(layout.projectDirectory.dir("../.work/mirakc-3.4.88").asFile.absolutePath)
+    .orElse(layout.projectDirectory.dir("../.work/mirakc-3.4.91").asFile.absolutePath)
 val mirakcBuildScript = layout.projectDirectory.file("../tools/mirakc/build-android.sh")
 val mirakcVerifierScript = layout.projectDirectory.file("../tools/mirakc/verify-android-elf.sh")
 val mirakcAndroidPatch = layout.projectDirectory.file("../tools/mirakc/patches/mirakc-android-web-resilience.patch")
@@ -172,7 +208,7 @@ val prepareMirakcAribBinaries = tasks.register("prepareMirakcAribBinaries") {
                 commandLine("/bin/sh", script.absolutePath)
                 environment("MIRAKC_ARIB_ABI", abi)
                 environment("MIRAKC_ARIB_SOURCE_DIR", sourceDir.absolutePath)
-                environment("MIRAKC_ARIB_BUILD_DIR", project.rootDir.resolve(".work/build-mirakc-arib-$abi").absolutePath)
+                environment("MIRAKC_ARIB_BUILD_DIR", project.rootDir.resolve(".work/build-mirakc-arib-gradle-$abi").absolutePath)
                 environment("MIRAKC_ARIB_OUTPUT", destination.absolutePath)
             }
         }
@@ -182,7 +218,8 @@ val prepareMirakcAribBinaries = tasks.register("prepareMirakcAribBinaries") {
 }
 
 val prepareSianoAdapterBinaries = tasks.register("prepareSianoAdapterBinaries") {
-    inputs.files(sianoAdapterSource, sianoAdapterCmake, sianoAdapterVerifier)
+    dependsOn(preparePatchedCoreSource)
+    inputs.files(sianoAdapterSource, sianoAdapterCmake, sianoAdapterVerifier, coreTrackedSourceFiles)
     outputs.files(
         nativeOutputDir.file("arm64-v8a/libmirakc-siano-adapter.so"),
         nativeOutputDir.file("armeabi-v7a/libmirakc-siano-adapter.so")
@@ -203,6 +240,7 @@ val prepareSianoAdapterBinaries = tasks.register("prepareSianoAdapterBinaries") 
                     "-DCMAKE_TOOLCHAIN_FILE=${ndk.resolve("build/cmake/android.toolchain.cmake")}",
                     "-DANDROID_ABI=$abi", "-DANDROID_PLATFORM=android-24",
                     "-DANDROID_STL=c++_static",
+                    "-DDTV_USERLAND_CORE_DIR=${corePatchedSourceDir.absolutePath}",
                     "-DMIRAKC_BUILD_SIANO_ADAPTER=ON"
                 )
             }
@@ -290,10 +328,13 @@ val prepareB25FilterBinaries = tasks.register("prepareB25FilterBinaries") {
 }
 
 val preparePx4AdapterBinaries = tasks.register("preparePx4AdapterBinaries") {
+    dependsOn(preparePatchedCoreSource)
     dependsOn(runPx4TunePlanHostTests)
     inputs.property("px4UserlandDir", px4UserlandDir)
+    inputs.files(coreTrackedSourceFiles)
     inputs.files(
         px4AdapterSource,
+        adapterCliHeader,
         px4ReceiverRetryHeader,
         px4TunePlanSource,
         px4TunePlanHeader,
@@ -328,7 +369,7 @@ val preparePx4AdapterBinaries = tasks.register("preparePx4AdapterBinaries") {
         }
     )
     inputs.dir(px4UserlandDir.map { file(it).resolve("userland/include/px4") })
-    inputs.files(px4ConcurrencyPatch)
+    inputs.files(px4BuildJobsPatch, coreConcurrencyPatch, coreTrackedSourceFiles)
     outputs.files(
         nativeOutputDir.file("arm64-v8a/libmirakc-px4-adapter.so"),
         nativeOutputDir.file("armeabi-v7a/libmirakc-px4-adapter.so")
@@ -337,6 +378,7 @@ val preparePx4AdapterBinaries = tasks.register("preparePx4AdapterBinaries") {
     doLast {
         val ndk = file(androidNdkRoot.get())
         if (!ndk.isDirectory) throw GradleException("Android NDK not found at $ndk")
+        val stagedCore = corePatchedSourceDir
         fun buildAbi(abi: String) {
             val buildDir = project.rootDir.resolve(".work/build-px4-adapter-$abi")
             val destination = nativeOutputDir.dir(abi).file("libmirakc-px4-adapter.so").asFile
@@ -344,7 +386,8 @@ val preparePx4AdapterBinaries = tasks.register("preparePx4AdapterBinaries") {
             // clean-room build from a different checkout path stays byte-equal.
             val sourcePrefixMapFlags = listOf(
                 "-ffile-prefix-map=${px4AdapterSource.asFile.parent}=/src/dtv",
-                "-ffile-prefix-map=${px4PatchedSourceDir.absolutePath}=/src/px4",
+                "-ffile-prefix-map=${file(px4UserlandDir.get()).absolutePath}=/src/px4",
+                "-ffile-prefix-map=${stagedCore.absolutePath}=/src/core",
                 "-ffile-prefix-map=${buildDir.absolutePath}=/src/build"
             ).joinToString(" ")
             project.exec {
@@ -357,7 +400,8 @@ val preparePx4AdapterBinaries = tasks.register("preparePx4AdapterBinaries") {
                     "-DANDROID_ABI=$abi", "-DANDROID_PLATFORM=android-24",
                     "-DANDROID_STL=c++_static",
                     "-DMIRAKC_BUILD_PX4_ADAPTER=ON",
-                    "-DPX4_USERLAND_DIR=${px4PatchedSourceDir.absolutePath}",
+                    "-DPX4_USERLAND_DIR=${file(px4UserlandDir.get()).absolutePath}",
+                    "-DDTV_USERLAND_CORE_DIR=${stagedCore.absolutePath}",
                     "-DCMAKE_C_FLAGS=$sourcePrefixMapFlags",
                     "-DCMAKE_CXX_FLAGS=$sourcePrefixMapFlags"
                 )
@@ -384,7 +428,104 @@ val preparePx4AdapterBinaries = tasks.register("preparePx4AdapterBinaries") {
     }
 }
 tasks.named("preparePx4AdapterBinaries") {
-    dependsOn("preparePx4PatchedSource")
+    dependsOn(preparePatchedCoreSource)
+}
+
+val prepareAsicenAdapterBinaries = tasks.register("prepareAsicenAdapterBinaries") {
+    dependsOn(preparePatchedCoreSource)
+    inputs.files(px4AdapterSource, px4AdapterCmake, px4AdapterVerifier, asicenTrackedSourceFiles, coreTrackedSourceFiles)
+    inputs.files(
+        adapterCliHeader,
+        px4TunePlanSource,
+        px4TunePlanHeader,
+        px4ReceiverRetryHeader,
+        px4CardRetryHeader,
+        layout.projectDirectory.file("src/main/cpp/b25_filter.cpp"),
+        layout.projectDirectory.file("src/main/cpp/ccid_reader.c"),
+        layout.projectDirectory.file("src/main/cpp/ccid_reader.h"),
+        layout.projectDirectory.file("src/main/cpp/t1_state_machine.c"),
+        layout.projectDirectory.file("src/main/cpp/t1_state_machine.h"),
+        layout.projectDirectory.file("src/main/cpp/b_cas_card_ccid.c"),
+        fileTree(layout.projectDirectory.dir("src/main/cpp/arib25"))
+    )
+    outputs.files(
+        nativeOutputDir.file("arm64-v8a/libmirakc-asicen-adapter.so"),
+        nativeOutputDir.file("armeabi-v7a/libmirakc-asicen-adapter.so")
+    )
+    doLast {
+        val ndk = file(androidNdkRoot.get())
+        if (!ndk.isDirectory) throw GradleException("Android NDK not found at $ndk")
+        val asicen = file(asicenUserlandDir.get())
+        stagePinnedSource(asicen, asicenPinnedRef, project.rootDir.resolve(".work/staged-asicen-adapter-source"))
+        val stagedCore = corePatchedSourceDir
+        val stagedAsicen = project.rootDir.resolve(".work/staged-asicen-adapter-source")
+        fun buildAbi(abi: String) {
+            val buildDir = project.rootDir.resolve(".work/build-asicen-adapter-$abi")
+            val destination = nativeOutputDir.dir(abi).file("libmirakc-asicen-adapter.so").asFile
+            val prefixMapFlags = listOf(
+                "-ffile-prefix-map=${px4AdapterSource.asFile.parent}=/src/dtv",
+                "-ffile-prefix-map=${stagedAsicen.absolutePath}=/src/asicen",
+                "-ffile-prefix-map=${stagedCore.absolutePath}=/src/core",
+                "-ffile-prefix-map=${buildDir.absolutePath}=/src/build"
+            ).joinToString(" ")
+            project.exec {
+                workingDir(project.rootDir)
+                commandLine("cmake", "-S", px4AdapterSource.asFile.parent, "-B", buildDir.absolutePath, "-G", "Ninja",
+                    "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_TOOLCHAIN_FILE=${ndk.resolve("build/cmake/android.toolchain.cmake")}",
+                    "-DANDROID_ABI=$abi", "-DANDROID_PLATFORM=android-24", "-DANDROID_STL=c++_static",
+                    "-DMIRAKC_BUILD_ASICEN_ADAPTER=ON", "-DASICEN_USERLAND_DIR=${stagedAsicen.absolutePath}",
+                    "-DDTV_USERLAND_CORE_DIR=${stagedCore.absolutePath}",
+                    "-DCMAKE_C_FLAGS=$prefixMapFlags", "-DCMAKE_CXX_FLAGS=$prefixMapFlags")
+            }
+            project.exec { workingDir(project.rootDir); commandLine("ninja", "-C", buildDir.absolutePath, "asicen_adapter") }
+            val built = buildDir.resolve("libmirakc-asicen-adapter.so")
+            if (!built.isFile) throw GradleException("ASICEN adapter build produced no $built")
+            destination.parentFile.mkdirs()
+            built.copyTo(destination, overwrite = true)
+            destination.setExecutable(true, false)
+            project.exec { commandLine(ndk.resolve("toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip").absolutePath, "--strip-unneeded", destination.absolutePath) }
+            project.exec { commandLine("/bin/sh", px4AdapterVerifier.asFile.absolutePath, destination.absolutePath, abi) }
+        }
+        buildAbi("arm64-v8a")
+        buildAbi("armeabi-v7a")
+    }
+}
+
+val preparePixAdapterBinaries = tasks.register("preparePixAdapterBinaries") {
+    dependsOn(preparePatchedCoreSource)
+    inputs.files(pixAdapterSource, adapterCliHeader, px4AdapterCmake, px4AdapterVerifier, coreTrackedSourceFiles)
+    outputs.files(pixAdapterBinaries)
+    doLast {
+        val ndk = file(androidNdkRoot.get())
+        if (!ndk.isDirectory) throw GradleException("Android NDK not found at $ndk")
+        fun buildAbi(abi: String) {
+            val buildDir = project.rootDir.resolve(".work/build-pix-adapter-$abi")
+            val destination = nativeOutputDir.dir(abi).file("libmirakc-pix-adapter.so").asFile
+            val prefixMapFlags = listOf(
+                "-ffile-prefix-map=${pixAdapterSource.asFile.parent}=/src/dtv",
+                "-ffile-prefix-map=${corePatchedSourceDir.absolutePath}=/src/core",
+                "-ffile-prefix-map=${buildDir.absolutePath}=/src/build"
+            ).joinToString(" ")
+            project.exec {
+                workingDir(project.rootDir)
+                commandLine("cmake", "-S", pixAdapterSource.asFile.parent, "-B", buildDir.absolutePath, "-G", "Ninja",
+                    "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_TOOLCHAIN_FILE=${ndk.resolve("build/cmake/android.toolchain.cmake")}",
+                    "-DANDROID_ABI=$abi", "-DANDROID_PLATFORM=android-24", "-DANDROID_STL=c++_static",
+                    "-DMIRAKC_BUILD_PIX_ADAPTER=ON", "-DDTV_USERLAND_CORE_DIR=${corePatchedSourceDir.absolutePath}",
+                    "-DCMAKE_C_FLAGS=$prefixMapFlags", "-DCMAKE_CXX_FLAGS=$prefixMapFlags")
+            }
+            project.exec { workingDir(project.rootDir); commandLine("ninja", "-C", buildDir.absolutePath, "pix_adapter") }
+            val built = buildDir.resolve("libmirakc-pix-adapter.so")
+            if (!built.isFile) throw GradleException("PIX adapter build produced no $built")
+            destination.parentFile.mkdirs()
+            built.copyTo(destination, overwrite = true)
+            destination.setExecutable(true, false)
+            project.exec { commandLine(ndk.resolve("toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip").absolutePath, "--strip-unneeded", destination.absolutePath) }
+            project.exec { commandLine("/bin/sh", px4AdapterVerifier.asFile.absolutePath, destination.absolutePath, abi) }
+        }
+        buildAbi("arm64-v8a")
+        buildAbi("armeabi-v7a")
+    }
 }
 
 val mirakcSourceState = mirakcSourceDir.map { directoryName ->
@@ -485,10 +626,7 @@ val px4Binaries = listOf(
     nativeOutputDir.file("armeabi-v7a/libpx4-ts.so"),
     nativeOutputDir.file("armeabi-v7a/libpx4ctl.so")
 )
-val px4PinnedRef = "7ad5f6691f77a9aa58c4097f8b6dfea77f6d9b6a"
 val px4BuildScript = px4UserlandDir.map { file(it).resolve("scripts/build-android.sh") }
-val px4PinnedPatchSha256 = "c60214256a40b03f3469b5a508f149c12e599282edf103875a2170b816c4b697"
-
 fun gitOutput(directory: java.io.File, vararg args: String): Pair<Int, String> {
     val command = mutableListOf("git", "-C", directory.absolutePath)
     command.addAll(args)
@@ -498,6 +636,96 @@ fun gitOutput(directory: java.io.File, vararg args: String): Pair<Int, String> {
         process.waitFor() to output
     } catch (error: Exception) {
         1 to (error.message ?: error.javaClass.simpleName)
+    }
+}
+fun gitStatusOutput(directory: java.io.File): Pair<Int, ByteArray> {
+    return try {
+        val process = ProcessBuilder(
+            "git", "-C", directory.absolutePath, "status", "--porcelain=v1", "-z", "--untracked-files=all"
+        ).start()
+        val output = process.inputStream.use { it.readBytes() }
+        process.waitFor() to output
+    } catch (error: Exception) {
+        1 to (error.message ?: error.javaClass.simpleName).toByteArray(Charsets.UTF_8)
+    }
+}
+
+fun stagePinnedSource(root: java.io.File, pin: String, destination: java.io.File) {
+    val head = gitOutput(root, "rev-parse", "HEAD")
+    if (head.first != 0 || head.second != pin) {
+        throw GradleException("source HEAD mismatch at $root: expected $pin, found ${head.second}")
+    }
+    if (gitOutput(root, "diff", "--quiet").first != 0 || gitOutput(root, "diff", "--cached", "--quiet").first != 0) {
+        throw GradleException("pinned source checkout must have no tracked changes: $root")
+    }
+    if (destination.exists() && !destination.deleteRecursively()) {
+        throw GradleException("cannot clear generated source stage at $destination")
+    }
+    destination.mkdirs()
+    val archive = destination.parentFile.resolve("${destination.name}.tar")
+    try {
+        project.exec {
+            commandLine("git", "-C", root.absolutePath, "archive", "--format=tar", "--output", archive.absolutePath, pin)
+        }
+        project.exec { commandLine("tar", "-xf", archive.absolutePath, "-C", destination.absolutePath) }
+    } finally {
+        archive.delete()
+    }
+}
+
+fun trackedFiles(directory: Provider<String>, vararg paths: String) = directory.map { directoryName ->
+    val root = file(directoryName)
+    if (!root.isDirectory) {
+        project.files()
+    } else {
+        val result = gitOutput(root, "ls-files", "-z", "--", *paths)
+        if (result.first != 0) project.files() else project.files(
+            result.second.split('\u0000').filter { it.isNotEmpty() }.map { root.resolve(it) }
+        )
+    }
+}
+
+val coreTrackedSourceFiles = trackedFiles(userlandCoreDir, "CMakeLists.txt", "VERSION", "LICENSE", "cmake/**", "include/**", "src/**", "adapters/**")
+val asicenTrackedSourceFiles = trackedFiles(asicenUserlandDir, "CMakeLists.txt", "VERSION", "cmake/**", "include/**", "userland/**", "third_party/px4-userland/**", "scripts/build-android.sh", "scripts/verify-android-elf.sh", "firmware/README.txt", "LICENSE", "COPYING.gpl2", "THIRD_PARTY_NOTICES.md")
+val pixTrackedSourceFiles = trackedFiles(pixUserlandDir, "CMakeLists.txt", "VERSION", "include/**", "core-integration/**", "tools/build-portable.sh", "tools/core-notices.py", "firmware/**", "LICENSE", "licenses/**")
+val sianoPx4TrackedSourceFiles = trackedFiles(sianoPx4UserlandDir, "CMakeLists.txt", "VERSION", "cmake/**", "userland/**")
+
+val preparePatchedCoreSource = tasks.register("preparePatchedCoreSource") {
+    inputs.property("corePinnedRef", corePinnedRef)
+    inputs.files(coreTrackedSourceFiles, coreConcurrencyPatch)
+    outputs.dir(corePatchedSourceDir)
+    doLast {
+        val core = file(userlandCoreDir.get())
+        val patch = coreConcurrencyPatch.asFile
+        val expectedPatchSha256 = "9da0cf46a7727a5c7e20de165babd0bc2d78e47c119cad38c1f2c00abeb10521"
+        val actualPatchSha256 = MessageDigest.getInstance("SHA-256").digest(patch.readBytes())
+            .joinToString("") { byte: Byte -> "%02x".format(byte.toInt() and 0xff) }
+        if (actualPatchSha256 != expectedPatchSha256) {
+            throw GradleException("Core concurrency patch checksum mismatch: expected $expectedPatchSha256, found $actualPatchSha256")
+        }
+        stagePinnedSource(core, corePinnedRef, corePatchedSourceDir)
+        val check = ProcessBuilder(
+            "patch", "--dry-run", "--batch", "--fuzz=0", "--forward", "-p1", "-i", patch.absolutePath
+        ).directory(corePatchedSourceDir).redirectErrorStream(true).start()
+        val checkOutput = check.inputStream.bufferedReader().use { it.readText() }.trim()
+        if (check.waitFor() != 0) {
+            throw GradleException("Pinned Core concurrency patch does not apply cleanly: $checkOutput")
+        }
+        project.exec {
+            workingDir(corePatchedSourceDir)
+            commandLine("patch", "--batch", "--fuzz=0", "--forward", "-p1", "-i", patch.absolutePath)
+        }
+        val patchedWorkers = corePatchedSourceDir.resolve("adapters/host_daemon/src/control_workers.cpp")
+        val patchedWorkersSha256 = MessageDigest.getInstance("SHA-256").digest(patchedWorkers.readBytes())
+            .joinToString("") { byte: Byte -> "%02x".format(byte.toInt() and 0xff) }
+        corePatchedSourceDir.resolve("DTV-PATCH-METADATA.json").writeText(
+            "{\n" +
+                "  \"base_commit\": \"$corePinnedRef\",\n" +
+                "  \"patch_path\": \"tools/mirakc/patches/dtv-core-receiver-control-concurrency.patch\",\n" +
+                "  \"patch_sha256\": \"$actualPatchSha256\",\n" +
+                "  \"patched_control_workers_sha256\": \"$patchedWorkersSha256\"\n" +
+                "}\n"
+        )
     }
 }
 
@@ -544,7 +772,8 @@ val px4TrackedSourceFiles = px4UserlandDir.map { directoryName ->
             "VERSION",
             "cmake/**",
             "scripts/**",
-            "userland/**"
+            "userland/**",
+            "third_party/dtv-userland-core.revision"
         )
         if (result.first != 0) {
             project.files()
@@ -558,72 +787,51 @@ val px4TrackedSourceFiles = px4UserlandDir.map { directoryName ->
     }
 }
 
-val preparePx4PatchedSource = tasks.register("preparePx4PatchedSource") {
+val preparePx4BuildSource = tasks.register("preparePx4BuildSource") {
     inputs.property("px4UserlandDir", px4UserlandDir)
     inputs.property("px4PinnedRef", px4PinnedRef)
-    inputs.files(px4TrackedSourceFiles, px4ConcurrencyPatch)
-    outputs.dir(px4PatchedSourceDir)
+    inputs.files(px4TrackedSourceFiles, px4BuildJobsPatch)
+    outputs.dir(px4BuildSourceDir)
 
     doLast {
         val userlandDir = file(px4UserlandDir.get())
         if (!userlandDir.isDirectory) {
             throw GradleException("px4-userland directory not found at $userlandDir")
         }
-        val head = gitOutput(userlandDir, "rev-parse", "HEAD")
-        if (head.first != 0 || head.second != px4PinnedRef) {
-            throw GradleException(
-                "px4-userland HEAD mismatch: expected $px4PinnedRef, found ${head.second}"
-            )
-        }
-        if (gitOutput(userlandDir, "diff", "--quiet").first != 0 ||
-            gitOutput(userlandDir, "diff", "--cached", "--quiet").first != 0
-        ) {
-            throw GradleException("px4-userland checkout must be clean before applying DTV patch")
-        }
-        val patch = px4ConcurrencyPatch.asFile
+        stagePinnedSource(userlandDir, px4PinnedRef, px4BuildSourceDir)
+        val patch = px4BuildJobsPatch.asFile
         val actualPatchHash = MessageDigest.getInstance("SHA-256")
             .digest(patch.readBytes())
             .joinToString("") { byte: Byte -> "%02x".format(byte.toInt() and 0xff) }
-        if (actualPatchHash != px4PinnedPatchSha256) {
+        val expectedPatchHash = "ba9c4607e3411e706e537a38cc879990f46db04977ca717e714e0004553a4a42"
+        if (actualPatchHash != expectedPatchHash) {
             throw GradleException(
-                "px4-userland patch checksum mismatch: expected $px4PinnedPatchSha256, " +
+                "PX4 bounded-job patch checksum mismatch: expected $expectedPatchHash, " +
                     "found $actualPatchHash"
             )
         }
-
-        val archive = project.rootDir.resolve(".work/px4-userland-receiver-control.tar")
-        if (archive.exists()) archive.delete()
-        if (px4PatchedSourceDir.exists() && !px4PatchedSourceDir.deleteRecursively()) {
-            throw GradleException("cannot clear generated px4-userland source at $px4PatchedSourceDir")
+        val check = ProcessBuilder(
+            "patch", "--dry-run", "--batch", "--fuzz=0", "--forward", "-p1", "-i", patch.absolutePath
+        ).directory(px4BuildSourceDir).redirectErrorStream(true).start()
+        val checkOutput = check.inputStream.bufferedReader().use { it.readText() }.trim()
+        if (check.waitFor() != 0) {
+            throw GradleException("PX4 bounded-job patch does not apply cleanly: $checkOutput")
         }
-        px4PatchedSourceDir.mkdirs()
-        try {
-            project.exec {
-                commandLine(
-                    "git", "-C", userlandDir.absolutePath, "archive", "--format=tar",
-                    "--output", archive.absolutePath, px4PinnedRef
-                )
-            }
-            project.exec {
-                commandLine("tar", "-xf", archive.absolutePath, "-C", px4PatchedSourceDir.absolutePath)
-            }
-            project.exec {
-                workingDir(px4PatchedSourceDir)
-                commandLine("patch", "--batch", "--forward", "-p1", "-i", patch.absolutePath)
-            }
-        } finally {
-            archive.delete()
+        project.exec {
+            workingDir(px4BuildSourceDir)
+            commandLine("patch", "--batch", "--fuzz=0", "--forward", "-p1", "-i", patch.absolutePath)
         }
     }
 }
 
 val preparePx4Binaries = tasks.register("preparePx4Binaries") {
-    dependsOn(preparePx4PatchedSource)
+    dependsOn(preparePx4BuildSource, preparePatchedCoreSource)
     inputs.property("px4UserlandDir", px4UserlandDir)
     inputs.property("px4PinnedRef", px4PinnedRef)
     inputs.property("px4SourceState", px4SourceState)
     inputs.files(px4BuildScript)
-    inputs.file(px4ConcurrencyPatch)
+    inputs.file(px4BuildJobsPatch)
+    inputs.files(coreTrackedSourceFiles, coreConcurrencyPatch)
     inputs.files(px4TrackedSourceFiles)
     outputs.files(px4Binaries)
 
@@ -635,7 +843,7 @@ val preparePx4Binaries = tasks.register("preparePx4Binaries") {
                     "Set -Ppx4UserlandDir=/path/to/px4-userland."
             )
         }
-        val script = px4PatchedSourceDir.resolve("scripts/build-android.sh")
+        val script = px4BuildSourceDir.resolve("scripts/build-android.sh")
         if (!script.isFile) {
             throw GradleException(
                 "px4-userland build script not found at $script. " +
@@ -682,11 +890,12 @@ val preparePx4Binaries = tasks.register("preparePx4Binaries") {
             val outputDir = project.rootDir.resolve(".work/px4-userland-android-$abi")
             outputDir.mkdirs()
             project.exec {
-                workingDir(px4PatchedSourceDir)
+                workingDir(px4BuildSourceDir)
                 commandLine("/bin/sh", script.absolutePath, "--abi", abi, "--output", outputDir.absolutePath)
                 environment("ANDROID_NDK_HOME", ndkRoot)
                 environment("ANDROID_ABI", abi)
                 environment("PX4_ANDROID_BUILD_JOBS", "1")
+                environment("DTV_USERLAND_CORE_SOURCE_DIR", corePatchedSourceDir.absolutePath)
             }
 
             for (binary in listOf("px4d", "px4-ts", "px4ctl")) {
@@ -745,6 +954,9 @@ val sianoTrackedSourceFiles = sianoUserlandDir.map { directoryName ->
             "--",
             "Makefile",
             "VERSION",
+            "CMakeLists.txt",
+            "cmake/**",
+            "**/*.cpp",
             "*.c",
             "*.h",
             "scripts/build-android.sh",
@@ -763,6 +975,7 @@ val sianoTrackedSourceFiles = sianoUserlandDir.map { directoryName ->
 }
 
 val prepareSianoBinaries = tasks.register("prepareSianoBinaries") {
+    dependsOn(preparePatchedCoreSource)
     inputs.property("sianoUserlandDir", sianoUserlandDir)
     inputs.property("sianoPinnedRef", sianoPinnedRef)
     inputs.property("sianoSourceState", sianoSourceState)
@@ -770,7 +983,9 @@ val prepareSianoBinaries = tasks.register("prepareSianoBinaries") {
     // diagnostic below should be what the user sees.
     inputs.files(sianoBuildScript)
     inputs.files(sianoTrackedSourceFiles)
-    outputs.files(nativeBinaries)
+    inputs.files(coreTrackedSourceFiles, sianoPx4TrackedSourceFiles)
+    inputs.files(userlandCoreDir.map { file(it).resolve(".git/HEAD") }, sianoPx4UserlandDir.map { file(it).resolve(".git/HEAD") })
+    outputs.files(nativeBinaries.filter { it.asFile.name in setOf("libsianod.so", "libsianoctl.so", "libsiano-ts.so") })
 
     doLast {
         val userlandDir = file(sianoUserlandDir.get())
@@ -802,6 +1017,7 @@ val prepareSianoBinaries = tasks.register("prepareSianoBinaries") {
                     "commit or discard them before building (untracked build output is allowed)."
             )
         }
+        val nestedPx4Dir = file(sianoPx4UserlandDir.get())
 
         val ndkRoot = providers.environmentVariable("ANDROID_NDK_HOME").orNull
             ?: providers.environmentVariable("ANDROID_NDK_ROOT").orNull
@@ -817,26 +1033,37 @@ val prepareSianoBinaries = tasks.register("prepareSianoBinaries") {
             )
         }
 
-        fun buildAbi(abi: String, outputName: String) {
+        val stagedSiano = project.rootDir.resolve(".work/staged-siano-userland")
+        val stagedCore = corePatchedSourceDir
+        val stagedNestedPx4 = project.rootDir.resolve(".work/staged-siano-px4-userland")
+        stagePinnedSource(userlandDir, sianoPinnedRef, stagedSiano)
+        if (!stagedCore.resolve("DTV-PATCH-METADATA.json").isFile) {
+            throw GradleException("patched Core source stage is missing: $stagedCore")
+        }
+        stagePinnedSource(nestedPx4Dir, sianoPx4PinnedRef, stagedNestedPx4)
+
+        fun buildAbi(abi: String, sourceAbi: String) {
             project.exec {
-                workingDir(userlandDir)
-                commandLine("/bin/sh", script.absolutePath)
+                workingDir(stagedSiano)
+                commandLine("/bin/sh", stagedSiano.resolve("scripts/build-android.sh").absolutePath)
                 environment("ANDROID_NDK_HOME", ndkRoot)
-                environment("ANDROID_ABI", abi)
+                environment("ANDROID_ABI", sourceAbi)
+                environment("DTV_USERLAND_CORE_SOURCE_DIR", stagedCore.absolutePath)
+                environment("SIANO_PX4_USERLAND_SOURCE_DIR", stagedNestedPx4.absolutePath)
             }
-            val built = userlandDir.resolve("build/android-$abi/siano-ts")
-            if (!built.isFile) {
-                throw GradleException("siano-ts build completed without producing $built")
+            val buildDir = stagedSiano.resolve("build/android-$sourceAbi")
+            for (program in listOf("sianod", "sianoctl", "siano-ts")) {
+                val built = buildDir.resolve(program)
+                if (!built.isFile) throw GradleException("Siano build completed without producing $built")
+                val destination = nativeOutputDir.dir(abi).file("lib$program.so").asFile
+                destination.parentFile.mkdirs()
+                built.copyTo(destination, overwrite = true)
+                destination.setExecutable(true, false)
             }
-            val destination = nativeOutputDir.dir(outputName.substringBefore('/'))
-                .file(outputName.substringAfter('/')).asFile
-            destination.parentFile.mkdirs()
-            built.copyTo(destination, overwrite = true)
-            destination.setExecutable(true, false)
         }
 
-        buildAbi("aarch64", "arm64-v8a/libsiano-ts.so")
-        buildAbi("armv7a", "armeabi-v7a/libsiano-ts.so")
+        buildAbi("arm64-v8a", "aarch64")
+        buildAbi("armeabi-v7a", "armv7a")
     }
 }
 
@@ -848,15 +1075,21 @@ val firmwareSources = listOf(
     "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/isdbt_rio.inp"
 )
 val firmwareMd5 = "9b762c1808fd8da81bbec3e24ddb04a3"
+val firmwareSha256 = "054520642d5d09cb7ab7d08dbd6fd9ba9365de56adf2e7d7d06927f9845ff818"
 
 val prepareFirmware = tasks.register("prepareFirmware") {
     outputs.file(firmwareAsset)
     doLast {
         val dest = firmwareAsset.asFile
-        dest.parentFile.mkdirs()
-        if (dest.isFile && dest.length() == 85840L) {
-            return@doLast
+        fun valid(bytes: ByteArray): Boolean {
+            val md5 = MessageDigest.getInstance("MD5").digest(bytes)
+                .joinToString("") { byte: Byte -> "%02x".format(byte.toInt() and 0xff) }
+            val sha256 = MessageDigest.getInstance("SHA-256").digest(bytes)
+                .joinToString("") { byte: Byte -> "%02x".format(byte.toInt() and 0xff) }
+            return bytes.size == 85840 && md5 == firmwareMd5 && sha256 == firmwareSha256
         }
+        dest.parentFile.mkdirs()
+        if (dest.isFile && valid(dest.readBytes())) return@doLast
         val failures = mutableListOf<String>()
         var payload: ByteArray? = null
         for (source in firmwareSources) {
@@ -867,10 +1100,8 @@ val prepareFirmware = tasks.register("prepareFirmware") {
                 connection.connectTimeout = 30_000
                 connection.readTimeout = 120_000
                 val bytes = connection.getInputStream().use { it.readBytes() }
-                val digest = MessageDigest.getInstance("MD5").digest(bytes)
-                    .joinToString("") { "%02x".format(it) }
-                if (digest != firmwareMd5) {
-                    failures += "$source: checksum $digest"
+                if (!valid(bytes)) {
+                    failures += "$source: firmware size or digest mismatch"
                     continue
                 }
                 payload = bytes
@@ -886,7 +1117,138 @@ val prepareFirmware = tasks.register("prepareFirmware") {
     }
 }
 
+val prepareAsicenFirmware = tasks.register("prepareAsicenFirmware") {
+    inputs.files(asicenFirmwareAsset, layout.projectDirectory.file("src/main/assets/ASICEN-LOADER-NOTICE.txt"))
+    doLast {
+        val source = asicenFirmwareAsset.asFile
+        val expected = "5db39facda140bdcb3a238dad10da5aac752a1ba3aaf17e2239f8d79a0ad6a2a"
+        if (!source.isFile) throw GradleException("ASICEN loader firmware is missing: $source")
+        val actual = MessageDigest.getInstance("SHA-256").digest(source.readBytes())
+            .joinToString("") { byte: Byte -> "%02x".format(byte.toInt() and 0xff) }
+        if (actual != expected) throw GradleException("ASICEN loader firmware digest mismatch: $actual")
+    }
+}
+
+val prepareLibusbSource = tasks.register("prepareLibusbSource") {
+    outputs.file(libusbArchive)
+    outputs.dir(libusbSourceDir)
+    doLast {
+        val archive = file(libusbArchive.get())
+        val expected = "fea36f34f9156400209595e300840767ab1a385ede1dc7ee893015aea9c6dbaf"
+        if (!archive.isFile) {
+            archive.parentFile.mkdirs()
+            URI("https://github.com/libusb/libusb/releases/download/v1.0.30/libusb-1.0.30.tar.bz2")
+                .toURL().openStream().use { input -> archive.outputStream().use(input::copyTo) }
+        }
+        val actual = MessageDigest.getInstance("SHA-256").digest(archive.readBytes())
+            .joinToString("") { byte: Byte -> "%02x".format(byte.toInt() and 0xff) }
+        if (actual != expected) throw GradleException("libusb 1.0.30 archive digest mismatch: $actual")
+        val source = file(libusbSourceDir.get())
+        if (!source.resolve("configure").isFile || !source.resolve("COPYING").isFile) {
+            if (source.exists()) throw GradleException("libusb source directory is incomplete: $source")
+            source.parentFile.mkdirs()
+            project.exec { commandLine("tar", "-xjf", archive.absolutePath, "-C", source.parentFile.absolutePath) }
+            val extracted = source.parentFile.resolve("libusb-1.0.30")
+            if (extracted != source) {
+                if (!extracted.renameTo(source)) throw GradleException("cannot stage libusb source at $source")
+            }
+        }
+    }
+}
+
+val prepareAsicenBinaries = tasks.register("prepareAsicenBinaries") {
+    dependsOn(preparePatchedCoreSource)
+    inputs.property("asicenUserlandDir", asicenUserlandDir)
+    inputs.property("userlandCoreDir", userlandCoreDir)
+    inputs.files(asicenBuildScript, asicenTrackedSourceFiles, coreTrackedSourceFiles, asicenUserlandDir.map { file(it).resolve("third_party/px4-userland") })
+    inputs.files(libusbArchive, libusbSourceDir.map { file(it).resolve("configure") }, libusbSourceDir.map { file(it).resolve("COPYING") })
+    outputs.files(nativeBinaries.filter { it.asFile.name in setOf("libasicend.so", "libasicenctl.so", "libasicen-ts.so") })
+    dependsOn(prepareLibusbSource)
+    dependsOn(prepareAsicenFirmware)
+    doLast {
+        val source = file(asicenUserlandDir.get())
+        val staged = project.rootDir.resolve(".work/staged-asicen-userland")
+        val stagedCore = corePatchedSourceDir
+        stagePinnedSource(source, asicenPinnedRef, staged)
+        if (!stagedCore.resolve("DTV-PATCH-METADATA.json").isFile) {
+            throw GradleException("patched Core source stage is missing: $stagedCore")
+        }
+        val coreBundle = staged.resolve("third_party/dtv-userland-core")
+        coreBundle.resolve("repository").mkdirs()
+        project.copy { from(stagedCore); into(coreBundle.resolve("repository")) }
+        coreBundle.resolve("SOURCE-REVISION").writeText("$corePinnedRef\n")
+        val ndk = file(androidNdkRoot.get())
+        val libusb = file(libusbSourceDir.get())
+        if (!libusb.resolve("configure").isFile || !libusb.resolve("COPYING").isFile) {
+            throw GradleException("Pinned libusb source directory is incomplete: $libusb")
+        }
+        fun buildAbi(abi: String, sourceAbi: String) {
+            val output = project.rootDir.resolve(".work/asicen-output-$abi")
+            project.exec {
+                workingDir(staged)
+                commandLine("/bin/sh", staged.resolve("scripts/build-android.sh").absolutePath,
+                    "--abi", sourceAbi, "--output", output.absolutePath, "--libusb-source", libusb.absolutePath)
+                environment("ANDROID_NDK_HOME", ndk.absolutePath)
+            }
+            for (program in listOf("asicend", "asicenctl", "asicen-ts")) {
+                val built = output.resolve("$program-$sourceAbi")
+                if (!built.isFile) throw GradleException("ASICEN build completed without producing $built")
+                val destination = nativeOutputDir.dir(abi).file("lib$program.so").asFile
+                destination.parentFile.mkdirs()
+                built.copyTo(destination, overwrite = true)
+                destination.setExecutable(true, false)
+            }
+        }
+        buildAbi("arm64-v8a", "arm64-v8a")
+        buildAbi("armeabi-v7a", "armeabi-v7a")
+    }
+}
+
+val preparePixBinaries = tasks.register("preparePixBinaries") {
+    dependsOn(preparePatchedCoreSource)
+    inputs.property("pixUserlandDir", pixUserlandDir)
+    inputs.files(pixBuildScript, pixTrackedSourceFiles, coreTrackedSourceFiles)
+    inputs.files(pixFirmwareAssets)
+    inputs.file(libusbArchive)
+    outputs.files(nativeBinaries.filter { it.asFile.name in setOf("libpixd.so", "libpixctl.so", "libpix-ts.so") })
+    dependsOn(prepareLibusbSource)
+    doLast {
+        val source = file(pixUserlandDir.get())
+        val staged = project.rootDir.resolve(".work/staged-pix-userland")
+        val stagedCore = corePatchedSourceDir
+        stagePinnedSource(source, pixPinnedRef, staged)
+        if (!stagedCore.resolve("DTV-PATCH-METADATA.json").isFile) {
+            throw GradleException("patched Core source stage is missing: $stagedCore")
+        }
+        val ndk = file(androidNdkRoot.get())
+        fun buildAbi(abi: String, sourceAbi: String) {
+            project.exec {
+                workingDir(staged)
+                commandLine("/bin/sh", staged.resolve("tools/build-portable.sh").absolutePath, "android")
+                environment("ANDROID_NDK_HOME", ndk.absolutePath)
+                environment("ANDROID_ABI", sourceAbi)
+                environment("DTV_USERLAND_CORE_SOURCE_DIR", stagedCore.absolutePath)
+                environment("PIX_EMBEDDED_ASSETS", "ON")
+                environment("JOBS", "1")
+                environment("LIBUSB_SOURCE_TARBALL", file(libusbArchive.get()).absolutePath)
+            }
+            val output = staged.resolve("build/android-$sourceAbi")
+            for (program in listOf("pixd", "pixctl", "pix-ts")) {
+                val built = output.resolve(program)
+                if (!built.isFile) throw GradleException("PIX build completed without producing $built")
+                val destination = nativeOutputDir.dir(abi).file("lib$program.so").asFile
+                destination.parentFile.mkdirs()
+                built.copyTo(destination, overwrite = true)
+                destination.setExecutable(true, false)
+            }
+        }
+        buildAbi("arm64-v8a", "aarch64")
+        buildAbi("armeabi-v7a", "armv7a")
+    }
+}
+
 val apkSourceMetadataDir = layout.buildDirectory.dir("generated/source-metadata")
+val debugApkSourceMetadataDir = layout.buildDirectory.dir("generated/debug-source-metadata")
 val apkSourceMetadataScript = layout.projectDirectory.file("../tools/mirakc/generate-apk-metadata.py")
 val apkSourceMetadataAuditScript = layout.projectDirectory.file("../tools/mirakc/audit-apk-metadata.py")
 val apkSourceMetadataDtvRef = providers.gradleProperty("dtvRef")
@@ -894,10 +1256,31 @@ val apkSourceMetadataDtvRef = providers.gradleProperty("dtvRef")
     .orElse("HEAD")
 val apkSourceMetadataDtvRoot = providers.gradleProperty("dtvRoot")
     .orElse(project.rootDir.absolutePath)
+val apkSourceMetadataDtvHead = apkSourceMetadataDtvRoot.map {
+    gitOutput(file(it), "rev-parse", "HEAD").second
+}
+val apkDevelopmentDtvFiles = apkSourceMetadataDtvRoot.map { directoryName ->
+    val root = file(directoryName)
+    val status = gitStatusOutput(root)
+    if (status.first != 0) throw GradleException("cannot inspect DTV development source inputs: $root")
+    String(status.second, Charsets.UTF_8).split('\u0000').filter { it.length >= 4 }.mapNotNull { record ->
+        val relative = record.substring(3)
+        val basename = relative.substringAfterLast('/').toLowerCase()
+        if (basename.contains("secret") || basename.contains("credential") || basename.contains(".env") ||
+            relative.split('/').any { it == ".storage" || it == ".ssh" }) {
+            throw GradleException("DTV development source overlay contains a sensitive path")
+        }
+        root.resolve(relative).takeIf { it.isFile && !Files.isSymbolicLink(it.toPath()) }
+    }
+}
+val apkDevelopmentDtvStatus = apkSourceMetadataDtvRoot.map { directoryName ->
+    val root = file(directoryName)
+    val status = gitStatusOutput(root)
+    if (status.first != 0) throw GradleException("cannot inspect DTV development source status: $root")
+    Base64.getEncoder().encodeToString(status.second)
+}
 val apkSourceMetadataLibusb = providers.gradleProperty("libusbArchive")
-    .orElse(sianoUserlandDir.map { directoryName ->
-        file(directoryName).resolve("build/android-aarch64/src/libusb-1.0.30.tar.bz2").absolutePath
-    })
+    .orElse(libusbArchive)
 
 fun apkMetadataLicenseInputs(directory: Provider<String>) = directory.map { directoryName ->
     project.fileTree(file(directoryName)) {
@@ -913,23 +1296,48 @@ val apkSourceMetadataMirakcLicenses = apkMetadataLicenseInputs(mirakcSourceDir)
 val apkSourceMetadataMirakcAribLicenses = apkMetadataLicenseInputs(mirakcAribSourceDir)
 val apkSourceMetadataSianoLicenses = apkMetadataLicenseInputs(sianoUserlandDir)
 val apkSourceMetadataPx4Licenses = apkMetadataLicenseInputs(px4UserlandDir)
+val apkSourceMetadataAsicenLicenses = apkMetadataLicenseInputs(asicenUserlandDir)
+val apkSourceMetadataPixLicenses = apkMetadataLicenseInputs(pixUserlandDir)
+val apkSourceMetadataCoreLicenses = apkMetadataLicenseInputs(userlandCoreDir)
 val apkSourceMetadataDtvFiles = apkSourceMetadataDtvRoot.map { directoryName ->
     listOf(
         "LICENSE", "mirakc/VERSION", "mirakc/build.gradle.kts",
         "tools/mirakc/generate-apk-metadata.py", "tools/mirakc/audit-apk-metadata.py",
-        "tools/mirakc/audit-source.py", "tools/mirakc/build-android.sh",
-        "tools/mirakc/patches/px4-userland-receiver-control-concurrency.patch",
+        "tools/mirakc/audit-source.py", "tools/mirakc/audit-apk-native.sh", "tools/mirakc/build-android.sh",
+        "tools/mirakc/fetch-pinned-userland-sources.sh",
+        "tools/mirakc/package-source.py", "tools/mirakc/test-source-package.sh", "tools/mirakc/test-source-native-rebuild.sh",
+        "tools/mirakc/patches/dtv-core-receiver-control-concurrency.patch",
+        "tools/mirakc/patches/px4-userland-build-jobs.patch",
         "tools/mirakc-arib/build-android.sh", "tools/mirakc-arib/bootstrap-autotools.sh",
         "tools/mirakc-arib/android.toolchain.cmake", "tools/mirakc-arib/patches/tsduck-android.patch"
     ).map { relative -> file(directoryName).resolve(relative) }
 }
+tasks.register("writeDebugDtvStatusInputFixture") {
+    group = "verification"
+    description = "Writes the encoded DTV worktree status input for an isolated Gradle fixture"
+    inputs.property("dtvRef", apkSourceMetadataDtvRef)
+    inputs.property("dtvRoot", apkSourceMetadataDtvRoot)
+    inputs.property("dtvWorktreeStatus", apkDevelopmentDtvStatus)
+    inputs.property("dtvHead", apkSourceMetadataDtvHead)
+    inputs.files(apkDevelopmentDtvFiles)
+    val fixtureOutput = layout.buildDirectory.file("tmp/debug-dtv-status-input-fixture.txt")
+    outputs.file(fixtureOutput)
+    doLast {
+        fixtureOutput.get().asFile.apply {
+            parentFile.mkdirs()
+            writeText(apkDevelopmentDtvStatus.get())
+        }
+    }
+}
 val generateApkSourceMetadata = tasks.register("generateApkSourceMetadata") {
     group = "verification"
     description = "Generates deterministic APK source and license provenance assets"
-    dependsOn(prepareMirakcBinary, prepareMirakcAribBinaries, prepareSianoBinaries)
+    dependsOn(prepareMirakcBinary, prepareMirakcAribBinaries, prepareSianoBinaries, preparePx4Binaries, prepareAsicenBinaries, preparePixBinaries, prepareLibusbSource)
     inputs.property("dtvRef", apkSourceMetadataDtvRef)
     inputs.property("dtvRoot", apkSourceMetadataDtvRoot)
-    inputs.property("dtvHead", apkSourceMetadataDtvRoot.map { gitOutput(file(it), "rev-parse", "HEAD").second })
+    inputs.property("dtvWorktreeStatus", apkDevelopmentDtvStatus)
+    inputs.files(apkDevelopmentDtvFiles)
+    inputs.property("dtvHead", apkSourceMetadataDtvHead)
     inputs.files(
         apkSourceMetadataScript,
         apkSourceMetadataAuditScript,
@@ -939,14 +1347,21 @@ val generateApkSourceMetadata = tasks.register("generateApkSourceMetadata") {
         layout.projectDirectory.dir("src/main/cpp/arib25")
     )
     inputs.files(apkSourceMetadataDtvFiles)
-    inputs.files(mirakcTrackedSourceFiles, sianoTrackedSourceFiles, px4TrackedSourceFiles)
+    inputs.files(mirakcTrackedSourceFiles, sianoTrackedSourceFiles, px4TrackedSourceFiles,
+        asicenTrackedSourceFiles, pixTrackedSourceFiles, coreTrackedSourceFiles, sianoPx4TrackedSourceFiles)
     inputs.files(
         apkSourceMetadataMirakcLicenses,
         apkSourceMetadataMirakcAribLicenses,
         apkSourceMetadataSianoLicenses,
-        apkSourceMetadataPx4Licenses
+        apkSourceMetadataPx4Licenses,
+        apkSourceMetadataAsicenLicenses,
+        apkSourceMetadataPixLicenses,
+        apkSourceMetadataCoreLicenses
     )
     inputs.files(apkSourceMetadataLibusb)
+    inputs.file(asicenFirmwareAsset)
+    inputs.file(layout.projectDirectory.file("src/main/assets/ASICEN-LOADER-NOTICE.txt"))
+    inputs.files(pixFirmwareAssets)
     outputs.dir(apkSourceMetadataDir)
     doLast {
         project.exec {
@@ -960,9 +1375,78 @@ val generateApkSourceMetadata = tasks.register("generateApkSourceMetadata") {
                 "--arib-root", file(mirakcAribSourceDir.get()).absolutePath,
                 "--siano-root", file(sianoUserlandDir.get()).absolutePath,
                 "--px4-root", file(px4UserlandDir.get()).absolutePath,
+                "--asicen-root", file(asicenUserlandDir.get()).absolutePath,
+                "--pix-root", file(pixUserlandDir.get()).absolutePath,
+                "--core-root", file(userlandCoreDir.get()).absolutePath,
+                "--siano-px4-root", file(sianoPx4UserlandDir.get()).absolutePath,
                 "--arib25-root", layout.projectDirectory.dir("src/main/cpp/arib25").asFile.absolutePath,
                 "--libusb-archive", file(apkSourceMetadataLibusb.get()).absolutePath
             )
+        }
+    }
+}
+
+val generateDebugApkSourceMetadata = tasks.register("generateDebugApkSourceMetadata") {
+    group = "verification"
+    description = "Generates APK source provenance with an explicit DTV worktree overlay for Debug"
+    dependsOn(prepareMirakcBinary, prepareMirakcAribBinaries, prepareSianoBinaries, preparePx4Binaries, prepareAsicenBinaries, preparePixBinaries, prepareLibusbSource)
+    inputs.property("dtvRef", apkSourceMetadataDtvRef)
+    inputs.property("dtvRoot", apkSourceMetadataDtvRoot)
+    inputs.property("dtvWorktreeStatus", apkDevelopmentDtvStatus)
+    inputs.property("dtvHead", apkSourceMetadataDtvHead)
+    inputs.files(apkDevelopmentDtvFiles)
+    inputs.files(apkSourceMetadataScript, apkSourceMetadataAuditScript, layout.projectDirectory.file("../tools/mirakc/audit-source.py"))
+    inputs.files(apkSourceMetadataDtvFiles)
+    inputs.files(mirakcTrackedSourceFiles, sianoTrackedSourceFiles, px4TrackedSourceFiles,
+        asicenTrackedSourceFiles, pixTrackedSourceFiles, coreTrackedSourceFiles, sianoPx4TrackedSourceFiles)
+    inputs.files(apkSourceMetadataMirakcLicenses, apkSourceMetadataMirakcAribLicenses,
+        apkSourceMetadataSianoLicenses, apkSourceMetadataPx4Licenses, apkSourceMetadataAsicenLicenses,
+        apkSourceMetadataPixLicenses, apkSourceMetadataCoreLicenses, apkSourceMetadataLibusb)
+    inputs.files(asicenFirmwareAsset, layout.projectDirectory.file("src/main/assets/ASICEN-LOADER-NOTICE.txt"), pixFirmwareAssets)
+    outputs.dir(debugApkSourceMetadataDir)
+    doLast {
+        project.exec {
+            workingDir(project.rootDir)
+            commandLine(
+                "python3", apkSourceMetadataScript.asFile.absolutePath,
+                "--output", debugApkSourceMetadataDir.get().asFile.absolutePath,
+                "--dtv-root", file(apkSourceMetadataDtvRoot.get()).absolutePath,
+                "--dtv-ref", apkSourceMetadataDtvRef.get(),
+                "--allow-development-worktree",
+                "--mirakc-root", file(mirakcSourceDir.get()).absolutePath,
+                "--arib-root", file(mirakcAribSourceDir.get()).absolutePath,
+                "--siano-root", file(sianoUserlandDir.get()).absolutePath,
+                "--px4-root", file(px4UserlandDir.get()).absolutePath,
+                "--asicen-root", file(asicenUserlandDir.get()).absolutePath,
+                "--pix-root", file(pixUserlandDir.get()).absolutePath,
+                "--core-root", file(userlandCoreDir.get()).absolutePath,
+                "--siano-px4-root", file(sianoPx4UserlandDir.get()).absolutePath,
+                "--arib25-root", layout.projectDirectory.dir("src/main/cpp/arib25").asFile.absolutePath,
+                "--libusb-archive", file(apkSourceMetadataLibusb.get()).absolutePath
+            )
+        }
+    }
+}
+
+tasks.named("writeDebugDtvStatusInputFixture") {
+    doLast {
+        val expectedHead = apkSourceMetadataDtvHead.get()
+        val expectedRoot = apkSourceMetadataDtvRoot.get()
+        val expectedStatus = apkDevelopmentDtvStatus.get()
+        val expectedDirtyFiles = apkDevelopmentDtvFiles.get().map { it.canonicalFile }.toSet()
+        listOf(generateApkSourceMetadata, generateDebugApkSourceMetadata).forEach { metadataTask ->
+            val task = metadataTask.get()
+            val properties = task.inputs.properties
+            if (properties["dtvHead"] != expectedHead || properties["dtvRoot"] != expectedRoot ||
+                properties["dtvWorktreeStatus"] != expectedStatus) {
+                throw GradleException("${task.name} is missing current DTV root, HEAD, or status inputs")
+            }
+            val taskFiles = task.inputs.files.files.map { it.canonicalFile }.toSet()
+            expectedDirtyFiles.forEach { dirtyFile ->
+                if (!taskFiles.contains(dirtyFile)) {
+                    throw GradleException("${task.name} is missing dirty DTV byte input $dirtyFile")
+                }
+            }
         }
     }
 }
@@ -971,15 +1455,21 @@ plugins.withId("com.android.application") {
     tasks.matching { it.name == "preBuild" || it.name.endsWith("JniLibFolders") }
         .configureEach {
             dependsOn(prepareSianoBinaries)
+            dependsOn(prepareAsicenBinaries)
+            dependsOn(preparePixBinaries)
+            dependsOn(prepareAsicenFirmware)
             dependsOn(prepareSianoAdapterBinaries)
+            dependsOn(prepareAsicenAdapterBinaries)
             dependsOn(prepareB25FilterBinaries)
             dependsOn(preparePx4AdapterBinaries)
+            dependsOn(preparePixAdapterBinaries)
             dependsOn(prepareMirakcAribBinaries)
             dependsOn(preparePx4Binaries)
             dependsOn(prepareMirakcBinary)
             dependsOn(prepareFirmware)
-            dependsOn(generateApkSourceMetadata)
         }
+    tasks.matching { it.name == "preDebugBuild" }.configureEach { dependsOn(generateDebugApkSourceMetadata) }
+    tasks.matching { it.name == "preReleaseBuild" }.configureEach { dependsOn(generateApkSourceMetadata) }
 }
 
 // Set by the release workflow. Without it the release build stays unsigned, so
@@ -1040,7 +1530,8 @@ android {
         cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" }
     }
 
-    sourceSets.getByName("main").assets.srcDir(apkSourceMetadataDir)
+    sourceSets.getByName("debug").assets.srcDir(debugApkSourceMetadataDir)
+    sourceSets.getByName("release").assets.srcDir(apkSourceMetadataDir)
 
     packagingOptions {
         doNotStrip("**/*.so")

@@ -22,9 +22,14 @@ env:
   JAVA_VERSION: "17"
   JAVA_RUNTIME_VERSION: "17.0.20.1+1"
   RUST_VERSION: "1.98.1"
-  SIANO_USERLAND_REF: 89c240b8af021d55d81b3b90fce79a3690605811
-  PX4_USERLAND_REF: 7ad5f6691f77a9aa58c4097f8b6dfea77f6d9b6a
-  PX4_USERLAND_PATCH_SHA256: c60214256a40b03f3469b5a508f149c12e599282edf103875a2170b816c4b697
+  CORE_USERLAND_REF: 67420d1c909e9205841612a186ae4c7fbf4dd092
+  CORE_PATCH_SHA256: 9da0cf46a7727a5c7e20de165babd0bc2d78e47c119cad38c1f2c00abeb10521
+  ASICEN_USERLAND_REF: e2a86ca194b60f1111ecfa0a020cd0944c351c76
+  PIX_USERLAND_REF: 66f5a731784d205d1d306edda9cc57071c087f8e
+  PX4_USERLAND_REF: 5c91e8c57b288c0f490061789829e42dbbf61b3d
+  SIANO_USERLAND_REF: 33c3468e7e10781ae6c7e9a5fd57a0c1b0825288
+  SIANO_PX4_USERLAND_REF: 90b08dfe79b0b40e393f015975c761863830866a
+  PX4_BUILD_PATCH_SHA256: ba9c4607e3411e706e537a38cc879990f46db04977ca717e714e0004553a4a42
   PX4_DRV_REF: 2b3f79b5bc5db56e8556bb28397f7d8f74b2adeb
 
 jobs:
@@ -44,6 +49,21 @@ jobs:
         run: echo "git_head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v5
         with:
+          repository: Khronos31/dtv-userland-core
+          ref: ${{ env.CORE_USERLAND_REF }}
+          path: dtv-userland-core
+      - uses: actions/checkout@v5
+        with:
+          repository: Khronos31/asicen-userland
+          ref: ${{ env.ASICEN_USERLAND_REF }}
+          path: asicen-userland
+      - uses: actions/checkout@v5
+        with:
+          repository: Khronos31/pix-userland
+          ref: ${{ env.PIX_USERLAND_REF }}
+          path: pix-userland
+      - uses: actions/checkout@v5
+        with:
           repository: Khronos31/siano-userland
           ref: ${{ env.SIANO_USERLAND_REF }}
           path: siano-userland
@@ -54,13 +74,18 @@ jobs:
           path: px4-userland
       - uses: actions/checkout@v5
         with:
+          repository: Khronos31/px4-userland
+          ref: ${{ env.SIANO_PX4_USERLAND_REF }}
+          path: siano-px4-userland
+      - uses: actions/checkout@v5
+        with:
           repository: nns779/px4_drv
           ref: ${{ env.PX4_DRV_REF }}
           path: px4_drv
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
+          java-version: ${{ env.JAVA_RUNTIME_VERSION }}
       - name: Verify exact JDK runtime
         run: |
           set -euo pipefail
@@ -104,32 +129,63 @@ jobs:
           CARGO_HOME: ${{ runner.temp }}/cargo
           CANDIDATE_REF: ${{ inputs.ref }}
           CANDIDATE_RUN_ID: ${{ github.run_id }}
+          CARGO_BUILD_JOBS: "1"
+          CMAKE_BUILD_PARALLEL_LEVEL: "1"
+          PX4_ANDROID_BUILD_JOBS: "1"
         run: |
           set -euo pipefail
-          test "$(cat mirakc/VERSION)" = "0.4.1" \
-            || { echo "candidate build requires a 0.4.1 checkout" >&2; exit 1; }
-          patch_sha256="$(sha256sum tools/mirakc/patches/px4-userland-receiver-control-concurrency.patch | awk '{ print $1 }')"
-          test "$patch_sha256" = "$PX4_USERLAND_PATCH_SHA256" \
-            || { echo "DTV-owned PX4 source patch hash does not match the release pin" >&2; exit 1; }
-          ./gradlew --no-daemon \
+          test "$(git -C dtv-userland-core rev-parse HEAD)" = "$CORE_USERLAND_REF"
+          test "$(git -C asicen-userland rev-parse HEAD)" = "$ASICEN_USERLAND_REF"
+          test "$(git -C pix-userland rev-parse HEAD)" = "$PIX_USERLAND_REF"
+          test "$(git -C px4-userland rev-parse HEAD)" = "$PX4_USERLAND_REF"
+          test "$(git -C siano-userland rev-parse HEAD)" = "$SIANO_USERLAND_REF"
+          test "$(git -C siano-px4-userland rev-parse HEAD)" = "$SIANO_PX4_USERLAND_REF"
+          test "$(git -C px4_drv rev-parse HEAD)" = "$PX4_DRV_REF"
+          core_patch_sha256="$(sha256sum tools/mirakc/patches/dtv-core-receiver-control-concurrency.patch | awk '{ print $1 }')"
+          px4_build_patch_sha256="$(sha256sum tools/mirakc/patches/px4-userland-build-jobs.patch | awk '{ print $1 }')"
+          test "$core_patch_sha256" = "$CORE_PATCH_SHA256" \
+            || { echo "DTV-owned Core integration patch hash does not match the release pin" >&2; exit 1; }
+          test "$px4_build_patch_sha256" = "$PX4_BUILD_PATCH_SHA256" \
+            || { echo "DTV-owned PX4 build patch hash does not match the release pin" >&2; exit 1; }
+          ./gradlew --no-daemon --max-workers=1 \
+            -PuserlandCoreDir="$GITHUB_WORKSPACE/dtv-userland-core" \
+            -PasicenUserlandDir="$GITHUB_WORKSPACE/asicen-userland" \
+            -PpixUserlandDir="$GITHUB_WORKSPACE/pix-userland" \
             -PsianoUserlandDir="$GITHUB_WORKSPACE/siano-userland" \
             -Ppx4UserlandDir="$GITHUB_WORKSPACE/px4-userland" \
+            -PsianoPx4UserlandDir="$GITHUB_WORKSPACE/siano-px4-userland" \
             -Ppx4DrvDir="$GITHUB_WORKSPACE/px4_drv" \
             :mirakc:assembleRelease
           apk=mirakc/build/outputs/apk/release/mirakc-release-unsigned.apk
           [[ -f "$apk" ]] || { echo "Unsigned APK not found: $apk" >&2; exit 1; }
+          candidate_head="$(git rev-parse HEAD)"
+          tools/mirakc/audit-apk.sh "$apk" "$candidate_head"
           mkdir -p out
           cp "$apk" out/mirakc-unsigned.apk
           {
             echo "kind=candidate"
             echo "candidate_run_id=$CANDIDATE_RUN_ID"
             echo "git_ref=$CANDIDATE_REF"
-            echo "git_head=$(git rev-parse HEAD)"
+            echo "git_head=$candidate_head"
             echo "version=$(cat mirakc/VERSION)"
+            echo "dtv_userland_core_ref=$CORE_USERLAND_REF"
+            echo "dtv_userland_core_patch_sha256=$core_patch_sha256"
+            echo "asicen_userland_ref=$ASICEN_USERLAND_REF"
+            echo "pix_userland_ref=$PIX_USERLAND_REF"
             echo "px4_userland_ref=$PX4_USERLAND_REF"
-            echo "px4_userland_patch_sha256=$patch_sha256"
+            echo "siano_userland_ref=$SIANO_USERLAND_REF"
+            echo "siano_px4_userland_ref=$SIANO_PX4_USERLAND_REF"
+            echo "px4_drv_ref=$PX4_DRV_REF"
+            echo "px4_userland_build_patch_sha256=$px4_build_patch_sha256"
             echo "unsigned_apk_sha256=$(sha256sum "$apk" | awk '{ print $1 }')"
           } > out/CANDIDATE_BUILD_INFO.txt
+          python3 tools/mirakc/release-attestation.py verify-unsigned \
+            --candidate out/mirakc-unsigned.apk \
+            --build-info out/CANDIDATE_BUILD_INFO.txt \
+            --expected-version "$(cat mirakc/VERSION)" \
+            --expected-head "$candidate_head" \
+            --expected-run "$CANDIDATE_RUN_ID" \
+            --expected-ref "$CANDIDATE_REF"
       - uses: actions/upload-artifact@v4
         with:
           name: mirakc-unsigned-candidate
@@ -153,7 +209,7 @@ jobs:
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
+          java-version: ${{ env.JAVA_RUNTIME_VERSION }}
       - name: Verify exact JDK runtime
         run: |
           set -euo pipefail
@@ -177,6 +233,8 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          CANDIDATE_REF: ${{ inputs.ref }}
+          CANDIDATE_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
           apksigner="$(find "$ANDROID_SDK_ROOT/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner -print | sort -V | tail -n 1)"
@@ -184,6 +242,20 @@ jobs:
           [[ -x "$apksigner" && -x "$aapt2" ]] || { echo "Android build tools not found" >&2; exit 1; }
           test "$(git rev-parse HEAD)" = "$(sed -n 's/^git_head=//p' candidate/CANDIDATE_BUILD_INFO.txt)" \
             || { echo "resolved candidate checkout does not match downloaded build-info" >&2; exit 1; }
+          checkout_version="$(cat mirakc/VERSION)"
+          candidate_version="$(sed -n 's/^version=//p' candidate/CANDIDATE_BUILD_INFO.txt)"
+          test "$candidate_version" = "$checkout_version" \
+            || { echo "candidate build-info version does not match the checked-out source" >&2; exit 1; }
+          python3 tools/mirakc/release-attestation.py verify-unsigned \
+            --candidate candidate/mirakc-unsigned.apk \
+            --build-info candidate/CANDIDATE_BUILD_INFO.txt \
+            --expected-version "$checkout_version" \
+            --expected-head "$(git rev-parse HEAD)" \
+            --expected-run "$CANDIDATE_RUN_ID" \
+            --expected-ref "$CANDIDATE_REF"
+          tools/mirakc/audit-apk.sh candidate/mirakc-unsigned.apk "$(git rev-parse HEAD)"
+          IFS=. read -r version_major version_minor version_patch <<<"$checkout_version"
+          candidate_version_code=$((version_major * 10000 + version_minor * 100 + version_patch))
           EXPECTED_CERT_SHA256=1fd02c94f29a5756ed1d560ac4ecb6813fa0b2e634473a6f31da210ffd5223c4
           sign_apk() {
             unsigned=$1
@@ -208,7 +280,7 @@ jobs:
               || { echo "Signed APK metadata changed: $signed_metadata" >&2; exit 1; }
             printf '%s' "$cert_sha256"
           }
-          candidate_cert="$(sign_apk candidate/mirakc-unsigned.apk "$RUNNER_TEMP/mirakc-signed-candidate.apk" 0.4.1 401)"
+          candidate_cert="$(sign_apk candidate/mirakc-unsigned.apk "$RUNNER_TEMP/mirakc-signed-candidate.apk" "$checkout_version" "$candidate_version_code")"
           mkdir -p out
           cp "$RUNNER_TEMP/mirakc-signed-candidate.apk" out/mirakc-signed-candidate.apk
           (cd out && sha256sum mirakc-signed-candidate.apk > SHA256SUMS)
@@ -218,6 +290,7 @@ jobs:
               candidate/CANDIDATE_BUILD_INFO.txt \
               "$candidate_cert" \
               "$(sha256sum "$RUNNER_TEMP/mirakc-signed-candidate.apk" | awk '{ print $1 }')" \
+              "$checkout_version" \
               > out/BUILD_INFO.json <<'PY'
           import json
           import sys
@@ -233,12 +306,8 @@ jobs:
 
           candidate = read_info(sys.argv[1])
           expected_cert = "1fd02c94f29a5756ed1d560ac4ecb6813fa0b2e634473a6f31da210ffd5223c4"
-          if candidate.get("kind") != "candidate" or candidate.get("version") != "0.4.1":
+          if candidate.get("kind") != "candidate" or candidate.get("version") != sys.argv[4]:
               raise SystemExit("candidate build-info changed during signing")
-          if candidate.get("px4_userland_ref") != "7ad5f6691f77a9aa58c4097f8b6dfea77f6d9b6a":
-              raise SystemExit("candidate PX4 upstream source ref changed during signing")
-          if candidate.get("px4_userland_patch_sha256") != "c60214256a40b03f3469b5a508f149c12e599282edf103875a2170b816c4b697":
-              raise SystemExit("candidate PX4 DTV patch provenance changed during signing")
           if sys.argv[2] != expected_cert:
               raise SystemExit("signed certificate is not the production certificate")
           digest = sys.argv[3]

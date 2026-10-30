@@ -12,6 +12,11 @@ class MirakcUsbEventPolicyTest {
         assertTrue(MirakcUsbEventPolicy.affectsTunerConfiguration(0x0511, Px4DeviceSelector.Q3U4_PRODUCT_ID))
         assertTrue(MirakcUsbEventPolicy.affectsTunerConfiguration(0x0511, Px4DeviceSelector.M1UR_PRODUCT_ID))
         assertTrue(MirakcUsbEventPolicy.isPx4Tuner(0x0511, Px4DeviceSelector.S1UR_PRODUCT_ID))
+        assertTrue(MirakcUsbEventPolicy.affectsTunerConfiguration(0x06b8, 0x102b))
+        assertTrue(MirakcUsbEventPolicy.affectsTunerConfiguration(0x06b8, 0x103b))
+        assertTrue(MirakcUsbEventPolicy.affectsTunerConfiguration(0x0b06, 0x0005))
+        assertTrue(MirakcUsbEventPolicy.isAsicenTuner(0x1738, 0x5211))
+        assertFalse(MirakcUsbEventPolicy.affectsTunerConfiguration(0x1738, 0x5211))
     }
 
     @Test
@@ -33,5 +38,20 @@ class MirakcUsbEventPolicyTest {
             0x04e6, 0x511a, isCcidReader = true, isAttached = false, permissionGranted = false))
         assertFalse(MirakcUsbEventPolicy.requiresMirakcReconfigureOnLifecycle(
             0x1234, 0x5678, isCcidReader = false, isAttached = false, permissionGranted = false))
+    }
+
+    @Test
+    fun asicenRuntimePermissionReconfiguresWarmReadyButNotColdProvisioningStages() {
+        assertTrue(MirakcUsbEventPolicy.requiresAsicenReconfigureOnPermissionGrant(
+            0x0b06, 0x0001, AsicenProvisioningStage.READY))
+        assertTrue(MirakcUsbEventPolicy.requiresAsicenReconfigureOnPermissionGrant(
+            0x0b06, 0x0005, AsicenProvisioningStage.START_RUNTIME))
+        assertTrue(MirakcUsbEventPolicy.requiresAsicenReconfigureOnPermissionGrant(0x0b06, 0x0003, null))
+        assertFalse(MirakcUsbEventPolicy.requiresAsicenReconfigureOnPermissionGrant(
+            0x0b06, 0x0005, AsicenProvisioningStage.REQUEST_SIBLING_RESTORE))
+        assertFalse(MirakcUsbEventPolicy.requiresAsicenReconfigureOnPermissionGrant(
+            0x0b06, 0x0005, AsicenProvisioningStage.WAIT_RUNTIME_PAIR))
+        assertFalse(MirakcUsbEventPolicy.requiresAsicenReconfigureOnPermissionGrant(
+            0x1738, 0x5211, AsicenProvisioningStage.READY))
     }
 }

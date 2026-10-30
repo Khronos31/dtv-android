@@ -1,9 +1,6 @@
 package dev.khronos31.mirakc
 
 import android.os.ParcelFileDescriptor
-import android.system.ErrnoException
-import android.system.Os
-import android.system.OsConstants
 import android.util.Log
 import java.io.Closeable
 import java.io.File
@@ -37,9 +34,8 @@ internal data class Px4Generation(
     val tuners: List<Px4TunerPlan>
 ) {
     fun adapterArguments(receiver: Int): List<String> = listOf(
-        "--device=$baseSerial",
         "--instance=$instanceToken",
-        "--model=${model.adapterArgument}",
+        "--runtime-dir=${runtimeDir.absolutePath}",
         "--receiver=$receiver"
     )
 }
@@ -54,6 +50,7 @@ internal interface Px4EnclosureRunner {
 
 private class Px4EnclosureDaemon(
     private val executable: () -> File,
+    private val ctlExecutable: () -> File,
     private val firmware: () -> File,
     private val identities: () -> List<Px4DeviceIdentity>,
     private val openDevice: (Px4DeviceIdentity) -> Px4UsbHandle,
@@ -186,12 +183,11 @@ private class Px4EnclosureDaemon(
 
         val ready = try {
             awaitReady(started.pid, selected.instanceToken)
-            true
         } catch (error: Exception) {
             Log.e(TAG, "PX4 readiness failed: ${error.message ?: error.javaClass.simpleName}")
-            false
+            null
         }
-        if (!ready) {
+        if (ready == null) {
             stopStarted(started, handles, "readiness-failure")
             setState("disabled (px4d readiness failed)")
             return null
@@ -199,7 +195,7 @@ private class Px4EnclosureDaemon(
 
         val result = Px4Generation(
             selected.serial, selected.model, runtimeDir, selected.instanceToken,
-            Px4DeviceSelector.tunersFor(selected)
+            px4TunersFromInventory(selected, ready)
         )
         return synchronized(lock) {
             if (closed) {
@@ -249,16 +245,18 @@ private class Px4EnclosureDaemon(
         return file
     }
 
-    private fun awaitReady(pid: Int, instanceToken: String) {
-        val socket = Px4RuntimeLayout.endpoint(
-            runtimeDir, instanceToken, Px4RuntimeLayout.CONTROL_ENDPOINT
-        )
+    private fun awaitReady(pid: Int, instanceToken: String): UserlandStatusInventory {
         val deadline = System.nanoTime() + READY_TIMEOUT_NS
         while (System.nanoTime() < deadline && !Thread.currentThread().isInterrupted) {
             when (NativeUsbProcess.pollPx4d(pid)) {
-                // control.sock is a Unix-domain socket, not a regular file;
-                // File.isFile() is therefore false for a ready daemon.
-                NativeUsbProcess.PollResult.ALIVE -> if (unixSocketExists(socket)) return
+                NativeUsbProcess.PollResult.ALIVE -> {
+                    try {
+                        val status = UserlandControl.status(
+                            ctlExecutable().absolutePath, runtimeDir.absolutePath, instanceToken, "px4-userland"
+                        )
+                        if (status.ready) return status
+                    } catch (_: IOException) { }
+                }
                 is NativeUsbProcess.PollResult.EXITED -> throw IOException("px4d exited")
                 NativeUsbProcess.PollResult.ERROR -> throw IOException("unable to poll px4d")
             }
@@ -268,7 +266,7 @@ private class Px4EnclosureDaemon(
                 throw IOException("readiness interrupted")
             }
         }
-        throw IOException("control socket timeout")
+        throw IOException("status timeout")
     }
 
     private fun monitorLoop(started: NativeUsbProcess.StartedPx4d, handles: List<Px4UsbHandle>) {
@@ -296,13 +294,6 @@ private class Px4EnclosureDaemon(
             onDaemonFailure()
             return
         }
-    }
-
-    private fun unixSocketExists(path: File): Boolean = try {
-        val mode = Os.stat(path.absolutePath).st_mode
-        (mode and OsConstants.S_IFMT) == OsConstants.S_IFSOCK
-    } catch (_: ErrnoException) {
-        false
     }
 
     private fun stopCurrent() {
@@ -408,6 +399,7 @@ private class Px4EnclosureDaemon(
 /** Reconciles one independently-owned px4d process per unambiguous enclosure. */
 internal class Px4DaemonSupervisor(
     private val executable: () -> File,
+    private val ctlExecutable: () -> File = executable,
     private val firmware: () -> File,
     private val identities: () -> List<Px4DeviceIdentity>,
     private val openDevice: (Px4DeviceIdentity) -> Px4UsbHandle,
@@ -448,6 +440,7 @@ internal class Px4DaemonSupervisor(
                 val source = IdentitySource(enclosure.devices)
                 val daemon = testOwnerFactory?.invoke(enclosure) ?: Px4EnclosureDaemon(
                     executable = executable,
+                    ctlExecutable = ctlExecutable,
                     firmware = firmware,
                     identities = { source.value },
                     openDevice = openDevice,
@@ -507,5 +500,22 @@ internal class Px4DaemonSupervisor(
             states.forEach { (token, state) -> add("$token: $state") }
             if (rejection != null && states.isNotEmpty()) add("waiting: $rejection")
         }.joinToString("; ")
+    }
+}
+
+internal fun px4TunersFromInventory(
+    enclosure: Px4Enclosure,
+    status: UserlandStatusInventory
+): List<Px4TunerPlan> {
+    require(status.ready && status.product == "px4-userland")
+    return status.receivers.orEmpty().filter { it.present && it.state !in setOf("absent", "error") }.map { receiver ->
+        Px4TunerPlan(
+            name = "PX4-${enclosure.model.adapterArgument.uppercase()}-${enclosure.serial}-R${receiver.id}",
+            model = enclosure.model,
+            instanceToken = status.instance ?: error("ready inventory has no instance"),
+            receiver = receiver.id,
+            supportsTerrestrial = BroadcastSystem.ISDB_T in receiver.systems,
+            supportsSatellite = BroadcastSystem.ISDB_S in receiver.systems
+        )
     }
 }

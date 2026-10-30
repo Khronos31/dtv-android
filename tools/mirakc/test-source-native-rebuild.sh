@@ -1,9 +1,9 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
-# Clean-room native relink slice for the aggregate corresponding-source
-# archive. This covers the Siano/PX4 static-libusb consumers; the complete
-# 20-payload APK rebuild remains a separate gate.
+# Clean-room native relink coverage for the aggregate corresponding-source
+# archive. The no-APK mode exercises static-libusb consumers; the APK mode
+# also requires the complete native payload inventory.
 set -eu
 
 archive=${1:-}
@@ -55,6 +55,8 @@ archived_audit=$source_root/sources/dtv-android/tools/mirakc/audit-source.py
 }
 python3 "$archived_audit" "$archive" >/dev/null
 siano=$source_root/sources/siano-userland
+asicen=$source_root/sources/asicen-userland
+pix=$source_root/sources/pix-userland
 px4=$source_root/sources/px4-userland
 mirakc=$source_root/sources/mirakc
 arib=$source_root/sources/mirakc-arib
@@ -85,32 +87,39 @@ done
     exit 1
 }
 
+core_upstream=$source_root/sources/dtv-userland-core
+core_patch=$dtv/tools/mirakc/patches/dtv-core-receiver-control-concurrency.patch
 px4_upstream=$px4
-px4_patch=$dtv/tools/mirakc/patches/px4-userland-receiver-control-concurrency.patch
+px4_patch=$dtv/tools/mirakc/patches/px4-userland-build-jobs.patch
+core_patch_sha256=$(sha256sum "$core_patch" | awk '{print $1}')
 px4_patch_sha256=$(sha256sum "$px4_patch" | awk '{print $1}')
-python3 - "$source_root/source-manifest.json" "$px4_patch" "$px4_patch_sha256" <<'PY'
+python3 - "$source_root/source-manifest.json" "$core_patch" "$core_patch_sha256" "$px4_patch" "$px4_patch_sha256" <<'PY'
 import hashlib
 import json
 import sys
 from pathlib import Path
 
-manifest_path, patch_path, patch_sha = sys.argv[1:]
+manifest_path, core_patch_path, core_patch_sha, px4_patch_path, px4_patch_sha = sys.argv[1:]
 manifest_root = Path(manifest_path).parent
 manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-component = next(item for item in manifest["components"] if item["name"] == "px4-userland")
-provenance = component.get("android_build_patch")
-if not isinstance(provenance, dict):
-    raise SystemExit("source archive has no PX4 Android patch provenance")
-if provenance.get("upstream_commit") != component.get("commit"):
-    raise SystemExit("PX4 patch provenance does not match its upstream source commit")
-if provenance.get("sha256") != patch_sha:
-    raise SystemExit("PX4 patch bytes do not match source-manifest provenance")
-expected_path = "sources/dtv-android/tools/mirakc/patches/px4-userland-receiver-control-concurrency.patch"
-if provenance.get("path") != expected_path or Path(patch_path).resolve() != manifest_root / expected_path:
-    raise SystemExit("PX4 patch path does not match source-manifest provenance")
-print(f"clean-room PX4 provenance: upstream={provenance['upstream_commit']} patch_sha256={patch_sha}")
+for component_name, field, relative, patch_path, patch_sha in (
+    ("dtv-userland-core", "android_integration_patch", "sources/dtv-android/tools/mirakc/patches/dtv-core-receiver-control-concurrency.patch", core_patch_path, core_patch_sha),
+    ("px4-userland", "android_build_patch", "sources/dtv-android/tools/mirakc/patches/px4-userland-build-jobs.patch", px4_patch_path, px4_patch_sha),
+):
+    component = next(item for item in manifest["components"] if item["name"] == component_name)
+    provenance = component.get(field)
+    if not isinstance(provenance, dict) or provenance.get("upstream_commit") != component.get("commit"):
+        raise SystemExit(f"source archive has invalid {component_name} patch provenance")
+    if provenance.get("sha256") != patch_sha or provenance.get("path") != relative:
+        raise SystemExit(f"{component_name} patch bytes do not match source-manifest provenance")
+    if Path(patch_path).resolve() != manifest_root / relative:
+        raise SystemExit(f"{component_name} patch path does not match source-manifest provenance")
+    print(f"clean-room {component_name} provenance: upstream={provenance['upstream_commit']} patch_sha256={patch_sha}")
 PY
-px4=$work/px4-userland-patched
+core=$work/dtv-userland-core-patched
+cp -a "$core_upstream" "$core"
+patch --batch --fuzz=0 --forward -p1 -d "$core" -i "$core_patch"
+px4=$work/px4-userland-build-source
 cp -a "$px4_upstream" "$px4"
 patch --batch --fuzz=0 --forward -p1 -d "$px4" -i "$px4_patch"
 
@@ -326,7 +335,8 @@ build_px4() {
     abi=$2
     source_input=$3
     output=$4
-    run_guarded env ANDROID_NDK_HOME="$ndk" PX4_ANDROID_BUILD_JOBS=1 PATH="$guard_path" \
+    run_guarded env ANDROID_NDK_HOME="$ndk" PX4_ANDROID_BUILD_JOBS=1 \
+        DTV_USERLAND_CORE_SOURCE_DIR="$core" PATH="$guard_path" \
         "$tree/scripts/build-android.sh" --abi "$abi" --output "$output" \
         --libusb-source "$source_input"
 }
@@ -338,12 +348,42 @@ build_siano() {
     patch_siano_script "$tree" "$(sha256sum "$input_archive" | awk '{print $1}')"
     log=$work/siano-$(basename "$tree")-$abi.log
     if ! run_guarded env ANDROID_NDK_HOME="$ndk" ANDROID_ABI="$abi" PATH="$guard_path" \
+        DTV_USERLAND_CORE_SOURCE_DIR="$core" \
+        SIANO_PX4_USERLAND_SOURCE_DIR="$source_root/sources/siano-px4-userland" \
         MIRAKC_TEST_LIBUSB_ARCHIVE="$input_archive" \
         "$tree/scripts/build-android.sh" >"$log" 2>&1; then
         cat "$log" >&2
         return 1
     fi
     printf '%s/%s\n' "$tree/build/android-$abi" siano-ts
+}
+
+build_asicen() {
+    tree=$1
+    abi=$2
+    output=$3
+    libusb_source=$4
+    core_bundle=$tree/third_party/dtv-userland-core
+    mkdir -p "$core_bundle/repository"
+    cp -a "$core/." "$core_bundle/repository/"
+    printf '%s\n' "$(sed -n 's/.*"base_commit": "\([0-9a-f]*\)".*/\1/p' "$core/DTV-PATCH-METADATA.json" | head -n 1)" \
+        > "$core_bundle/SOURCE-REVISION"
+    run_guarded env ANDROID_NDK_HOME="$ndk" PATH="$guard_path" \
+        "$tree/scripts/build-android.sh" --abi "$abi" --output "$output" \
+        --libusb-source "$libusb_source"
+}
+
+build_pix() {
+    tree=$1
+    abi=$2
+    output=$3
+    run_guarded env ANDROID_NDK_HOME="$ndk" ANDROID_ABI="$abi" \
+        PIX_EMBEDDED_ASSETS=ON JOBS=1 LIBUSB_SOURCE_TARBALL="$libusb_archive" \
+        DTV_USERLAND_CORE_SOURCE_DIR="$core" PATH="$guard_path" \
+        "$tree/tools/build-portable.sh" android
+    built=$tree/build/android-$abi
+    mkdir -p "$output"
+    cp -f "$built/pixd" "$built/pixctl" "$built/pix-ts" "$output/"
 }
 
 for abi in aarch64 armv7a; do
@@ -406,25 +446,58 @@ for abi in aarch64 armv7a; do
         cp -f "$base_px4" "$full_native_root/lib/$output_abi/libpx4d.so"
         cp -f "$work/px4-base-$abi/px4-ts-$output_abi" "$full_native_root/lib/$output_abi/libpx4-ts.so"
         cp -f "$work/px4-base-$abi/px4ctl-$output_abi" "$full_native_root/lib/$output_abi/libpx4ctl.so"
+
+        asicen_tree=$work/asicen-$abi
+        cp -a "$asicen" "$asicen_tree"
+        asicen_output=$work/asicen-output-$output_abi
+        build_asicen "$asicen_tree" "$output_abi" "$asicen_output" "$libusb"
+        for program in asicend asicenctl asicen-ts; do
+            cp -f "$asicen_output/$program-$output_abi" \
+                "$full_native_root/lib/$output_abi/lib$program.so"
+        done
+
+        pix_tree=$work/pix-$abi
+        cp -a "$pix" "$pix_tree"
+        pix_output=$work/pix-output-$output_abi
+        build_pix "$pix_tree" "$abi" "$pix_output"
+        for program in pixd pixctl pix-ts; do
+            cp -f "$pix_output/$program" "$full_native_root/lib/$output_abi/lib$program.so"
+        done
     fi
 done
 
 if [ "$full_gate" -eq 1 ]; then
-    mirakc_source=$dtv/.work/mirakc-3.4.88
-    arib_source=$dtv/.work/mirakc-arib-0.24.39
+    mirakc_source=$dtv/.work/mirakc-3.4.91
+    arib_source=$dtv/.work/mirakc-arib-0.24.40
     mkdir -p "$dtv/.work"
     cp -a "$mirakc" "$mirakc_source"
     cargo_home=$work/cargo-home
     mkdir -p "$cargo_home" "$mirakc_source/.cargo"
-    # The archive auditor already checked this file; point the copied build
-    # tree at the archive's vendor directory without relying on a host cache.
-    printf '%s\n' \
-        '[source.crates-io]' \
-        'replace-with = "vendored-sources"' \
-        '' \
-        '[source.vendored-sources]' \
-        "directory = \"$source_root/third_party/cargo/vendor\"" \
-        > "$mirakc_source/.cargo/config.toml"
+    # Preserve Cargo's generated Git source mappings and point its vendored
+    # directory at the extracted archive for the isolated offline build.
+    python3 - "$source_root/.cargo/config.toml" "$mirakc_source/.cargo/config.toml" \
+        "$source_root/third_party/cargo/vendor" <<'PY'
+import json
+from pathlib import Path
+import re
+import sys
+import tomllib
+
+source, destination, vendor_root = map(Path, sys.argv[1:])
+text = source.read_text(encoding="utf-8")
+config = tomllib.loads(text)
+if config.get("source", {}).get("vendored-sources", {}).get("directory") != "third_party/cargo/vendor":
+    raise SystemExit("archive Cargo config does not point to its audited vendor directory")
+block = re.compile(r"(?ms)(^\[source\.vendored-sources\]\s*\n)(.*?)(?=^\[|\Z)")
+match = block.search(text)
+if match is None:
+    raise SystemExit("archive Cargo config has no vendored-sources table")
+body, count = re.subn(r'(?m)^directory\s*=\s*"(?:[^"\\]|\\.)*"\s*$',
+                      "directory = " + json.dumps(str(vendor_root.resolve())), match.group(2))
+if count != 1:
+    raise SystemExit("archive Cargo config has an invalid vendored-sources directory")
+destination.write_text(text[:match.start(2)] + body + text[match.end(2):], encoding="utf-8")
+PY
 
     autotools_root=$dtv/.work/autotools
     mkdir -p "$autotools_root/autotools-sources"
@@ -457,7 +530,7 @@ if [ "$full_gate" -eq 1 ]; then
             HOME="$clean_home" RUSTUP_HOME="$rustup_home" \
             RUSTUP_TOOLCHAIN=1.98.1 \
             CARGO_HOME="$cargo_home" CARGO_NET_OFFLINE=true \
-            VERGEN_GIT_SHA=09664c2eefd0dccc38cabd3717b081ac84bf0833 \
+            VERGEN_GIT_SHA=4f0767e87b109cabd17ed1ded0311355244fa018 \
             SWAGGER_UI_DOWNLOAD_URL="file://$swagger_archive" \
             MIRAKC_GIT_BIN="$git_bin" \
             MIRAKC_CLEAN_ROOM=1 MIRAKC_SOURCE_DIR="$mirakc_source" \
@@ -495,13 +568,25 @@ if [ "$full_gate" -eq 1 ]; then
         shift 4
         build_dir=$work/native-cmake-$abi-$target
         destination=$full_native_root/lib/$abi/$name
-        if [ "$target" = px4_adapter ]; then
+        case "$target" in
+        px4_adapter)
             # Match Gradle's canonical DWARF paths; the linker build-id
             # otherwise varies with extracted source and temporary build dirs.
-            source_prefix_map_flags="-ffile-prefix-map=$native_cmake_source=/src/dtv -ffile-prefix-map=$px4=/src/px4 -ffile-prefix-map=$build_dir=/src/build"
+            source_prefix_map_flags="-ffile-prefix-map=$native_cmake_source=/src/dtv -ffile-prefix-map=$px4=/src/px4 -ffile-prefix-map=$core=/src/core -ffile-prefix-map=$build_dir=/src/build"
             set -- "$@" "-DCMAKE_C_FLAGS=$source_prefix_map_flags" \
                 "-DCMAKE_CXX_FLAGS=$source_prefix_map_flags"
-        fi
+            ;;
+        asicen_adapter)
+            source_prefix_map_flags="-ffile-prefix-map=$native_cmake_source=/src/dtv -ffile-prefix-map=$asicen=/src/asicen -ffile-prefix-map=$core=/src/core -ffile-prefix-map=$build_dir=/src/build"
+            set -- "$@" "-DCMAKE_C_FLAGS=$source_prefix_map_flags" \
+                "-DCMAKE_CXX_FLAGS=$source_prefix_map_flags"
+            ;;
+        pix_adapter)
+            source_prefix_map_flags="-ffile-prefix-map=$native_cmake_source=/src/dtv -ffile-prefix-map=$core=/src/core -ffile-prefix-map=$build_dir=/src/build"
+            set -- "$@" "-DCMAKE_C_FLAGS=$source_prefix_map_flags" \
+                "-DCMAKE_CXX_FLAGS=$source_prefix_map_flags"
+            ;;
+        esac
         run_guarded env PATH="$guard_path" ANDROID_NDK_HOME="$ndk" \
             cmake -S "$native_cmake_source" -B "$build_dir" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -525,11 +610,17 @@ if [ "$full_gate" -eq 1 ]; then
     for abi in arm64-v8a armeabi-v7a; do
         build_cmake_native "$abi" usb_process libusb_process.so shared
         build_cmake_native "$abi" siano_adapter libmirakc-siano-adapter.so pie \
-            -DMIRAKC_BUILD_SIANO_ADAPTER=ON
+            -DMIRAKC_BUILD_SIANO_ADAPTER=ON -DDTV_USERLAND_CORE_DIR="$core"
         build_cmake_native "$abi" b25_filter libmirakc-b25-filter.so pie \
             -DMIRAKC_BUILD_B25_FILTER=ON
         build_cmake_native "$abi" px4_adapter libmirakc-px4-adapter.so pie \
-            -DMIRAKC_BUILD_PX4_ADAPTER=ON -DPX4_USERLAND_DIR="$px4"
+            -DMIRAKC_BUILD_PX4_ADAPTER=ON -DDTV_USERLAND_CORE_DIR="$core" \
+            -DPX4_USERLAND_DIR="$px4"
+        build_cmake_native "$abi" asicen_adapter libmirakc-asicen-adapter.so pie \
+            -DMIRAKC_BUILD_ASICEN_ADAPTER=ON -DDTV_USERLAND_CORE_DIR="$core" \
+            -DASICEN_USERLAND_DIR="$asicen"
+        build_cmake_native "$abi" pix_adapter libmirakc-pix-adapter.so pie \
+            -DMIRAKC_BUILD_PIX_ADAPTER=ON -DDTV_USERLAND_CORE_DIR="$core"
     done
 
     rebuilt_apk=$work/clean-room-native.apk
@@ -541,8 +632,8 @@ import zipfile
 root = Path(sys.argv[1])
 output = Path(sys.argv[2])
 paths = sorted(path for path in root.rglob("*") if path.is_file())
-if len(paths) != 20:
-    raise SystemExit(f"clean-room native inventory has {len(paths)} files, expected 20")
+if len(paths) != 40:
+    raise SystemExit(f"clean-room native inventory has {len(paths)} files, expected 40")
 with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as archive:
     for path in paths:
         archive.writestr(path.relative_to(root).as_posix(), path.read_bytes())
@@ -582,10 +673,13 @@ import sys
 import zipfile
 
 expected_names = {
-    "libmirakc.so", "libmirakc-arib.so", "libsiano-ts.so", "libpx4d.so",
-    "libpx4-ts.so", "libpx4ctl.so", "libusb_process.so",
+    "libmirakc.so", "libmirakc-arib.so", "libsianod.so", "libsianoctl.so",
+    "libsiano-ts.so", "libpx4d.so", "libpx4-ts.so", "libpx4ctl.so",
+    "libasicend.so", "libasicenctl.so", "libasicen-ts.so", "libpixd.so",
+    "libpixctl.so", "libpix-ts.so", "libusb_process.so",
     "libmirakc-siano-adapter.so", "libmirakc-b25-filter.so",
-    "libmirakc-px4-adapter.so",
+    "libmirakc-px4-adapter.so", "libmirakc-asicen-adapter.so",
+    "libmirakc-pix-adapter.so",
 }
 expected = {
     f"lib/{abi}/{name}"
@@ -600,7 +694,7 @@ for raw in sys.argv[1:]:
         raise SystemExit(f"native inventory mismatch in {raw}")
     if any(name.endswith("/libmirakc-px4-fwtool.so") for name in entries):
         raise SystemExit(f"removed PX4 fwtool payload is present in {raw}")
-print("clean-room native inventory matches ordinary APK: 20 payloads; PX4 fwtool absent")
+print("clean-room native inventory matches ordinary APK: 40 payloads; PX4 fwtool absent")
 PY
     printf '%s\n' 'clean-room complete native inventory gate: PASS'
 fi

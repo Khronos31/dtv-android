@@ -28,8 +28,10 @@ ARIB_APK_SUBMODULES = audit.MIRAKC_ARIB_APK_SUBMODULES
 LIBARIB25_TREE_IDENTITY = audit.LIBARIB25_TREE_IDENTITY
 FIRMWARE_SHA256 = EXPECTED["linux-firmware-siano"]["sha256"]
 FIRMWARE_LICENSE_SHA256 = EXPECTED["linux-firmware-siano"]["license_sha256"]
-PX4_ANDROID_PATCH_PATH = audit.PX4_ANDROID_PATCH_PATH.removeprefix("sources/dtv-android/")
-PX4_ANDROID_PATCH_SHA256 = audit.PX4_ANDROID_PATCH_SHA256
+CORE_ANDROID_PATCH_PATH = audit.CORE_ANDROID_PATCH_PATH.removeprefix("sources/dtv-android/")
+CORE_ANDROID_PATCH_SHA256 = audit.CORE_ANDROID_PATCH_SHA256
+PX4_BUILD_JOBS_PATCH_PATH = audit.PX4_BUILD_JOBS_PATCH_PATH.removeprefix("sources/dtv-android/")
+PX4_BUILD_JOBS_PATCH_SHA256 = audit.PX4_BUILD_JOBS_PATCH_SHA256
 
 
 class MetadataError(Exception):
@@ -98,6 +100,43 @@ def candidate(path: str) -> bool:
     return name.startswith(("license", "licence", "copying", "notice", "third_party_notices", "dependency-notice"))
 
 
+def development_source_overlay(root: Path, output: Path, commit: str, tree: str) -> dict:
+    status = subprocess.run(
+        ["git", "-C", str(root), "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        errors="surrogateescape",
+    )
+    entries = []
+    deleted = []
+    for record in (item for item in status.stdout.split("\0") if item):
+        state = record[:2]
+        relative = record[3:]
+        path = PurePosixPath(relative)
+        basename = path.name.lower()
+        if "R" in state or "C" in state:
+            fail("development source overlay does not accept renamed paths")
+        if ("secret" in basename or "credential" in basename or ".env" in basename
+                or ".storage" in path.parts or ".ssh" in path.parts):
+            fail("development source overlay contains a sensitive path")
+        source = root / relative
+        if "D" in state and not source.exists():
+            deleted.append(relative)
+            continue
+        if not source.is_file() or source.is_symlink():
+            fail("development source overlay contains a non-file path")
+        data = source.read_bytes()
+        destination = output / "source-metadata/development-source" / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(data)
+        entries.append({"path": relative, "sha256": digest(data), "size": len(data)})
+    entries.sort(key=lambda item: item["path"])
+    deleted.sort()
+    identity = {"base_commit": commit, "base_tree": tree, "files": entries, "deleted_paths": deleted}
+    identity["overlay_sha256"] = digest(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode())
+    identity["mode"] = "working-tree-overlay"
+    return identity
+
+
 def tracked_license_paths(root: Path, ref: str) -> list[str]:
     raw = git_bytes(root, "ls-tree", "-r", "--name-only", ref)
     # The caller reads these paths from the Git object below.  Do not inspect
@@ -151,6 +190,7 @@ def copy_license(output: Path, source: Path, component_key: str, relative: str, 
 def add_component(output: Path, components: list[dict], seen: set[str], *, name: str, version: str, commit: str,
                   url: str, spdx: str, role: list[str], root: Path, ref: str, license_paths: list[str] | None = None,
                   tree: str | None = None, source_inputs: list[dict[str, str]] | None = None,
+                  license_relationships: dict | None = None,
                   git_license_ref: str | None = None) -> None:
     licenses = []
     for relative in license_paths if license_paths is not None else tracked_license_paths(root, ref):
@@ -172,6 +212,8 @@ def add_component(output: Path, components: list[dict], seen: set[str], *, name:
         component["tree"] = tree
     if source_inputs:
         component["source_inputs"] = source_inputs
+    if license_relationships is not None:
+        component["license_relationships"] = license_relationships
     components.append(component)
 
 
@@ -218,13 +260,21 @@ def generate(args: argparse.Namespace) -> Path:
     dtv_commit = git(dtv_root, "rev-parse", f"{args.dtv_ref}^{{commit}}")
     dtv_tree = git(dtv_root, "rev-parse", f"{args.dtv_ref}^{{tree}}")
     dtv_version = git(dtv_root, "show", f"{args.dtv_ref}:mirakc/VERSION")
-    check_checkout(dtv_root, git(dtv_root, "rev-parse", "HEAD"), "dtv-android")
+    development_source = None
+    if args.allow_development_worktree:
+        if args.dtv_ref != "HEAD":
+            fail("development source metadata requires dtv-ref HEAD")
+        development_source = development_source_overlay(dtv_root, output, dtv_commit, dtv_tree)
+    else:
+        check_checkout(dtv_root, dtv_commit, "dtv-android")
     components: list[dict] = []
     seen: set[str] = set()
     add_component(output, components, seen, name="dtv-android", version=dtv_version, commit=dtv_commit,
                   tree=dtv_tree, url=EXPECTED["dtv-android"]["url"], spdx=EXPECTED["dtv-android"]["spdx"],
                   role=["application", "native build harness"], root=dtv_root, ref=args.dtv_ref,
                   license_paths=["LICENSE"], git_license_ref=args.dtv_ref)
+    if development_source is not None:
+        components[-1]["development_source"] = development_source
 
     mirakc_root = args.mirakc_root.resolve()
     check_checkout(mirakc_root, EXPECTED["mirakc"]["commit"], "mirakc")
@@ -244,20 +294,96 @@ def generate(args: argparse.Namespace) -> Path:
     if {component["name"] for component in components if component["name"].startswith("mirakc-arib/")} != set(ARIB_APK_SUBMODULES):
         fail("mirakc-arib recursive submodule inventory is incomplete")
 
-    for name, root_arg, role in (("siano-userland", args.siano_root, ["libsiano-ts.so"]),
-                                 ("px4-userland", args.px4_root, ["libpx4d.so", "libpx4-ts.so", "libpx4ctl.so"])):
+    product_roots = (
+        ("siano-userland", args.siano_root, ["libsianod.so", "libsianoctl.so", "libsiano-ts.so", "libmirakc-siano-adapter.so"]),
+        ("px4-userland", args.px4_root, ["libpx4d.so", "libpx4-ts.so", "libpx4ctl.so", "libmirakc-px4-adapter.so"]),
+        ("asicen-userland", args.asicen_root, ["libasicend.so", "libasicenctl.so", "libasicen-ts.so", "libmirakc-asicen-adapter.so"]),
+        ("pix-userland", args.pix_root, ["libpixd.so", "libpixctl.so", "libpix-ts.so", "libmirakc-pix-adapter.so"]),
+        ("dtv-userland-core", args.core_root, ["libpx4d.so", "libsianod.so", "libasicend.so", "libpixd.so", "libmirakc-px4-adapter.so", "libmirakc-asicen-adapter.so", "libmirakc-pix-adapter.so"]),
+        ("siano-px4-userland", args.siano_px4_root, ["libsianod.so", "libsianoctl.so", "libsiano-ts.so"]),
+    )
+    for name, root_arg, role in product_roots:
         root = root_arg.resolve()
         check_checkout(root, EXPECTED[name]["commit"], name)
         source_inputs = None
         if name == "px4-userland":
-            patch_bytes = git_bytes(dtv_root, "show", f"{args.dtv_ref}:{PX4_ANDROID_PATCH_PATH}")
-            if digest(patch_bytes) != PX4_ANDROID_PATCH_SHA256:
-                fail("DTV-owned PX4 Android patch does not match its pinned digest")
-            source_inputs = [{"path": PX4_ANDROID_PATCH_PATH, "sha256": PX4_ANDROID_PATCH_SHA256}]
+            patch_bytes = (dtv_root / PX4_BUILD_JOBS_PATCH_PATH).read_bytes() if development_source is not None else git_bytes(dtv_root, "show", f"{args.dtv_ref}:{PX4_BUILD_JOBS_PATCH_PATH}")
+            if digest(patch_bytes) != PX4_BUILD_JOBS_PATCH_SHA256:
+                fail("DTV-owned PX4 bounded-job patch does not match its pinned digest")
+            source_inputs = [{"path": PX4_BUILD_JOBS_PATCH_PATH, "sha256": PX4_BUILD_JOBS_PATCH_SHA256}]
+        elif name == "dtv-userland-core":
+            patch_bytes = (dtv_root / CORE_ANDROID_PATCH_PATH).read_bytes() if development_source is not None else git_bytes(dtv_root, "show", f"{args.dtv_ref}:{CORE_ANDROID_PATCH_PATH}")
+            if digest(patch_bytes) != CORE_ANDROID_PATCH_SHA256:
+                fail("DTV-owned Core integration patch does not match its pinned digest")
+            source_inputs = [{"path": CORE_ANDROID_PATCH_PATH, "sha256": CORE_ANDROID_PATCH_SHA256}]
+        elif name == "pix-userland":
+            source_inputs = [
+                {"path": path, "sha256": digest((root / path).read_bytes())}
+                for path in (
+                    "firmware/dt181.bin", "firmware/dt295.bin", "firmware/manifest.json",
+                    "firmware/metadata/dt181-source.json", "firmware/metadata/dt295-preservation.json",
+                    "firmware/metadata/dt295-satellite-generation.json", "firmware/preserved/verified-ts-iv.bin",
+                    "THIRD_PARTY_NOTICES.md",
+                )
+            ]
+        elif name == "siano-userland":
+            revision_path = root / "cmake/px4-userland.revision"
+            revision_bytes = revision_path.read_bytes()
+            nested_px4 = args.siano_px4_root.resolve()
+            expected_px4_commit = EXPECTED["siano-px4-userland"]["commit"]
+            if revision_bytes.decode("ascii").strip() != expected_px4_commit or \
+                    git(nested_px4, "rev-parse", "HEAD") != expected_px4_commit:
+                fail("Siano PX4 revision file and nested Git commit do not match the recorded pin")
+            source_inputs = [{"path": "cmake/px4-userland.revision", "sha256": digest(revision_bytes)}]
+        license_relationships = None
+        if name == "dtv-userland-core":
+            license_relationships = {
+                "project_sources": {"spdx": "MIT", "license_file": "LICENSE"},
+                "statically_linked_adapters": [
+                    {"spdx": "GPL-2.0-only", "source_prefix": "adapters/host_daemon/", "license_file": "adapters/host_daemon/COPYING"},
+                    {"spdx": "GPL-2.0-only", "source_prefix": "adapters/host_ts/", "license_file": "adapters/host_ts/COPYING"},
+                ],
+            }
+        elif name == "pix-userland":
+            license_relationships = {
+                "project_sources": {"spdx": "MIT", "license_file": "LICENSE"},
+                "linked_component_notice": "THIRD_PARTY_NOTICES.md",
+                "firmware_terms": "third-party terms are separately recorded; not covered by the project MIT license",
+            }
         add_component(output, components, seen, name=name, version=EXPECTED[name]["version"],
                       commit=EXPECTED[name]["commit"], url=EXPECTED[name]["url"], spdx=EXPECTED[name]["spdx"],
                       role=role, root=root, ref=EXPECTED[name]["commit"], git_license_ref=EXPECTED[name]["commit"],
-                      source_inputs=source_inputs)
+                      source_inputs=source_inputs, license_relationships=license_relationships)
+
+    pix_assets = args.pix_root.resolve()
+    for model, relative in (("dt181", "firmware/dt181.bin"), ("dt295", "firmware/dt295.bin")):
+        payload = pix_assets.joinpath(relative)
+        if not payload.is_file():
+            fail(f"PIX {model} firmware is missing: {payload}")
+
+    asicen_firmware = dtv_root / "mirakc/src/main/assets/asicen-loader.bin"
+    asicen_firmware_sha = "5db39facda140bdcb3a238dad10da5aac752a1ba3aaf17e2239f8d79a0ad6a2a"
+    if not asicen_firmware.is_file() or digest(asicen_firmware.read_bytes()) != asicen_firmware_sha:
+        fail("ASICEN loader firmware digest mismatch")
+    firmware_notice = dtv_root / "mirakc/src/main/assets/ASICEN-LOADER-NOTICE.txt"
+    if not firmware_notice.is_file():
+        fail("ASICEN loader firmware provenance notice is missing")
+    firmware_license = output / "source-metadata/licenses/asicen-loader-firmware/README.txt"
+    firmware_license.parent.mkdir(parents=True, exist_ok=True)
+    firmware_license.write_bytes(firmware_notice.read_bytes())
+    firmware_entry = {"source_path": "firmware/README.txt", "apk_path": firmware_license.relative_to(output).as_posix(), "sha256": digest(firmware_notice.read_bytes()), "size": firmware_notice.stat().st_size}
+    components.append({
+        "name": "asicen-loader-firmware", "version": "firmware/asicen-loader.bin",
+        "commit": EXPECTED["asicen-userland"]["commit"], "url": EXPECTED["asicen-userland"]["url"],
+        "spdx": "LicenseRef-ASICEN-loader-rights-unresolved", "license_basis": "bundled-exact-files",
+        "packaged_native_consumers": ["assets/asicen-loader.bin"],
+        "source_inputs": [
+            {"path": "mirakc/src/main/assets/asicen-loader.bin", "sha256": asicen_firmware_sha},
+            {"path": "mirakc/src/main/assets/ASICEN-LOADER-NOTICE.txt", "sha256": digest(firmware_notice.read_bytes())},
+        ],
+        "firmware_binary": {"apk_path": "assets/asicen-loader.bin", "sha256": asicen_firmware_sha, "size": asicen_firmware.stat().st_size, "redistribution_rights": "unresolved"},
+        "license_files": [firmware_entry],
+    })
 
     arib25_root = args.arib25_root.resolve()
     if not arib25_root.is_dir():
@@ -290,7 +416,7 @@ def generate(args: argparse.Namespace) -> Path:
         libusb_license = extract / "COPYING"
         libusb_license.write_bytes(license_data)
         add_component(output, components, seen, name="libusb", version="1.0.30", commit="archive-sha256:" + libusb_digest,
-                      url=EXPECTED["libusb"]["url"], spdx=EXPECTED["libusb"]["spdx"], role=["libsiano-ts.so", "libpx4d.so"],
+                      url=EXPECTED["libusb"]["url"], spdx=EXPECTED["libusb"]["spdx"], role=["libsianod.so", "libpx4d.so", "libasicend.so", "libpixd.so"],
                       root=extract, ref=".", license_paths=["COPYING"])
 
     inventory = sorted((entry for component in components for entry in component["license_files"] for entry in [
@@ -334,10 +460,15 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--dtv-root", type=Path, required=True)
     parser.add_argument("--dtv-ref", default="HEAD")
+    parser.add_argument("--allow-development-worktree", action="store_true")
     parser.add_argument("--mirakc-root", type=Path, required=True)
     parser.add_argument("--arib-root", type=Path, required=True)
     parser.add_argument("--siano-root", type=Path, required=True)
     parser.add_argument("--px4-root", type=Path, required=True)
+    parser.add_argument("--asicen-root", type=Path, required=True)
+    parser.add_argument("--pix-root", type=Path, required=True)
+    parser.add_argument("--core-root", type=Path, required=True)
+    parser.add_argument("--siano-px4-root", type=Path, required=True)
     # Preserve the old optional flag for the existing APK metadata self-test.
     # APK provenance no longer describes px4_drv/fwtool because no such payload is shipped.
     parser.add_argument("--px4-drv-root", type=Path, help=argparse.SUPPRESS)

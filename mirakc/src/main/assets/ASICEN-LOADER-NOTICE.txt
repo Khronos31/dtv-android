@@ -1,0 +1,10 @@
+ASICEN loader firmware provenance
+
+Source: ASICEN 0.1.0 Windows BDA x64 Loader.sys
+Source artifact SHA-256: 071469e57215774366eaab14055d23a134452248be3b7caf1d85990b3f961ff2
+Loader.sys SHA-256: edd9badb7588f59c6438e1ceaa0e0f3f33b2ce75667e541e1d75c45e2c485e5
+Extracted firmware: 16,384 bytes, SHA-256 5db39facda140bdcb3a238dad10da5aac752a1ba3aaf17e2239f8d79a0ad6a2a
+Load address: 0x55d6
+
+Redistribution rights remain unresolved. Inclusion does not establish permission
+to redistribute this firmware, and it is not covered by the project GPL.

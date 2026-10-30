@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import re
 import stat
@@ -19,9 +20,14 @@ EXPECTED = {
     "SHA256SUMS",
 }
 CERT = "1fd02c94f29a5756ed1d560ac4ecb6813fa0b2e634473a6f31da210ffd5223c4"
-PX4_USERLAND_REF = "7ad5f6691f77a9aa58c4097f8b6dfea77f6d9b6a"
-PX4_USERLAND_PATCH_SHA256 = "c60214256a40b03f3469b5a508f149c12e599282edf103875a2170b816c4b697"
 VERSION_PATTERN = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+ATTESTATION_SPEC = importlib.util.spec_from_file_location(
+    "release_attestation", Path(__file__).with_name("release-attestation.py")
+)
+if ATTESTATION_SPEC is None or ATTESTATION_SPEC.loader is None:
+    raise ImportError("cannot load release-attestation.py")
+release_attestation = importlib.util.module_from_spec(ATTESTATION_SPEC)
+ATTESTATION_SPEC.loader.exec_module(release_attestation)
 
 
 class ArtifactError(RuntimeError):
@@ -38,31 +44,13 @@ def read_info(path: Path) -> dict[str, str]:
     return values
 
 
-def requires_px4_patch_provenance(version: str) -> bool:
-    match = VERSION_PATTERN.fullmatch(version)
-    if match is None:
-        return False
-    return tuple(int(part) for part in match.groups()) >= (0, 4, 0)
-
-
 def verify_candidate_info(candidate: dict[str, str], expected_version: str) -> None:
     if VERSION_PATTERN.fullmatch(expected_version) is None:
         raise ArtifactError("expected version is not canonical semantic version")
-    if candidate.get("kind") != "candidate" or candidate.get("version") != expected_version:
-        raise ArtifactError("candidate build-info identity mismatch")
-    if requires_px4_patch_provenance(expected_version):
-        if candidate.get("px4_userland_ref") != PX4_USERLAND_REF:
-            raise ArtifactError("candidate PX4 upstream source ref mismatch")
-        if candidate.get("px4_userland_patch_sha256") != PX4_USERLAND_PATCH_SHA256:
-            raise ArtifactError("candidate PX4 patch digest mismatch")
-    if re.fullmatch(r"[1-9][0-9]*", candidate.get("candidate_run_id", "")) is None:
-        raise ArtifactError("candidate run id is malformed")
-    if not candidate.get("git_ref"):
-        raise ArtifactError("candidate git ref is missing")
-    if re.fullmatch(r"[0-9a-f]{40}", candidate.get("git_head", "")) is None:
-        raise ArtifactError("candidate git_head is malformed")
-    if re.fullmatch(r"[0-9a-f]{64}", candidate.get("unsigned_apk_sha256", "")) is None:
-        raise ArtifactError("candidate unsigned APK digest is malformed")
+    try:
+        release_attestation.verify_candidate_build(candidate, expected_version)
+    except release_attestation.AttestationError as error:
+        raise ArtifactError(str(error)) from error
 
 
 def digest(path: Path) -> str:

@@ -1,0 +1,50 @@
+gradle.projectsEvaluated {
+    def module = gradle.rootProject.findProject(':mirakc')
+    def cppRoot = new File(module.projectDir, 'src/main/cpp').canonicalFile
+    def expected = [
+        preparePx4AdapterBinaries: [
+            'adapter_cli.h', 'px4_adapter.cpp', 'px4_tune_plan.cpp',
+            'px4_tune_plan.h', 'px4_receiver_retry.h', 'px4_card_retry.h',
+            'b25_filter.cpp', 'ccid_reader.c', 'ccid_reader.h',
+            't1_state_machine.c', 't1_state_machine.h', 'b_cas_card_ccid.c',
+            'arib25/arib_std_b25.c', 'arib25/ts_section_parser.c',
+            'arib25/multi2.cc', 'CMakeLists.txt'
+        ],
+        prepareAsicenAdapterBinaries: [
+            'adapter_cli.h', 'px4_adapter.cpp', 'px4_tune_plan.cpp',
+            'px4_tune_plan.h', 'px4_receiver_retry.h', 'px4_card_retry.h',
+            'b25_filter.cpp', 'ccid_reader.c', 'ccid_reader.h',
+            't1_state_machine.c', 't1_state_machine.h', 'b_cas_card_ccid.c',
+            'arib25/arib_std_b25.c', 'arib25/ts_section_parser.c',
+            'arib25/multi2.cc', 'CMakeLists.txt'
+        ],
+        preparePixAdapterBinaries: ['adapter_cli.h', 'pix_adapter.cpp', 'CMakeLists.txt']
+    ]
+    def externalInputs = [
+        preparePx4AdapterBinaries: ['../tools/mirakc/verify-android-elf.sh'],
+        prepareAsicenAdapterBinaries: ['../tools/mirakc/verify-android-elf.sh'],
+        preparePixAdapterBinaries: ['../tools/mirakc/verify-android-elf.sh']
+    ]
+
+    expected.each { taskName, paths ->
+        def task = module.tasks.getByName(taskName)
+        def actual = task.inputs.files.files.collect { it.canonicalFile }.toSet()
+        paths.each { path ->
+            def input = new File(cppRoot, path).canonicalFile
+            if (!actual.contains(input)) {
+                throw new GradleException("${taskName} is missing declared input ${path}")
+            }
+        }
+        externalInputs[taskName].each { path ->
+            def input = new File(module.projectDir, path).canonicalFile
+            if (!actual.contains(input)) {
+                throw new GradleException("${taskName} is missing declared input ${path}")
+            }
+        }
+        if (actual.contains(cppRoot)) {
+            throw new GradleException("${taskName} declares all of src/main/cpp instead of its source closure")
+        }
+    }
+
+    println 'Custom adapter Gradle task inputs: PASS'
+}

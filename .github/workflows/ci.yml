@@ -8,12 +8,17 @@ env:
   # Pinned so that a runner image refresh cannot change what ships in the APK.
   NDK_VERSION: "27.0.12077973"
   ANDROID_CMAKE_VERSION: "3.22.1"
-  JAVA_VERSION: "17"
+  JAVA_VERSION: "17.0.20.1+1"
   JAVA_RUNTIME_VERSION: "17.0.20.1+1"
   RUST_VERSION: "1.98.1"
-  SIANO_USERLAND_REF: 89c240b8af021d55d81b3b90fce79a3690605811
-  PX4_USERLAND_REF: 7ad5f6691f77a9aa58c4097f8b6dfea77f6d9b6a
+  SIANO_USERLAND_REF: 33c3468e7e10781ae6c7e9a5fd57a0c1b0825288
+  PX4_USERLAND_REF: 5c91e8c57b288c0f490061789829e42dbbf61b3d
+  ASICEN_USERLAND_REF: e2a86ca194b60f1111ecfa0a020cd0944c351c76
+  PIX_USERLAND_REF: 66f5a731784d205d1d306edda9cc57071c087f8e
+  DTV_USERLAND_CORE_REF: 67420d1c909e9205841612a186ae4c7fbf4dd092
+  SIANO_PX4_USERLAND_REF: 90b08dfe79b0b40e393f015975c761863830866a
   PX4_DRV_REF: 2b3f79b5bc5db56e8556bb28397f7d8f74b2adeb
+  CARGO_BUILD_JOBS: "1"
 
 jobs:
   version:
@@ -47,6 +52,26 @@ jobs:
           path: px4-userland
       - uses: actions/checkout@v5
         with:
+          repository: Khronos31/asicen-userland
+          ref: ${{ env.ASICEN_USERLAND_REF }}
+          path: asicen-userland
+      - uses: actions/checkout@v5
+        with:
+          repository: Khronos31/pix-userland
+          ref: ${{ env.PIX_USERLAND_REF }}
+          path: pix-userland
+      - uses: actions/checkout@v5
+        with:
+          repository: Khronos31/dtv-userland-core
+          ref: ${{ env.DTV_USERLAND_CORE_REF }}
+          path: dtv-userland-core
+      - uses: actions/checkout@v5
+        with:
+          repository: Khronos31/px4-userland
+          ref: ${{ env.SIANO_PX4_USERLAND_REF }}
+          path: siano-px4-userland
+      - uses: actions/checkout@v5
+        with:
           repository: nns779/px4_drv
           ref: ${{ env.PX4_DRV_REF }}
           path: px4_drv
@@ -64,6 +89,10 @@ jobs:
           python-version: "3.13"
       - name: Device evidence host self-test
         run: tools/mirakc/test-device-evidence.sh
+      - name: Shared JNI process launcher host self-test
+        run: sh tools/mirakc/test-userland-process-launch.sh
+      - name: Cargo registry and Git vendor provenance fixtures
+        run: python3 tools/mirakc/test-cargo-vendor.py
       - name: Release attestation host self-test
         run: tools/mirakc/test-release-attestation.sh
       - name: Install the pinned NDK
@@ -81,6 +110,10 @@ jobs:
           test "$("$cmake_bin/cmake" --version | sed -n '1s/^cmake version \([0-9][0-9.]*\).*/\1/p')" = "$ANDROID_CMAKE_VERSION"
           test "$("$cmake_bin/ninja" --version)" = "1.10.2"
           echo "$cmake_bin" >> "$GITHUB_PATH"
+      - name: Debug DTV deletion input fixture
+        run: tools/mirakc/test-debug-dtv-deletion-input.sh
+      - name: Custom adapter Gradle task input fixture
+        run: sh tools/mirakc/test-adapter-task-inputs.sh
       - name: Install Rust Android targets
         run: |
           set -euo pipefail
@@ -98,9 +131,15 @@ jobs:
           MIRAKC_ARIB_AUTOTOOLS_ROOT: ${{ runner.temp }}/mirakc-arib-tools
           CARGO_HOME: ${{ runner.temp }}/cargo
         run: |
-          ./gradlew --no-daemon \
+          ./gradlew --no-daemon --max-workers=1 \
             -PsianoUserlandDir="$GITHUB_WORKSPACE/siano-userland" \
             -Ppx4UserlandDir="$GITHUB_WORKSPACE/px4-userland" \
+            -PasicenUserlandDir="$GITHUB_WORKSPACE/asicen-userland" \
+            -PpixUserlandDir="$GITHUB_WORKSPACE/pix-userland" \
+            -PuserlandCoreDir="$GITHUB_WORKSPACE/dtv-userland-core" \
+            -PsianoPx4UserlandDir="$GITHUB_WORKSPACE/siano-px4-userland" \
+            -PlibusbArchive="$GITHUB_WORKSPACE/.work/libusb-1.0.30.tar.bz2" \
+            -PlibusbSourceDir="$GITHUB_WORKSPACE/.work/libusb-1.0.30" \
             -Ppx4DrvDir="$GITHUB_WORKSPACE/px4_drv" \
             test :mirakc:lintDebug
       - name: Test CCID log redaction
@@ -110,9 +149,15 @@ jobs:
           MIRAKC_ARIB_AUTOTOOLS_ROOT: ${{ runner.temp }}/mirakc-arib-tools
           CARGO_HOME: ${{ runner.temp }}/cargo
         run: |
-          ./gradlew --no-daemon \
+          ./gradlew --no-daemon --max-workers=1 \
             -PsianoUserlandDir="$GITHUB_WORKSPACE/siano-userland" \
             -Ppx4UserlandDir="$GITHUB_WORKSPACE/px4-userland" \
+            -PasicenUserlandDir="$GITHUB_WORKSPACE/asicen-userland" \
+            -PpixUserlandDir="$GITHUB_WORKSPACE/pix-userland" \
+            -PuserlandCoreDir="$GITHUB_WORKSPACE/dtv-userland-core" \
+            -PsianoPx4UserlandDir="$GITHUB_WORKSPACE/siano-px4-userland" \
+            -PlibusbArchive="$GITHUB_WORKSPACE/.work/libusb-1.0.30.tar.bz2" \
+            -PlibusbSourceDir="$GITHUB_WORKSPACE/.work/libusb-1.0.30" \
             -Ppx4DrvDir="$GITHUB_WORKSPACE/px4_drv" \
             :mirakc:assembleDebug
       - name: Cache pinned Swagger UI source archive
@@ -129,12 +174,16 @@ jobs:
       - name: Verify corresponding-source archive offline Cargo proof
         env:
           CARGO_HOME: ${{ runner.temp }}/cargo
-          MIRAKC_TEST_MIRAKC_ROOT: ${{ github.workspace }}/.work/mirakc-3.4.88
-          MIRAKC_TEST_ARIB_ROOT: ${{ github.workspace }}/.work/mirakc-arib-0.24.39
+          MIRAKC_TEST_MIRAKC_ROOT: ${{ github.workspace }}/.work/mirakc-3.4.91
+          MIRAKC_TEST_ARIB_ROOT: ${{ github.workspace }}/.work/mirakc-arib-0.24.40
           MIRAKC_TEST_SIANO_ROOT: ${{ github.workspace }}/siano-userland
           MIRAKC_TEST_PX4_ROOT: ${{ github.workspace }}/px4-userland
+          MIRAKC_TEST_ASICEN_ROOT: ${{ github.workspace }}/asicen-userland
+          MIRAKC_TEST_PIX_ROOT: ${{ github.workspace }}/pix-userland
+          MIRAKC_TEST_CORE_ROOT: ${{ github.workspace }}/dtv-userland-core
+          MIRAKC_TEST_SIANO_PX4_ROOT: ${{ github.workspace }}/siano-px4-userland
           MIRAKC_TEST_PX4_DRV_ROOT: ${{ github.workspace }}/px4_drv
-          MIRAKC_TEST_LIBUSB_ARCHIVE: ${{ github.workspace }}/siano-userland/build/android-aarch64/src/libusb-1.0.30.tar.bz2
+          MIRAKC_TEST_LIBUSB_ARCHIVE: ${{ github.workspace }}/.work/libusb-1.0.30.tar.bz2
           MIRAKC_TEST_SWAGGER_UI_ARCHIVE: ${{ runner.temp }}/mirakc-dependencies/swagger-ui-5.32.6.zip
           MIRAKC_TEST_AUTOTOOLS_CACHE: ${{ runner.temp }}/mirakc-arib-tools/autotools-sources
           MIRAKC_TEST_ARCHIVE_OUTPUT: ${{ runner.temp }}/mirakc-corresponding-source.tar.gz
@@ -146,6 +195,19 @@ jobs:
           tools/mirakc/test-source-native-rebuild.sh
           "$RUNNER_TEMP/mirakc-corresponding-source.tar.gz"
           "$GITHUB_WORKSPACE/mirakc/build/outputs/apk/debug/mirakc-debug.apk"
+      - name: Test APK source metadata with pinned source fixtures
+        env:
+          MIRAKC_TEST_MIRAKC_ROOT: ${{ github.workspace }}/.work/mirakc-3.4.91
+          MIRAKC_TEST_ARIB_ROOT: ${{ github.workspace }}/.work/mirakc-arib-0.24.40
+          MIRAKC_TEST_SIANO_ROOT: ${{ github.workspace }}/siano-userland
+          MIRAKC_TEST_PX4_ROOT: ${{ github.workspace }}/px4-userland
+          MIRAKC_TEST_ASICEN_ROOT: ${{ github.workspace }}/asicen-userland
+          MIRAKC_TEST_PIX_ROOT: ${{ github.workspace }}/pix-userland
+          MIRAKC_TEST_CORE_ROOT: ${{ github.workspace }}/dtv-userland-core
+          MIRAKC_TEST_SIANO_PX4_ROOT: ${{ github.workspace }}/siano-px4-userland
+          MIRAKC_TEST_PX4_DRV_ROOT: ${{ github.workspace }}/px4_drv
+          MIRAKC_TEST_LIBUSB_ARCHIVE: ${{ github.workspace }}/.work/libusb-1.0.30.tar.bz2
+        run: tools/mirakc/test-apk-metadata.sh
       - name: Audit APK native and source metadata
         run: tools/mirakc/audit-apk.sh mirakc/build/outputs/apk/debug/mirakc-debug.apk "$GITHUB_SHA"
       - name: Verify the APK carries its module version

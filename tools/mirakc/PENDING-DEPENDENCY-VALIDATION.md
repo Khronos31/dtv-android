@@ -1,19 +1,49 @@
 # Dependency refresh: required pre-release gates
 
-This document tracks verification deferred by the 2026-10-08 dependency
-refresh. The pin update records published upstream inputs; it does not claim
-that this source revision builds or works on hardware.
+This document tracks verification deferred by the 2026-10-08 and 2026-10-30
+dependency refreshes. Source pins do not claim that this source revision builds
+or works on hardware.
 
-## Old-to-new provenance inventory
+## Four-product refresh (2026-10-30)
+
+| Component/input | Exact pin | Evidence boundary |
+|---|---|---|
+| px4-userland | `5c91e8c57b288c0f490061789829e42dbbf61b3d` | Core receiver-control patch SHA-256 `9da0cf46a7727a5c7e20de165babd0bc2d78e47c119cad38c1f2c00abeb10521`; deterministic host concurrency proof is tracked by `tools/mirakc/test-userland-concurrency.sh` and upstream discussion by [dtv-userland-core PR 121](https://github.com/Khronos31/dtv-userland-core/pull/121). This does not constitute tuner hardware validation. |
+| siano-userland | `33c3468e7e10781ae6c7e9a5fd57a0c1b0825288` | daemon, ctl and TS programs are the packaging inventory; Core pin is `67420d1c909e9205841612a186ae4c7fbf4dd092`; nested PX4 pin is `90b08dfe79b0b40e393f015975c761863830866a`. |
+| asicen-userland | `e2a86ca194b60f1111ecfa0a020cd0944c351c76` | daemon, ctl and TS programs; bundled PX4 reference is `dd1c1bea16a5871085d5f2a42c009364c1ec7345`; loader hash is recorded in APK/source metadata. Provisioning grants and uploads primary and sibling loaders sequentially before starting the complete runtime owner. Loader redistribution rights remain unresolved, and ASICEN hardware validation is not complete. |
+| pix-userland | `66f5a731784d205d1d306edda9cc57071c087f8e` | daemon, ctl and TS programs; both embedded firmware bundles are hash checked. |
+| dtv-userland-core | `67420d1c909e9205841612a186ae4c7fbf4dd092` | Shared product/adaptor source input; same-release card-session behavior remains unverified. |
+
+The requested native APK inventory, corresponding-source bundle and clean-room
+rebuild remain release gates. No new tuner hardware has been validated by the
+packaging changes.
+
+## Latest stable mirakc refresh (2026-10-30)
+
+| Component | Exact pin | Integrity data |
+|---|---|---|
+| mirakc | 3.4.91, `4f0767e87b109cabd17ed1ded0311355244fa018` | Deterministic `git archive | gzip -n` SHA-256 `b0b4913c8c6451dff7be0dccc9423fb458d346857471e65c6574a7aabe6cc4f6`; `Cargo.lock` SHA-256 `005a492cfdd0f6d44dd78585359caa0aa28b3c78eb46aaa6c55b18854f78a8b8`. |
+| mirakc-arib | 0.24.40, `312168e85b30941a1fc0344900fd543a036ea341` | `CMakeLists.txt` reports 0.24.40; recursive vendor gitlinks match the preceding release. |
+| locked Git Cargo package | `utoipa-swagger-ui` 10.0.1 from `git+https://github.com/mirakc/utoipa?branch=fix-zip-v9.0#5243d0c6772b8585f2ffeabe31e941dab898b3eb` | Cargo 1.98.1 vendor tree SHA-256 `d5a9fc47a33afa3341f13e89633cb8e6be0b3fd7f5fe257d1f1ce7a611bb3381`; tree digest covers sorted relative paths and bytes, including `.cargo-checksum.json`. |
+
+The exact mirakc and mirakc-arib patches must be validated on these checkouts
+before release. API version checks must expect 3.4.91. The source archive
+fixture must verify the lock-pinned Git vendor tree digest as well as registry
+checksums, and reject Cargo config directives outside `[source]`.
+
+## Historical dependency inventory (2026-10-08; current-state claims superseded by the table above)
 
 | Component/input | Previous pin | New pin | Source identity / integrity data |
 |---|---|---|---|
 | mirakc | 3.4.86, `fc9610f51f8621aa8db508ddd36c7f1e2785d7be` | 3.4.88, `09664c2eefd0dccc38cabd3717b081ac84bf0833` | Deterministic `git archive | gzip -n` SHA-256 `5a7d1b46e46421c89abfaf1808d231ccacf5e1ec1a778daa2c6897c4de1c4703`; `Cargo.lock` SHA-256 `d31a12f832fcad3d916108910f1b2d23afdb665391fe2f912c01771a506e9842`. |
 | mirakc-arib | 0.24.38, `e85e1f991aa91ba0e6c6e02d14a17d159901e181` | 0.24.39, `3266523d535b301141c533592a46d32617094439` | `CMakeLists.txt` reports 0.24.39. Its recursive vendor submodule refs are listed below. |
-| px4-userland | v0.1.9, `cf38742618bb02db41a95def619fbff50e9eb0f3` | v0.1.10, `7ad5f6691f77a9aa58c4097f8b6dfea77f6d9b6a` | DTV receiver-control patch remains SHA-256 `c60214256a40b03f3469b5a508f149c12e599282edf103875a2170b816c4b697`; upstream profile table still has 16 product IDs by static inspection. |
+| px4-userland | v0.1.9, `cf38742618bb02db41a95def619fbff50e9eb0f3` | v1.0.0, `5c91e8c57b288c0f490061789829e42dbbf61b3d` | Initial 2026-10-08 finding: the then-current DTV receiver-control patch did not apply to v1.0.0. Superseded by the final Core patch recorded in the current-state table above. |
 | Swagger UI archive embedded by utoipa-swagger-ui | 5.17.14, `481244d0812097b11fbaeef79f71d942b171617f9c9f9514e63acbe13e71ccdc` | 5.32.6 | Archive SHA-256 `b3c07e091559b59a833f66547eb1fc18f2896f96e3f1f953e2f1efb328aa3394`. This is the v5.32.6 archive referenced by utoipa-swagger-ui 10.0.1. |
-| siano-userland | v0.1.9, `d1f4e42810d5a2023ff4a6c31f798cb381026693` | v0.1.10, `89c240b8af021d55d81b3b90fce79a3690605811` | Annotated tag object `7123f267a5f9280938a33494dba3a7142e622727` resolves to the source commit above. Static upstream diff adds resumable output backpressure handling, packet-boundary retune handling, and `T13`..`T62` CLI input. |
-| PX4 Android adaptation | unchanged patch | unchanged patch | Apply/build against v0.1.10 has not been checked. |
+| siano-userland | v0.1.9, `d1f4e42810d5a2023ff4a6c31f798cb381026693` | v1.0.0, `33c3468e7e10781ae6c7e9a5fd57a0c1b0825288` | Three-program Android packaging; integration behavior remains unverified. |
+| asicen-userland | — | v1.0.0, `e2a86ca194b60f1111ecfa0a020cd0944c351c76` | Includes ASICEN's pinned vendored PX4 source and sequential loader/runtime provisioning requirements. |
+| pix-userland | — | v1.0.0, `66f5a731784d205d1d306edda9cc57071c087f8e` | Build must set `PIX_EMBEDDED_ASSETS=ON`; actual reception remains unverified. |
+| dtv-userland-core | — | v1.0.0, `67420d1c909e9205841612a186ae4c7fbf4dd092` | Shared same-release implementation; persistent card-session equivalence is unverified. |
+| PX4 Android adaptation | initial 2026-10-08 finding | resolved for the current pin | The initial patch did not apply to px4-userland 1.0.0. That blocker was superseded by the final Core receiver-control patch, SHA-256 `9da0cf46a7727a5c7e20de165babd0bc2d78e47c119cad38c1f2c00abeb10521`, with deterministic host proof and PR 121. This history is not a current build blocker or hardware-validation claim. |
 
 mirakc-arib v0.24.39 records the same vendor gitlinks as v0.24.38. The root
 vendor refs (path = commit) are: `vendor/aribb24` =
@@ -54,7 +84,7 @@ hashes, and resolve every failure before signing or publishing:
    archive/package audits. Do not skip gates to accommodate the new versions.
 2. Verify the mirakc Android patch and mirakc-arib Android patch apply cleanly
    to the exact selected upstream trees. Confirm the `utoipa` 6 / Swagger UI
-   10 APIs compile and that the API version endpoint reports 3.4.88.
+   10 APIs compile and that the API version endpoint reports 3.4.91.
 3. Rebuild every packaged native executable from the corresponding-source
    archive in the clean-room job for both ABIs; compare the full inventory and
    verify source manifest, recursive submodule refs, generated metadata, and
@@ -83,7 +113,7 @@ hashes, and resolve every failure before signing or publishing:
    APK integration results. These are required integration and device gates,
    not claims made by the static source inspection.
 
-No patch-application command, test, build, CI workflow, APK audit, or device
-operation was run as part of this dependency pin change. The Siano source
-diffs are observations only; compatibility with the Android adapter and
-runtime behavior remain unverified.
+Host, source-package, metadata, and Cargo vendor tests were run for this pin
+change. No Android APK/native build, CI workflow, APK audit, or device
+operation was run. The Siano source diffs are observations only; compatibility
+with the Android adapter and runtime behavior remain unverified.

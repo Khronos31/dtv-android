@@ -173,17 +173,17 @@ class Px4DeviceSelectorTest {
     }
 
     @Test
-    fun generatedAdapterArgumentsCarryExplicitModelAndSelectedReceiver() {
+    fun generatedAdapterArgumentsUseTheSharedRuntimeContract() {
         val q3u4 = Px4Generation("12345678901234", Px4DeviceModel.Q3U4, File("/tmp/p4"),
             "px4-q3u4-12345678901234", emptyList())
         val mlt5 = Px4Generation("123456789012345", Px4DeviceModel.MLT5, File("/tmp/p4"),
             "px4-mlt5-123456789012345", emptyList())
 
-        assertEquals(listOf("--device=12345678901234", "--instance=px4-q3u4-12345678901234",
-            "--model=q3u4", "--receiver=7"),
+        assertEquals(listOf("--instance=px4-q3u4-12345678901234", "--runtime-dir=/tmp/p4",
+            "--receiver=7"),
             q3u4.adapterArguments(7))
-        assertEquals(listOf("--device=123456789012345", "--instance=px4-mlt5-123456789012345",
-            "--model=mlt5", "--receiver=4"),
+        assertEquals(listOf("--instance=px4-mlt5-123456789012345", "--runtime-dir=/tmp/p4",
+            "--receiver=4"),
             mlt5.adapterArguments(4))
     }
 

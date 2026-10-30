@@ -35,9 +35,67 @@ internal class SianoReaderHandle(
 internal data class SianoGeneration(
     val token: String,
     val socketName: String,
-    val tunerCount: Int,
-    val deviceNames: List<String>
+    val devices: List<SianoDeviceGeneration>
+) {
+    val tunerCount: Int get() = devices.size
+}
+
+internal data class SianoDeviceGeneration(
+    val deviceName: String,
+    val owner: SianoDaemonOwner,
+    val receiver: UserlandReceiver
 )
+
+internal interface SianoDaemonOwner {
+    val deviceName: String
+    val instance: String
+    val inventory: UserlandStatusInventory?
+    fun start(): Boolean
+    fun stop()
+}
+
+internal class SianoTsClientLifetime(
+    val owner: SianoDaemonOwner,
+    private val stopClient: (String) -> Unit
+) {
+    private val stopped = AtomicBoolean(false)
+
+    fun stop(reason: String) {
+        if (stopped.compareAndSet(false, true)) stopClient(reason)
+    }
+}
+
+internal data class SianoOwnerTicket(val serial: Long)
+internal data class SianoOwnerGenerationStart(val ticket: SianoOwnerTicket, val retired: List<SianoDaemonOwner>)
+
+internal class SianoOwnerSet {
+    private val lock = Any()
+    private var serial = 0L
+    private var owners: List<SianoDaemonOwner> = emptyList()
+
+    fun begin(): SianoOwnerGenerationStart = synchronized(lock) {
+        val retired = owners
+        owners = emptyList()
+        serial++
+        SianoOwnerGenerationStart(SianoOwnerTicket(serial), retired)
+    }
+
+    fun isCurrent(ticket: SianoOwnerTicket): Boolean = synchronized(lock) { serial == ticket.serial }
+
+    fun publish(ticket: SianoOwnerTicket, next: List<SianoDaemonOwner>): Boolean = synchronized(lock) {
+        if (serial != ticket.serial) false else {
+            owners = next
+            true
+        }
+    }
+
+    fun close(): List<SianoDaemonOwner> = synchronized(lock) {
+        serial++
+        val retired = owners
+        owners = emptyList()
+        retired
+    }
+}
 
 /** Allows a failed CCID open to retry after a reader USB/permission generation change. */
 internal class SianoReaderAvailability {
@@ -56,12 +114,18 @@ internal class SianoReaderAvailability {
 /** Brokers tuner command clients to exactly one Android-owned Siano process. */
 internal class SianoTunerBroker(
     private val sianoExecutable: () -> File,
+    private val sianodExecutable: () -> File,
+    private val ctlExecutable: () -> File,
     private val firmware: () -> File,
+    private val runtimeDir: File,
     private val tunerDevices: () -> List<String>,
     private val openTuner: (Int, String) -> SianoUsbHandle,
-    private val openReader: () -> SianoReaderHandle?
+    private val openReader: () -> SianoReaderHandle?,
+    private val ownerFactory: ((Int, String, String, () -> Boolean) -> SianoDaemonOwner)? = null
 ) : Closeable {
     private val lock = Any()
+    private val generationLock = Any()
+    private val ownerSet = SianoOwnerSet()
     private val readerLeaseLock = java.lang.Object()
     private val random = SecureRandom()
     private val sessions = ConcurrentHashMap<Int, Session>()
@@ -75,38 +139,41 @@ internal class SianoTunerBroker(
     private var readerHandle: SianoReaderHandle? = null
     private val readerAvailability = SianoReaderAvailability()
     private var readerLeaseHeld = false
-    @Volatile private var generation = SianoGeneration("", "", 0, emptyList())
+    @Volatile private var generation = SianoGeneration("", "", emptyList())
 
     fun start(): SianoGeneration {
-        val next = synchronized(lock) {
-            check(!closed) { "Siano tuner broker is closed" }
-            if (!running) {
-                val newSocketName = nextSocketName()
-                val newServer = LocalServerSocket(newSocketName)
-                socketName = newSocketName
-                server = newServer
-                running = true
-                acceptThread = Thread({ acceptLoop() }, "siano-broker-accept").also {
-                    it.isDaemon = true
-                    it.start()
+        synchronized(generationLock) {
+            synchronized(lock) {
+                check(!closed) { "Siano tuner broker is closed" }
+                if (!running) {
+                    val newSocketName = nextSocketName()
+                    val newServer = LocalServerSocket(newSocketName)
+                    socketName = newSocketName
+                    server = newServer
+                    running = true
+                    acceptThread = Thread({ acceptLoop() }, "siano-broker-accept").also {
+                        it.isDaemon = true
+                        it.start()
+                    }
                 }
             }
             rotateGenerationLocked()
         }
         invalidateReaderHandle()
-        return next
+        return generation
     }
 
     fun rotateGeneration(): SianoGeneration {
-        val next = synchronized(lock) { rotateGenerationLocked() }
+        synchronized(generationLock) { rotateGenerationLocked() }
         invalidateReaderHandle()
-        return next
+        return generation
     }
 
     fun currentGeneration(): SianoGeneration = generation
 
     override fun close() {
         val currentServer: LocalServerSocket?
+        val oldOwners: List<SianoDaemonOwner>
         synchronized(lock) {
             closed = true
             running = false
@@ -114,8 +181,12 @@ internal class SianoTunerBroker(
             server = null
             acceptThread?.interrupt()
             acceptThread = null
-            rotateGenerationLocked()
+            sessions.values.toList().forEach { it.stop("broker-close") }
+            sessions.clear()
+            oldOwners = ownerSet.close()
+            generation = SianoGeneration(buildToken(), socketName, emptyList())
         }
+        oldOwners.forEach { it.stop() }
         synchronized(readerLeaseLock) {
             try {
                 readerHandle?.close()
@@ -131,12 +202,48 @@ internal class SianoTunerBroker(
     }
 
     private fun rotateGenerationLocked(): SianoGeneration {
-        sessions.values.toList().forEach { it.stop() }
-        sessions.clear()
+        val oldOwners: List<SianoDaemonOwner>
         val token = buildToken()
-        val devices = tunerDevices().take(MAX_SIANO_TUNERS)
-        generation = SianoGeneration(token, socketName, devices.size, devices)
-        return generation
+        val ownerStart: SianoOwnerGenerationStart
+        val names: List<String>
+        synchronized(lock) {
+            check(!closed) { "Siano tuner broker is closed" }
+            sessions.values.toList().forEach { it.stop("generation-rotate") }
+            sessions.clear()
+            ownerStart = ownerSet.begin()
+            oldOwners = ownerStart.retired
+            names = tunerDevices().distinct().take(MAX_SIANO_TUNERS)
+            generation = SianoGeneration(token, socketName, emptyList())
+        }
+        oldOwners.forEach { it.stop() }
+        val ready = mutableListOf<SianoDeviceGeneration>()
+        names.forEachIndexed { index, name ->
+            val instance = "s1-${token.take(12)}-$index"
+            val current = { synchronized(lock) { !closed } && ownerSet.isCurrent(ownerStart.ticket) }
+            val owner = ownerFactory?.invoke(index, name, instance, current) ?: SianoDeviceOwner(
+                index, name, instance, current, sianodExecutable, ctlExecutable, firmware, runtimeDir,
+                { deviceIndex, deviceName -> openTuner(deviceIndex, deviceName) },
+                { if (current()) Thread({ try { rotateGeneration() } catch (_: Exception) { } }, "siano-owner-reconcile").start() }
+            )
+            if (owner.start()) {
+                val receiver = owner.inventory?.receivers?.singleOrNull { it.id == 0 }
+                if (receiver != null && receiver.present && receiver.state !in setOf("absent", "error") &&
+                    BroadcastSystem.ISDB_T in receiver.systems && current()) {
+                    ready += SianoDeviceGeneration(name, owner, receiver)
+                } else {
+                    owner.stop()
+                }
+            }
+        }
+        val result = synchronized(lock) {
+            if (closed || !ownerSet.publish(ownerStart.ticket, ready.map { it.owner })) null
+            else {
+                generation = SianoGeneration(token, socketName, ready.toList())
+                generation
+            }
+        }
+        if (result == null) ready.forEach { it.owner.stop() }
+        return result ?: generation
     }
 
     private fun acceptLoop() {
@@ -186,9 +293,9 @@ internal class SianoTunerBroker(
             requestIndex = index
             requestChannel = channel
             val current = generation
-            if (requestToken != current.token || index !in 0 until current.tunerCount ||
+            if (requestToken != current.token || index !in current.devices.indices ||
                 channel !in 13..62) throw IOException("stale or invalid tuner request")
-            val candidate = Session(client, index, current.deviceNames[index], channel, current.token)
+            val candidate = Session(client, index, current.devices[index], channel, current.token)
             stage = "reserve-session"
             synchronized(lock) {
                 if (generation.token != current.token || sessions.putIfAbsent(index, candidate) != null) {
@@ -233,37 +340,42 @@ internal class SianoTunerBroker(
     private inner class Session(
         private val client: LocalSocket,
         val index: Int,
-        private val deviceName: String,
+        private val device: SianoDeviceGeneration,
         private val channel: Int,
         private val token: String
     ) {
         private val stopped = AtomicBoolean(false)
         private val lifecycleLock = Any()
-        private var started: NativeUsbProcess.StartedProcess? = null
-        private var usb: SianoUsbHandle? = null
+        private var clientLifetime: SianoTsClientLifetime? = null
 
         fun run() {
-            val handle = openTuner(index, deviceName)
-            val process: NativeUsbProcess.StartedProcess
+            val process: NativeUsbProcess.StartedTsClient
             synchronized(lifecycleLock) {
-                if (stopped.get()) {
-                    closeHandle(handle)
-                    return
-                }
-                usb = handle
+                if (stopped.get()) return
                 Log.i(TAG, "starting siano-ts index=$index channel=$channel")
-                process = NativeUsbProcess.start(
+                process = NativeUsbProcess.startTsClient(
                     executable = sianoExecutable().absolutePath,
-                    firmware = firmware().absolutePath,
-                    channel = channel,
-                    usbFd = handle.fd
+                    arguments = listOf(
+                        "--instance", device.owner.instance,
+                        "--runtime-dir", runtimeDir.absolutePath,
+                        "--receiver", device.receiver.id.toString(),
+                        "--channel", channel.toString()
+                    )
                 )
                 // stop() is serialized with publication of the child, so a
                 // generation rotation cannot miss a just-created process.
-                started = process
+                clientLifetime = SianoTsClientLifetime(device.owner) { reason ->
+                    logPoll(process, reason)
+                    try {
+                        NativeUsbProcess.stopCommand(process.pid)
+                    } finally {
+                        try { process.output.close() } catch (_: IOException) { }
+                        try { process.diagnostics.close() } catch (_: IOException) { }
+                    }
+                }
                 // Start the sole stderr consumer before releasing the same
                 // lock stop() uses to claim and finish this process.
-                NativeUsbProcess.startDiagnostics(process, "tuner=$index, channel=$channel")
+                startTsDiagnostics(process)
                 Log.i(TAG, "siano-ts started index=$index channel=$channel pid=${process.pid}")
             }
             val watcher = Thread({ watchClient() }, "siano-broker-watch-$index").also {
@@ -290,35 +402,18 @@ internal class SianoTunerBroker(
         }
 
         fun stop(reason: String = "stop") {
-            val process: NativeUsbProcess.StartedProcess?
-            val handle: SianoUsbHandle?
+            val lifetime: SianoTsClientLifetime?
             synchronized(lifecycleLock) {
                 if (!stopped.compareAndSet(false, true)) return
-                process = started
-                started = null
-                handle = usb
-                usb = null
+                lifetime = clientLifetime
+                clientLifetime = null
             }
-            process?.let {
-                logPoll(it, reason)
-                try {
-                    NativeUsbProcess.stop(it.pid)
-                } finally {
-                    try { it.output.close() } catch (_: IOException) { }
-                    NativeUsbProcess.finishDiagnostics(it)
-                }
-            }
-            try {
-                handle?.close?.invoke()
-            } catch (_: Exception) {
-                // A failed USB close must not prevent socket/PFD cleanup.
-            } finally {
-                try { client.close() } catch (_: IOException) { }
-            }
+            lifetime?.stop(reason)
+            try { client.close() } catch (_: IOException) { }
         }
 
-        private fun logPoll(process: NativeUsbProcess.StartedProcess, reason: String) {
-            when (val result = NativeUsbProcess.pollSiano(process.pid)) {
+        private fun logPoll(process: NativeUsbProcess.StartedTsClient, reason: String) {
+            when (val result = NativeUsbProcess.pollCommand(process.pid)) {
                 NativeUsbProcess.PollResult.ALIVE ->
                     Log.i(TAG, "siano-ts poll stage=$reason index=$index channel=$channel state=ALIVE")
                 is NativeUsbProcess.PollResult.EXITED ->
@@ -332,8 +427,15 @@ internal class SianoTunerBroker(
             }
         }
 
-        private fun closeHandle(handle: SianoUsbHandle) {
-            try { handle.close() } catch (_: Exception) { }
+        private fun startTsDiagnostics(process: NativeUsbProcess.StartedTsClient) {
+            Thread({
+                try {
+                    android.os.ParcelFileDescriptor.AutoCloseInputStream(process.diagnostics).use { input ->
+                        val buffer = ByteArray(1024)
+                        while (input.read(buffer) >= 0) { }
+                    }
+                } catch (_: IOException) { }
+            }, "siano-ts-diagnostics-${process.pid}").apply { isDaemon = true; start() }
         }
 
         private fun watchClient() {
@@ -446,5 +548,190 @@ internal class SianoTunerBroker(
         const val REQUEST_TIMEOUT_MS = 2_000
         val READER_ACK = byteArrayOf('O'.code.toByte(), 'K'.code.toByte(), '\n'.code.toByte())
         const val TAG = "SianoTunerBroker"
+    }
+}
+
+private class SianoDeviceOwner(
+    private val index: Int,
+    override val deviceName: String,
+    override val instance: String,
+    private val isCurrent: () -> Boolean,
+    private val daemonExecutable: () -> File,
+    private val ctlExecutable: () -> File,
+    private val firmware: () -> File,
+    private val runtimeDir: File,
+    private val openUsb: (Int, String) -> SianoUsbHandle,
+    private val onFailure: () -> Unit
+) : SianoDaemonOwner {
+    private val lock = Any()
+    private var stopped = false
+    private var usb: SianoUsbHandle? = null
+    private var process: NativeUsbProcess.StartedMirakc? = null
+    private var monitor: Thread? = null
+    @Volatile override var inventory: UserlandStatusInventory? = null
+        private set
+
+    override fun start(): Boolean {
+        if (!runtimeDir.isDirectory && !runtimeDir.mkdirs()) return false
+        val binary = daemonExecutable()
+        val image = firmware()
+        if (!binary.isFile || !image.isFile) return false
+        val handle = try { openUsb(index, deviceName) } catch (_: Exception) { return false }
+        synchronized(lock) {
+            if (stopped || !isCurrent()) {
+                closeUsb(handle)
+                return false
+            }
+            usb = handle
+        }
+        val started = try {
+            NativeUsbProcess.startCommand(
+                binary.absolutePath,
+                listOf(
+                    "--fd", "3", "--instance", instance,
+                    "--runtime-dir", runtimeDir.absolutePath,
+                    "--firmware", image.absolutePath,
+                    "--pid", "0x2000"
+                ),
+                firstUsbFd = handle.fd
+            )
+        } catch (_: Exception) {
+            stop()
+            return false
+        }
+        val accepted = synchronized(lock) {
+            if (stopped || !isCurrent()) false else {
+                process = started
+                true
+            }
+        }
+        if (!accepted) {
+            NativeUsbProcess.stopCommand(started.pid)
+            try { started.output.close() } catch (_: IOException) { }
+            stop()
+            return false
+        }
+        drainOutput(started)
+        val deadline = System.nanoTime() + READY_TIMEOUT_NS
+        while (System.nanoTime() < deadline && !Thread.currentThread().isInterrupted) {
+            if (!isCurrent() || synchronized(lock) { stopped }) {
+                stop()
+                return false
+            }
+            when (NativeUsbProcess.pollCommand(started.pid)) {
+                NativeUsbProcess.PollResult.ALIVE -> Unit
+                else -> { stop(); return false }
+            }
+            try {
+                val status = UserlandControl.status(
+                    ctlExecutable().absolutePath, runtimeDir.absolutePath, instance, "siano-userland"
+                )
+                val receiver = status.receivers?.singleOrNull { it.id == 0 }
+                if (status.ready && receiver != null && receiver.present &&
+                    BroadcastSystem.ISDB_T in receiver.systems) {
+                    val ready = synchronized(lock) {
+                        if (stopped || !isCurrent()) null else {
+                            inventory = status
+                            startMonitorLocked(started)
+                            status
+                        }
+                    }
+                    if (ready != null) {
+                        return true
+                    }
+                    stop()
+                    return false
+                }
+            } catch (error: IllegalArgumentException) {
+                stop()
+                return false
+            } catch (_: IOException) {
+                // The daemon may still be assembling its first complete status snapshot.
+            }
+            try { Thread.sleep(READY_INTERVAL_MS) } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                stop()
+                return false
+            }
+        }
+        stop()
+        return false
+    }
+
+    override fun stop() {
+        val current: NativeUsbProcess.StartedMirakc?
+        val handle: SianoUsbHandle?
+        val monitorThread: Thread?
+        synchronized(lock) {
+            if (stopped) return
+            stopped = true
+            inventory = null
+            current = process
+            process = null
+            handle = usb
+            usb = null
+            monitorThread = monitor
+            monitorThread?.interrupt()
+            monitor = null
+        }
+        if (monitorThread != null && monitorThread !== Thread.currentThread()) {
+            try { monitorThread.join(MONITOR_JOIN_TIMEOUT_MS) } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
+        current?.let {
+            NativeUsbProcess.stopCommand(it.pid)
+            try { it.output.close() } catch (_: IOException) { }
+        }
+        handle?.let(::closeUsb)
+    }
+
+    private fun startMonitorLocked(started: NativeUsbProcess.StartedMirakc) {
+        val thread = Thread({
+            while (!Thread.currentThread().isInterrupted) {
+                try { Thread.sleep(MONITOR_INTERVAL_MS) } catch (_: InterruptedException) { return@Thread }
+                if (synchronized(lock) { stopped || process !== started }) return@Thread
+                if (NativeUsbProcess.pollCommand(started.pid) != NativeUsbProcess.PollResult.ALIVE) {
+                    val handle: SianoUsbHandle?
+                    synchronized(lock) {
+                        if (process !== started) return@Thread
+                        process = null
+                        inventory = null
+                        handle = usb
+                        usb = null
+                        stopped = true
+                    }
+                    try { started.output.close() } catch (_: IOException) { }
+                    handle?.let(::closeUsb)
+                    onFailure()
+                    return@Thread
+                }
+            }
+        }, "sianod-monitor-${started.pid}").apply { isDaemon = true }
+        if (stopped || process !== started) return
+        monitor = thread
+        thread.start()
+    }
+
+    private fun drainOutput(started: NativeUsbProcess.StartedMirakc) {
+        Thread({
+            try {
+                android.os.ParcelFileDescriptor.AutoCloseInputStream(started.output).use { input ->
+                    val buffer = ByteArray(2048)
+                    while (input.read(buffer) >= 0) { }
+                }
+            } catch (_: IOException) { }
+        }, "sianod-diagnostics-${started.pid}").apply { isDaemon = true; start() }
+    }
+
+    private fun closeUsb(handle: SianoUsbHandle) {
+        try { handle.close() } catch (_: Exception) { }
+    }
+
+    private companion object {
+        const val READY_TIMEOUT_NS = 30_000_000_000L
+        const val READY_INTERVAL_MS = 100L
+        const val MONITOR_INTERVAL_MS = 500L
+        const val MONITOR_JOIN_TIMEOUT_MS = 1_000L
     }
 }
