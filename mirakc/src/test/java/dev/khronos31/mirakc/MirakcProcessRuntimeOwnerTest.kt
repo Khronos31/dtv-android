@@ -133,17 +133,20 @@ class MirakcProcessRuntimeOwnerTest {
     fun failedCleanupKeepsAdmissionRevoked() {
         val owners = MirakcProcessRuntimeOwner()
         val owner = owners.acquireOwner()
+        val cleanupFinished = CountDownLatch(1)
         val cleanupExecutor = Executor { task ->
-            Thread(task, "runtime-owner-failing-cleanup").apply { isDaemon = true }.start()
+            Thread({
+                try {
+                    task.run()
+                } finally {
+                    cleanupFinished.countDown()
+                }
+            }, "runtime-owner-failing-cleanup").apply { isDaemon = true }.start()
         }
-        val failed = CountDownLatch(1)
         owners.beginStop(owner, cleanupExecutor) {
-            failed.countDown()
             throw IllegalStateException("cleanup failed")
         }
-        assertTrue(failed.await(1, TimeUnit.SECONDS))
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1)
-        while (owners.blockingFailure() == null && System.nanoTime() < deadline) Thread.yield()
+        assertTrue(cleanupFinished.await(1, TimeUnit.SECONDS))
         assertFalse(owners.isCurrent(owner))
         assertTrue(owners.blockingFailure() is IllegalStateException)
         assertNull(owners.acquireWork(owner))
@@ -167,17 +170,13 @@ class MirakcProcessRuntimeOwnerTest {
             Thread(runnable, "runtime-owner-retry-cleanup").apply { isDaemon = true }
         }
         val attempts = java.util.concurrent.atomic.AtomicInteger()
-        val failed = CountDownLatch(1)
         owners.beginStop(owner, cleanupExecutor) {
             if (attempts.incrementAndGet() == 1) {
-                failed.countDown()
                 throw IllegalStateException("transient cleanup failure")
             }
         }
         try {
-            assertTrue(failed.await(1, TimeUnit.SECONDS))
-            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1)
-            while (owners.blockingFailure() == null && System.nanoTime() < deadline) Thread.yield()
+            cleanupExecutor.submit {}.get(1, TimeUnit.SECONDS)
             assertNotNull(owners.blockingFailure())
             assertFalse(owners.isCurrent(owner))
             assertTrue(owners.retryFailedCleanup(owner))
@@ -252,6 +251,7 @@ class MirakcProcessRuntimeOwnerTest {
         val cleanupExecutor = Executors.newSingleThreadExecutor()
         val operationStarted = CountDownLatch(1)
         val allowHandleClose = CountDownLatch(1)
+        val allowFailurePublication = CountDownLatch(1)
         val handleClosed = AtomicBoolean(false)
         operations.execute {
             operationStarted.countDown()
@@ -271,6 +271,7 @@ class MirakcProcessRuntimeOwnerTest {
                 RuntimeOperationDrain.awaitTermination(operations, 50)
             } finally {
                 cleanupFinished.countDown()
+                allowFailurePublication.await()
             }
         }
         val replacementEntered = CountDownLatch(1)
@@ -282,18 +283,21 @@ class MirakcProcessRuntimeOwnerTest {
         replacement.start()
         try {
             assertTrue(cleanupFinished.await(1, TimeUnit.SECONDS))
+            assertNull(owners.blockingFailure())
+            allowFailurePublication.countDown()
+            cleanupExecutor.submit {}.get(1, TimeUnit.SECONDS)
             val failure = owners.blockingFailure()
             assertTrue(failure is IllegalStateException)
             assertTrue(failure?.message?.contains("service operations did not terminate") == true)
             assertFalse(handleClosed.get())
             assertFalse(replacementEntered.await(100, TimeUnit.MILLISECONDS))
             allowHandleClose.countDown()
-            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1)
-            while (!operations.isTerminated && System.nanoTime() < deadline) Thread.yield()
+            assertTrue(operations.awaitTermination(1, TimeUnit.SECONDS))
             assertTrue(handleClosed.get())
             assertTrue(owners.retryFailedCleanup(first))
             assertTrue(replacementEntered.await(1, TimeUnit.SECONDS))
         } finally {
+            allowFailurePublication.countDown()
             allowHandleClose.countDown()
             replacement.interrupt()
             replacement.join(1_000)
