@@ -33,7 +33,15 @@ for reference in (
 ):
     assert reference in candidate_workflow
 assert "--max-workers=1" in candidate_workflow
-assert "java-version: ${{ env.JAVA_RUNTIME_VERSION }}" in candidate_workflow
+for workflow in (candidate_workflow, release_workflow, (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")):
+    assert "JAVA_RUNTIME_VERSION: \"17.0.20.1+1\"" in workflow
+    assert "JAVA_ARCHIVE_URL: \"https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.20.1%2B1/OpenJDK17U-jdk_x64_linux_hotspot_17.0.20.1_1.tar.gz\"" in workflow
+    assert "JAVA_ARCHIVE_SHA256: \"3808d1d15e3ec6bd5b84057fb5d84c33d8a1536a258146bcea2e603fc726e08e\"" in workflow
+    assert workflow.count("distribution: jdkfile") == workflow.count("name: Download and verify the pinned Temurin JDK")
+    assert workflow.count("sha256sum --check --strict") == workflow.count("distribution: jdkfile")
+    assert workflow.count('test "$runtime_version" = "$JAVA_RUNTIME_VERSION"') == workflow.count("distribution: jdkfile")
+    assert "java-version: ${{ env.JAVA_VERSION }}" in workflow
+    assert "sha256sum --check --strict" in workflow
 assert candidate_workflow.count('tools/mirakc/audit-apk.sh') == 2
 sign_workflow = candidate_workflow.split("- name: Sign and verify candidate", 1)[1].split("\n      - ", 1)[0]
 assert 'checkout_version="$(cat mirakc/VERSION)"' in sign_workflow
@@ -59,6 +67,24 @@ source_spec = importlib.util.spec_from_file_location(
 assert source_spec and source_spec.loader
 source_audit = importlib.util.module_from_spec(source_spec)
 source_spec.loader.exec_module(source_audit)
+package_spec = importlib.util.spec_from_file_location(
+    "source_package", root / "tools/mirakc/package-source.py"
+)
+assert package_spec and package_spec.loader
+source_package = importlib.util.module_from_spec(package_spec)
+package_spec.loader.exec_module(source_package)
+assert source_audit.TOOLCHAIN["jdk"] == {
+    "distribution": "temurin",
+    "installer": "setup-java@v5 jdkfile",
+    "selector": "17.0.20",
+    "runtime_version": "17.0.20.1+1",
+    "observed": "Temurin 17.0.20.1+1",
+    "archive_url": "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.20.1%2B1/OpenJDK17U-jdk_x64_linux_hotspot_17.0.20.1_1.tar.gz",
+    "archive_sha256": "3808d1d15e3ec6bd5b84057fb5d84c33d8a1536a258146bcea2e603fc726e08e",
+    "required_major": 17,
+    "verification": "pinned official Temurin archive SHA-256 and exact runtime gate",
+}
+assert source_package.TOOLCHAIN["jdk"] == source_audit.TOOLCHAIN["jdk"]
 for field, component in (
     ("dtv_userland_core_ref", "dtv-userland-core"),
     ("asicen_userland_ref", "asicen-userland"),

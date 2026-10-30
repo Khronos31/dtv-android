@@ -8,8 +8,10 @@ env:
   # Pinned so that a runner image refresh cannot change what ships in the APK.
   NDK_VERSION: "27.0.12077973"
   ANDROID_CMAKE_VERSION: "3.22.1"
-  JAVA_VERSION: "17.0.20.1+1"
+  JAVA_VERSION: "17.0.20"
   JAVA_RUNTIME_VERSION: "17.0.20.1+1"
+  JAVA_ARCHIVE_URL: "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.20.1%2B1/OpenJDK17U-jdk_x64_linux_hotspot_17.0.20.1_1.tar.gz"
+  JAVA_ARCHIVE_SHA256: "3808d1d15e3ec6bd5b84057fb5d84c33d8a1536a258146bcea2e603fc726e08e"
   RUST_VERSION: "1.98.1"
   SIANO_USERLAND_REF: 33c3468e7e10781ae6c7e9a5fd57a0c1b0825288
   PX4_USERLAND_REF: 5c91e8c57b288c0f490061789829e42dbbf61b3d
@@ -75,10 +77,18 @@ jobs:
           repository: nns779/px4_drv
           ref: ${{ env.PX4_DRV_REF }}
           path: px4_drv
+      - name: Download and verify the pinned Temurin JDK
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/temurin-jdk.tar.gz"
+          curl --fail --location --retry 3 "$JAVA_ARCHIVE_URL" --output "$archive"
+          printf '%s  %s\n' "$JAVA_ARCHIVE_SHA256" "$archive" | sha256sum --check --strict
       - uses: actions/setup-java@v5
         with:
-          distribution: temurin
+          distribution: jdkfile
           java-version: ${{ env.JAVA_VERSION }}
+          jdkFile: ${{ runner.temp }}/temurin-jdk.tar.gz
+          architecture: x64
       - name: Verify exact JDK runtime
         run: |
           set -euo pipefail
@@ -224,10 +234,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Download and verify the pinned Temurin JDK
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/temurin-jdk.tar.gz"
+          curl --fail --location --retry 3 "$JAVA_ARCHIVE_URL" --output "$archive"
+          printf '%s  %s\n' "$JAVA_ARCHIVE_SHA256" "$archive" | sha256sum --check --strict
       - uses: actions/setup-java@v5
         with:
-          distribution: temurin
+          distribution: jdkfile
           java-version: ${{ env.JAVA_VERSION }}
+          jdkFile: ${{ runner.temp }}/temurin-jdk.tar.gz
+          architecture: x64
       - name: Verify exact JDK runtime
         run: |
           set -euo pipefail

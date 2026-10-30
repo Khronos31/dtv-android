@@ -19,8 +19,10 @@ concurrency:
 env:
   NDK_VERSION: "27.0.12077973"
   ANDROID_CMAKE_VERSION: "3.22.1"
-  JAVA_VERSION: "17"
+  JAVA_VERSION: "17.0.20"
   JAVA_RUNTIME_VERSION: "17.0.20.1+1"
+  JAVA_ARCHIVE_URL: "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.20.1%2B1/OpenJDK17U-jdk_x64_linux_hotspot_17.0.20.1_1.tar.gz"
+  JAVA_ARCHIVE_SHA256: "3808d1d15e3ec6bd5b84057fb5d84c33d8a1536a258146bcea2e603fc726e08e"
   RUST_VERSION: "1.98.1"
   CORE_USERLAND_REF: 67420d1c909e9205841612a186ae4c7fbf4dd092
   CORE_PATCH_SHA256: 9da0cf46a7727a5c7e20de165babd0bc2d78e47c119cad38c1f2c00abeb10521
@@ -83,10 +85,18 @@ jobs:
           repository: nns779/px4_drv
           ref: ${{ env.PX4_DRV_REF }}
           path: px4_drv
+      - name: Download and verify the pinned Temurin JDK
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/temurin-jdk.tar.gz"
+          curl --fail --location --retry 3 "$JAVA_ARCHIVE_URL" --output "$archive"
+          printf '%s  %s\n' "$JAVA_ARCHIVE_SHA256" "$archive" | sha256sum --check --strict
       - uses: actions/setup-java@v5
         with:
-          distribution: temurin
-          java-version: ${{ env.JAVA_RUNTIME_VERSION }}
+          distribution: jdkfile
+          java-version: ${{ env.JAVA_VERSION }}
+          jdkFile: ${{ runner.temp }}/temurin-jdk.tar.gz
+          architecture: x64
       - name: Verify exact JDK runtime
         run: |
           set -euo pipefail
@@ -211,10 +221,18 @@ jobs:
         with:
           name: mirakc-unsigned-candidate
           path: candidate
+      - name: Download and verify the pinned Temurin JDK
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/temurin-jdk.tar.gz"
+          curl --fail --location --retry 3 "$JAVA_ARCHIVE_URL" --output "$archive"
+          printf '%s  %s\n' "$JAVA_ARCHIVE_SHA256" "$archive" | sha256sum --check --strict
       - uses: actions/setup-java@v5
         with:
-          distribution: temurin
-          java-version: ${{ env.JAVA_RUNTIME_VERSION }}
+          distribution: jdkfile
+          java-version: ${{ env.JAVA_VERSION }}
+          jdkFile: ${{ runner.temp }}/temurin-jdk.tar.gz
+          architecture: x64
       - name: Verify exact JDK runtime
         run: |
           set -euo pipefail
@@ -349,10 +367,18 @@ jobs:
       - name: Resolve candidate commit
         id: resolve-candidate
         run: echo "git_head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Download and verify the pinned Temurin JDK
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/temurin-jdk.tar.gz"
+          curl --fail --location --retry 3 "$JAVA_ARCHIVE_URL" --output "$archive"
+          printf '%s  %s\n' "$JAVA_ARCHIVE_SHA256" "$archive" | sha256sum --check --strict
       - uses: actions/setup-java@v5
         with:
-          distribution: temurin
+          distribution: jdkfile
           java-version: ${{ env.JAVA_VERSION }}
+          jdkFile: ${{ runner.temp }}/temurin-jdk.tar.gz
+          architecture: x64
       - name: Verify exact JDK runtime
         run: |
           set -euo pipefail
@@ -415,10 +441,18 @@ jobs:
         with:
           name: epgstation-server-unsigned-candidate
           path: candidate
+      - name: Download and verify the pinned Temurin JDK
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/temurin-jdk.tar.gz"
+          curl --fail --location --retry 3 "$JAVA_ARCHIVE_URL" --output "$archive"
+          printf '%s  %s\n' "$JAVA_ARCHIVE_SHA256" "$archive" | sha256sum --check --strict
       - uses: actions/setup-java@v5
         with:
-          distribution: temurin
+          distribution: jdkfile
           java-version: ${{ env.JAVA_VERSION }}
+          jdkFile: ${{ runner.temp }}/temurin-jdk.tar.gz
+          architecture: x64
       - name: Verify exact JDK runtime
         run: |
           set -euo pipefail
