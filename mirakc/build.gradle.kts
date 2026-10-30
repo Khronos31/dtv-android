@@ -1244,6 +1244,7 @@ val preparePixBinaries = tasks.register("preparePixBinaries") {
                 environment("ANDROID_NDK_HOME", ndk.absolutePath)
                 environment("ANDROID_ABI", sourceAbi)
                 environment("DTV_USERLAND_CORE_SOURCE_DIR", stagedCore.absolutePath)
+                environment("PIX_SOURCE_REVISION_OVERRIDE", pixPinnedRef)
                 environment("PIX_EMBEDDED_ASSETS", "ON")
                 environment("JOBS", "1")
                 environment("LIBUSB_SOURCE_TARBALL", file(libusbArchive.get()).absolutePath)

@@ -120,6 +120,11 @@ jobs:
           test "$("$cmake_bin/cmake" --version | sed -n '1s/^cmake version \([0-9][0-9.]*\).*/\1/p')" = "$ANDROID_CMAKE_VERSION"
           test "$("$cmake_bin/ninja" --version)" = "1.10.2"
           echo "$cmake_bin" >> "$GITHUB_PATH"
+      - name: PIX source revision override fixture
+        env:
+          MIRAKC_TEST_PIX_ROOT: ${{ github.workspace }}/pix-userland
+          MIRAKC_TEST_CORE_ROOT: ${{ github.workspace }}/dtv-userland-core
+        run: python3 tools/mirakc/test-pix-source-revision.py
       - name: Debug DTV deletion input fixture
         run: tools/mirakc/test-debug-dtv-deletion-input.sh
       - name: Custom adapter Gradle task input fixture

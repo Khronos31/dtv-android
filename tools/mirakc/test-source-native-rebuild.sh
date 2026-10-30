@@ -382,7 +382,9 @@ build_pix() {
     output=$3
     run_guarded env ANDROID_NDK_HOME="$ndk" ANDROID_ABI="$abi" \
         PIX_EMBEDDED_ASSETS=ON JOBS=1 LIBUSB_SOURCE_TARBALL="$libusb_archive" \
-        DTV_USERLAND_CORE_SOURCE_DIR="$core" PATH="$guard_path" \
+        DTV_USERLAND_CORE_SOURCE_DIR="$core" \
+        PIX_SOURCE_REVISION_OVERRIDE=66f5a731784d205d1d306edda9cc57071c087f8e \
+        PATH="$guard_path" \
         "$tree/tools/build-portable.sh" android
     built=$tree/build/android-$abi
     mkdir -p "$output"
