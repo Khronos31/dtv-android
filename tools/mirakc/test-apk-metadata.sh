@@ -194,6 +194,23 @@ python3 "$generator" --output "$temporary/one" $args >/dev/null
 python3 "$generator" --output "$temporary/two" $args >/dev/null
 diff -ru "$temporary/one" "$temporary/two"
 cp "$temporary/dtv/mirakc/src/main/assets/asicen-loader.bin" "$temporary/asicen-loader.bin"
+# shellcheck disable=SC2086
+python3 "$generator" --output "$temporary/clean-allow" $args --allow-development-worktree >/dev/null
+diff -ru "$temporary/one" "$temporary/clean-allow"
+python3 - "$temporary/clean-allow" "$temporary/clean-allow.apk" <<'PY'
+from pathlib import Path
+import sys
+import zipfile
+
+source, destination = map(Path, sys.argv[1:])
+with zipfile.ZipFile(destination, "w") as archive:
+    for path in sorted(source.rglob("*")):
+        if path.is_file():
+            archive.writestr("assets/" + path.relative_to(source).as_posix(), path.read_bytes())
+    archive.writestr("assets/isdbt_rio.inp", Path("mirakc/src/main/assets/isdbt_rio.inp").read_bytes())
+    archive.writestr("assets/asicen-loader.bin", destination.parent.joinpath("asicen-loader.bin").read_bytes())
+PY
+python3 "$auditor" --expected-dtv-commit "$dtv_commit" "$temporary/clean-allow.apk" >/dev/null
 cp "$temporary/dtv/mirakc/build.gradle.kts" "$temporary/build.gradle.kts.original"
 printf '\n# debug worktree overlay fixture\n' >> "$temporary/dtv/mirakc/build.gradle.kts"
 # shellcheck disable=SC2086

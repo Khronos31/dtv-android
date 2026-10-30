@@ -264,7 +264,11 @@ def generate(args: argparse.Namespace) -> Path:
     if args.allow_development_worktree:
         if args.dtv_ref != "HEAD":
             fail("development source metadata requires dtv-ref HEAD")
-        development_source = development_source_overlay(dtv_root, output, dtv_commit, dtv_tree)
+        overlay = development_source_overlay(dtv_root, output, dtv_commit, dtv_tree)
+        if overlay["files"] or overlay["deleted_paths"]:
+            development_source = overlay
+        else:
+            check_checkout(dtv_root, dtv_commit, "dtv-android")
     else:
         check_checkout(dtv_root, dtv_commit, "dtv-android")
     components: list[dict] = []
