@@ -10,22 +10,110 @@ build_asicen_core_bundle() (
     tree=$1
     core_bundle=$(dirname "$tree")/third_party/dtv-userland-core
     revision=$(sed -n '1p' "$tree/cmake/dtv-userland-core.revision")
-    core_revision=$(python3 - "$core/DTV-PATCH-METADATA.json" <<'PY'
+    python3 - "$source_root/source-manifest.json" "$core_patch" "$core" "$revision" "$core_bundle" <<'PY' || return 1
+import hashlib
 import json
+import os
+import shutil
+import stat
 import sys
 from pathlib import Path
 
-print(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["base_commit"])
+manifest_path, patch_path, core_path, revision, bundle_path = sys.argv[1:]
+manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+component = next(item for item in manifest["components"] if item["name"] == "dtv-userland-core")
+provenance = component.get("android_integration_patch")
+archive_path = "sources/dtv-android/tools/mirakc/patches/dtv-core-receiver-control-concurrency.patch"
+metadata_path = "tools/mirakc/patches/dtv-core-receiver-control-concurrency.patch"
+patch_sha256 = hashlib.sha256(Path(patch_path).read_bytes()).hexdigest()
+if not isinstance(provenance, dict) or provenance.get("upstream_commit") != component.get("commit"):
+    raise SystemExit("source-manifest Core patch provenance is invalid")
+if provenance.get("path") != archive_path or provenance.get("sha256") != patch_sha256:
+    raise SystemExit("Core patch bytes do not match source-manifest provenance")
+if revision != provenance["upstream_commit"]:
+    raise SystemExit(f"ASICEN Core pin differs from source-manifest pin: {revision} != {provenance['upstream_commit']}")
+
+core = Path(core_path)
+if (core / "DTV-PATCH-METADATA.json").exists():
+    raise SystemExit("staged Core unexpectedly already contains patch metadata")
+workers = core / "adapters/host_daemon/src/control_workers.cpp"
+if not workers.is_file():
+    raise SystemExit("patched Core is missing control_workers.cpp")
+metadata = {
+    "base_commit": provenance["upstream_commit"],
+    "patch_path": metadata_path,
+    "patch_sha256": patch_sha256,
+    "patched_control_workers_sha256": hashlib.sha256(workers.read_bytes()).hexdigest(),
+}
+bundle = Path(bundle_path)
+repository = bundle / "repository"
+marker = bundle / "SOURCE-REVISION"
+metadata_file = repository / "DTV-PATCH-METADATA.json"
+
+def inventory(root):
+    result = {}
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root).as_posix()
+        if relative == "DTV-PATCH-METADATA.json":
+            continue
+        info = path.lstat()
+        mode = stat.S_IMODE(info.st_mode)
+        if stat.S_ISLNK(info.st_mode):
+            result[relative] = ("symlink", os.readlink(path), mode)
+        elif stat.S_ISDIR(info.st_mode):
+            result[relative] = ("directory", mode)
+        elif stat.S_ISREG(info.st_mode):
+            result[relative] = ("file", hashlib.sha256(path.read_bytes()).hexdigest(), mode)
+        else:
+            raise SystemExit(f"unsupported file type in Core bundle: {path}")
+    return result
+
+if bundle.exists() and (not bundle.is_dir() or any(bundle.iterdir())):
+    if not marker.is_file() or not repository.is_dir() or not metadata_file.is_file():
+        raise SystemExit("existing ASICEN Core bundle is incomplete; refusing to modify it")
+    try:
+        existing_metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise SystemExit(f"existing ASICEN Core bundle metadata is invalid: {error}")
+    if existing_metadata != metadata or marker.read_text(encoding="utf-8") != revision + "\n":
+        raise SystemExit("existing ASICEN Core bundle metadata or revision does not match verified inputs")
+    if inventory(core) != inventory(repository):
+        raise SystemExit("existing ASICEN Core bundle source differs from the patched Core input")
+    print("ASICEN Core bundle already matches verified inputs; reusing it")
+else:
+    bundle.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(core, repository, symlinks=True)
+    metadata_file.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    marker.write_text(revision + "\n", encoding="utf-8")
 PY
 )
-    [ "$revision" = "$core_revision" ] || {
-        printf '%s\n' "ASICEN Core pin differs from staged patched Core: $revision != $core_revision" >&2
-        return 1
-    }
-    mkdir -p "$core_bundle/repository"
-    cp -a "$core/." "$core_bundle/repository/"
-    printf '%s\n' "$revision" > "$core_bundle/SOURCE-REVISION"
-)
+
+bundle_snapshot() {
+    python3 - "$1" <<'PY'
+import hashlib
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+digest = hashlib.sha256()
+for path in sorted(root.rglob("*")):
+    info = path.lstat()
+    mode = stat.S_IMODE(info.st_mode)
+    if stat.S_ISLNK(info.st_mode):
+        record = (path.relative_to(root).as_posix(), "symlink", os.readlink(path), mode)
+    elif stat.S_ISDIR(info.st_mode):
+        record = (path.relative_to(root).as_posix(), "directory", mode)
+    elif stat.S_ISREG(info.st_mode):
+        record = (path.relative_to(root).as_posix(), "file", hashlib.sha256(path.read_bytes()).hexdigest(), mode)
+    else:
+        raise SystemExit(f"unsupported file type in bundle snapshot: {path}")
+    digest.update(json.dumps(record, separators=(",", ":")).encode("utf-8") + b"\n")
+print(digest.hexdigest())
+PY
+}
 
 build_asicen() (
     tree=$1
@@ -480,12 +568,91 @@ verify_asicen_offline_core() (
     tree=$fixture/project
     build=$fixture/build
     log=$fixture/configure.log
+    cmake_bin=$(command -v cmake)
+    ninja_bin=$(command -v ninja)
+    bundle=$fixture/third_party/dtv-userland-core
     mkdir -p "$tree"
     cp -a "$asicen/." "$tree/"
+    [ ! -e "$core_upstream/DTV-PATCH-METADATA.json" ] &&
+        [ ! -e "$core/DTV-PATCH-METADATA.json" ] || {
+            printf '%s\n' 'pristine archive or staged patched Core unexpectedly contains Gradle patch metadata' >&2
+            return 1
+        }
     build_asicen_core_bundle "$tree"
-    if ! run_guarded env -i PATH=/usr/bin:/bin LC_ALL=C \
-        cmake --trace-expand --trace-source="$tree/cmake/DtvUserlandCoreDependency.cmake" \
+    [ ! -e "$core/DTV-PATCH-METADATA.json" ] || {
+        printf '%s\n' 'ASICEN bundle helper modified shared patched-Core staging' >&2
+        return 1
+    }
+    python3 - "$source_root/source-manifest.json" "$core_patch" "$core" \
+        "$fixture/third_party/dtv-userland-core/repository/DTV-PATCH-METADATA.json" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+manifest_path, patch_path, core_path, metadata_path = sys.argv[1:]
+manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+component = next(item for item in manifest["components"] if item["name"] == "dtv-userland-core")
+provenance = component["android_integration_patch"]
+workers = Path(core_path) / "adapters/host_daemon/src/control_workers.cpp"
+metadata = json.loads(Path(metadata_path).read_text(encoding="utf-8"))
+expected = {
+    "base_commit": provenance["upstream_commit"],
+    "patch_path": "tools/mirakc/patches/dtv-core-receiver-control-concurrency.patch",
+    "patch_sha256": hashlib.sha256(Path(patch_path).read_bytes()).hexdigest(),
+    "patched_control_workers_sha256": hashlib.sha256(workers.read_bytes()).hexdigest(),
+}
+if metadata != expected:
+    raise SystemExit("staged Core patch metadata differs from verified manifest and patched source")
+print("ASICEN Core bundle metadata matches the source manifest and patched Core")
+PY
+    good_bundle_snapshot=$(bundle_snapshot "$bundle")
+    same_parent_tree=$fixture/project-armv7
+    mkdir -p "$same_parent_tree"
+    cp -a "$asicen/." "$same_parent_tree/"
+    build_asicen_core_bundle "$same_parent_tree"
+    [ "$(bundle_snapshot "$bundle")" = "$good_bundle_snapshot" ] || {
+        printf '%s\n' 'same-parent ASICEN bundle reuse changed the existing bundle bytes' >&2
+        return 1
+    }
+    wrong_pin_tree=$fixture/wrong-pin-project
+    mkdir -p "$wrong_pin_tree"
+    cp -a "$asicen/." "$wrong_pin_tree/"
+    printf '%040d\n' 0 > "$wrong_pin_tree/cmake/dtv-userland-core.revision"
+    if build_asicen_core_bundle "$wrong_pin_tree"; then
+        printf '%s\n' 'ASICEN helper accepted a Core pin that differs from the source manifest' >&2
+        return 1
+    fi
+    [ "$(bundle_snapshot "$bundle")" = "$good_bundle_snapshot" ] || {
+        printf '%s\n' 'wrong ASICEN Core pin changed the existing good bundle' >&2
+        return 1
+    }
+    printf '%s\n' 'ASICEN source-manifest Core pin mismatch: rejected'
+    wrong_metadata_tree=$fixture/wrong-metadata/project
+    mkdir -p "$wrong_metadata_tree"
+    cp -a "$asicen/." "$wrong_metadata_tree/"
+    wrong_metadata_bundle=$fixture/wrong-metadata/third_party/dtv-userland-core
+    mkdir -p "$(dirname "$wrong_metadata_bundle")"
+    cp -a "$bundle" "$wrong_metadata_bundle"
+    printf '%s\n' 'mismatched' > "$wrong_metadata_bundle/repository/DTV-PATCH-METADATA.json"
+    wrong_metadata_snapshot=$(bundle_snapshot "$wrong_metadata_bundle")
+    if build_asicen_core_bundle "$wrong_metadata_tree"; then
+        printf '%s\n' 'ASICEN helper accepted mismatching existing bundle metadata' >&2
+        return 1
+    fi
+    [ "$(bundle_snapshot "$wrong_metadata_bundle")" = "$wrong_metadata_snapshot" ] || {
+        printf '%s\n' 'ASICEN helper modified a bundle after detecting mismatching metadata' >&2
+        return 1
+    }
+    [ "$(bundle_snapshot "$bundle")" = "$good_bundle_snapshot" ] || {
+        printf '%s\n' 'mismatching metadata test changed the existing good bundle' >&2
+        return 1
+    }
+    printf '%s\n' 'ASICEN mismatching existing metadata: rejected without writes'
+    if ! run_guarded env -i PATH="$guard_path" LC_ALL=C \
+        "$cmake_bin" --trace-expand --trace-source="$tree/cmake/DtvUserlandCoreDependency.cmake" \
         -S "$tree" -B "$build" -G Ninja \
+        -DCMAKE_MAKE_PROGRAM="$ninja_bin" \
         -DASICEN_ENABLE_LIBUSB=OFF -DASICEN_BUILD_TESTS=OFF -DASICEN_BUILD_TOOLS=OFF \
         -DFETCHCONTENT_FULLY_DISCONNECTED=ON >"$log" 2>&1; then
         cat "$log" >&2
@@ -505,10 +672,15 @@ if not match or Path(match.group(1)).resolve() != Path(expected).resolve():
     raise SystemExit("ASICEN CMake did not select the staged offline Core source")
 print("ASICEN offline Core configure selected the staged source")
 PY
-    printf '%040d\n' 0 > "$fixture/third_party/dtv-userland-core/SOURCE-REVISION"
-    if run_guarded env -i PATH=/usr/bin:/bin LC_ALL=C \
-        cmake --trace-expand --trace-source="$tree/cmake/DtvUserlandCoreDependency.cmake" \
-        -S "$tree" -B "$fixture/wrong-revision-build" -G Ninja \
+    wrong_marker_tree=$fixture/wrong-marker/project
+    mkdir -p "$wrong_marker_tree"
+    cp -a "$asicen/." "$wrong_marker_tree/"
+    build_asicen_core_bundle "$wrong_marker_tree"
+    wrong_marker_bundle=$fixture/wrong-marker/third_party/dtv-userland-core
+    printf '%040d\n' 0 > "$wrong_marker_bundle/SOURCE-REVISION"
+    if run_guarded env -i PATH="$guard_path" LC_ALL=C \
+        "$cmake_bin" --trace-expand --trace-source="$wrong_marker_tree/cmake/DtvUserlandCoreDependency.cmake" \
+        -S "$wrong_marker_tree" -B "$fixture/wrong-revision-build" -G Ninja \
         -DASICEN_ENABLE_LIBUSB=OFF -DASICEN_BUILD_TESTS=OFF -DASICEN_BUILD_TOOLS=OFF \
         -DFETCHCONTENT_FULLY_DISCONNECTED=ON >"$fixture/wrong-revision.log" 2>&1; then
         printf '%s\n' 'ASICEN accepted a bundled Core with a mismatched revision marker' >&2
@@ -519,6 +691,10 @@ PY
         return 1
     }
     printf '%s\n' 'ASICEN offline Core pin mismatch: rejected'
+    [ "$(bundle_snapshot "$bundle")" = "$good_bundle_snapshot" ] || {
+        printf '%s\n' 'wrong ASICEN revision marker changed the existing good bundle' >&2
+        return 1
+    }
 )
 
 verify_asicen_offline_core
