@@ -10,16 +10,26 @@ import org.junit.Test
 class UserlandStatusInventoryTest {
     @Test
     fun parsesPx4AndSianoReceiverDescriptorsAndProjectsActualSystems() {
-        val px4 = UserlandStatusInventory.parse(status("px4-userland", receivers = """
-            [{"descriptor":{"receiver":3,"systems":["ISDB-T","ISDB-S"],"binding":null},"present":true,"state":"free"}]
-        """), "px4-userland", INSTANCE)
+        val receiverThree = """
+            [{"descriptor":{"receiver":0,"systems":["ISDB-T","ISDB-S"],"binding":null},"present":true,"state":"free"}]
+        """
+        val px4 = UserlandStatusInventory.parse(status("px4-userland", receivers = receiverThree), "px4-userland", INSTANCE)
         val enclosure = Px4DeviceSelector.plan(listOf(
-            Px4DeviceIdentity("usb", "123456789012345", Px4DeviceSelector.M1UR_PRODUCT_ID)
+            Px4DeviceIdentity(px4TestDeviceName("usb"), "123456789012345", Px4DeviceSelector.M1UR_PRODUCT_ID)
         )).enclosures.single()
-        val tuner = px4TunersFromInventory(enclosure, px4).single()
-        assertEquals(3, tuner.receiver)
+        val ownedInventory = UserlandStatusInventory.parse(
+            status("px4-userland", receivers = receiverThree).replace(INSTANCE, enclosure.instanceToken),
+            "px4-userland", enclosure.instanceToken
+        )
+        val tuner = px4TunersFromInventory(enclosure, ownedInventory).single()
+        assertEquals(0, tuner.receiver)
+        assertEquals(Px4DeviceSelector.tunersFor(enclosure).single { it.receiver == 0 }.name, tuner.name)
         assertTrue(tuner.supportsTerrestrial)
         assertTrue(tuner.supportsSatellite)
+        try {
+            px4TunersFromInventory(enclosure, px4)
+            fail("inventory for a different PX4 owner was accepted")
+        } catch (_: IllegalArgumentException) { }
 
         val siano = UserlandStatusInventory.parse(status("siano-userland", receivers = """
             [{"descriptor":{"receiver":0,"systems":["ISDB-T"],"binding":null},"present":true,"state":"free"}]

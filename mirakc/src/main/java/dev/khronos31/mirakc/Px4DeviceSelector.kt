@@ -57,7 +57,7 @@ internal data class Px4Enclosure(
     val model: Px4DeviceModel,
     val first: Px4DeviceIdentity,
     val second: Px4DeviceIdentity? = null,
-    val instanceToken: String = "px4-${model.adapterArgument}-$serial"
+    val instanceToken: String
 ) {
     val devices: List<Px4DeviceIdentity> get() = listOfNotNull(first, second)
 }
@@ -96,6 +96,10 @@ internal object Px4DeviceSelector {
 
     private val dualBridgeSerial = Regex("^(\\d{14})([12])$")
     private val singleBridgeSerial = Regex("^\\d{15}$")
+    private val usbDevicePath = Regex("^/dev/bus/usb/(\\d{3})/(\\d{3})$")
+
+    internal fun attachmentSuffix(deviceName: String): String? =
+        usbDevicePath.matchEntire(deviceName)?.let { match -> "b${match.groupValues[1]}d${match.groupValues[2]}" }
 
     fun select(present: List<Px4DeviceIdentity>): Px4Enclosure? {
         val plan = plan(present)
@@ -149,19 +153,23 @@ internal object Px4DeviceSelector {
 
         Px4DeviceModel.entries.filter { it.bridgeCount == 1 }.forEach { model ->
             recognized[model].orEmpty().groupBy { it.serial }.forEach { (serial, group) ->
-                if (!singleBridgeSerial.matches(serial) || group.size != 1) {
-                    rejections += if (!singleBridgeSerial.matches(serial)) {
-                        "malformed ${model.adapterArgument.uppercase()} serial"
-                    } else {
-                        "duplicate ${model.adapterArgument.uppercase()} identity"
-                    }
+                if (!singleBridgeSerial.matches(serial)) {
+                    rejections += "malformed ${model.adapterArgument.uppercase()} serial"
+                } else if (group.any { attachmentSuffix(it.deviceName) == null }) {
+                    rejections += "invalid ${model.adapterArgument.uppercase()} USB path"
+                } else if (group.map { attachmentSuffix(it.deviceName) }.toSet().size != group.size) {
+                    rejections += "duplicate ${model.adapterArgument.uppercase()} identity"
                 } else {
-                    enclosures += enclosure(serial, model, group.single())
+                    group.sortedBy { it.deviceName }.forEach { identity ->
+                        enclosures += enclosure(serial, model, identity)
+                    }
                 }
             }
         }
 
-        val ordered = enclosures.sortedWith(compareBy<Px4Enclosure>({ it.model.ordinal }, { it.serial }, { it.first.productId }))
+        val ordered = enclosures.sortedWith(compareBy<Px4Enclosure>(
+            { it.model.ordinal }, { it.serial }, { it.first.productId }, { it.first.deviceName }, { it.second?.deviceName.orEmpty() }
+        ))
         val tuners = ordered.flatMap(::tunersFor)
         return Px4Plan(ordered, tuners, rejections.sorted())
     }
@@ -182,7 +190,21 @@ internal object Px4DeviceSelector {
         model: Px4DeviceModel,
         first: Px4DeviceIdentity,
         second: Px4DeviceIdentity? = null
-    ) = Px4Enclosure(serial, model, first, second, "px4-${model.adapterArgument}-${first.productId.toString(16)}-$serial")
+    ): Px4Enclosure {
+        val token = if (model.bridgeCount == 1) {
+            val attachment = attachmentSuffix(first.deviceName) ?: throw IllegalArgumentException("invalid PX4 USB path")
+            "px4-${first.productId.toString(16).padStart(4, '0')}-$serial-$attachment"
+        } else {
+            "px4-${model.adapterArgument}-${first.productId.toString(16)}-$serial"
+        }
+        require(token.length <= 80)
+        return Px4Enclosure(serial, model, first, second, token)
+    }
+
+    internal fun tunerName(enclosure: Px4Enclosure, receiver: Int): String {
+        val attachment = if (enclosure.model.bridgeCount == 1) "-${attachmentSuffix(enclosure.first.deviceName)}" else ""
+        return "PX4-${enclosure.model.adapterArgument.uppercase()}-${enclosure.serial}$attachment-R$receiver"
+    }
 
     internal fun tunersFor(enclosure: Px4Enclosure): List<Px4TunerPlan> {
         val receivers = when (enclosure.model) {
@@ -192,9 +214,8 @@ internal object Px4DeviceSelector {
         }
         return receivers.mapNotNull { receiver ->
             val capabilities = enclosure.model.capabilitiesFor(receiver) ?: return@mapNotNull null
-            val short = enclosure.model.adapterArgument.uppercase()
             Px4TunerPlan(
-                name = "PX4-$short-${enclosure.serial}-R$receiver",
+                name = tunerName(enclosure, receiver),
                 model = enclosure.model,
                 instanceToken = enclosure.instanceToken,
                 receiver = receiver,

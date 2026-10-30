@@ -66,7 +66,8 @@ class Px4DeviceSelectorTest {
 
         assertEquals(listOf(Px4DeviceModel.M1UR, Px4DeviceModel.S1UR),
             plan.enclosures.map { it.model })
-        assertEquals(setOf("PX4-M1UR-000000000000001-R0", "PX4-S1UR-000000000000001-R0"),
+        assertEquals(setOf("PX4-M1UR-000000000000001-${Px4DeviceSelector.attachmentSuffix(m1.deviceName)}-R0",
+            "PX4-S1UR-000000000000001-${Px4DeviceSelector.attachmentSuffix(s1.deviceName)}-R0"),
             plan.tuners.map { it.name }.toSet())
         assertEquals(2, plan.tuners.size)
         assertTrue(plan.tuners.single { it.model == Px4DeviceModel.M1UR }.supportsSatellite)
@@ -122,11 +123,51 @@ class Px4DeviceSelectorTest {
 
         val plan = Px4DeviceSelector.plan(listOf(incompleteQ3, mlt) + duplicatedM1 + validS1)
 
-        assertEquals(setOf(Px4DeviceModel.MLT5, Px4DeviceModel.S1UR),
+        assertEquals(setOf(Px4DeviceModel.MLT5, Px4DeviceModel.M1UR, Px4DeviceModel.S1UR),
             plan.enclosures.map { it.model }.toSet())
-        assertEquals(setOf(mlt.deviceName, validS1.deviceName),
+        assertEquals(setOf(mlt.deviceName, validS1.deviceName) + duplicatedM1.map { it.deviceName },
             plan.enclosures.flatMap { it.devices }.map { it.deviceName }.toSet())
-        assertEquals(2, plan.rejections.size)
+        assertEquals(1, plan.rejections.size)
+    }
+
+    @Test
+    fun sameSerialSingleBridgeDevicesUseDistinctAttachmentIdentityAcrossModelsAndAliases() {
+        val serial = "000000000000001"
+        val devices = listOf(
+            identity("m1-a", serial, Px4DeviceSelector.M1UR_PRODUCT_ID),
+            identity("m1-b", serial, Px4DeviceSelector.M1UR_PRODUCT_ID),
+            identity("s1-a", serial, Px4DeviceSelector.S1UR_PRODUCT_ID),
+            identity("mlt-a", serial, 0x024e)
+        )
+
+        val plan = Px4DeviceSelector.plan(devices)
+        val shuffled = Px4DeviceSelector.plan(devices.reversed())
+        val removedPeer = Px4DeviceSelector.plan(devices.drop(1))
+        val replugged = Px4DeviceSelector.plan(listOf(
+            identity("m1-replugged", serial, Px4DeviceSelector.M1UR_PRODUCT_ID),
+            devices[2], devices[3]
+        ))
+
+        assertEquals(4, plan.enclosures.size)
+        assertEquals(4, plan.enclosures.map { it.instanceToken }.toSet().size)
+        assertEquals(8, plan.tuners.map { it.name }.toSet().size)
+        assertEquals(plan.enclosures.map { it.instanceToken }, shuffled.enclosures.map { it.instanceToken })
+        assertEquals(plan.tuners.map { it.name }, shuffled.tuners.map { it.name })
+        assertEquals(1, removedPeer.enclosures.count { it.model == Px4DeviceModel.M1UR })
+        assertTrue(plan.enclosures.first { it.first == devices[0] }.instanceToken !=
+            replugged.enclosures.first { it.model == Px4DeviceModel.M1UR }.instanceToken)
+        assertTrue(plan.enclosures.all { it.instanceToken.length <= 80 })
+        assertTrue(plan.rejections.isEmpty())
+    }
+
+    @Test
+    fun singleBridgeWithoutCanonicalAndroidUsbPathFailsClosed() {
+        val plan = Px4DeviceSelector.plan(listOf(
+            Px4DeviceIdentity("usb-1-2", "123456789012345", 0x024e)
+        ))
+
+        assertTrue(plan.enclosures.isEmpty())
+        assertEquals(1, plan.rejections.size)
     }
 
     @Test
@@ -250,24 +291,32 @@ class Px4DeviceSelectorTest {
             assertNull(model.capabilitiesFor(-1))
         }
 
+        var pathIndex = 1
         val identities = Px4DeviceModel.entries.flatMapIndexed { index, model ->
-            val base = "%014d".format(index + 1)
-            val serial = if (model.bridgeCount == 2) null else "%015d".format(index + 100)
-            if (model.bridgeCount == 2) {
-                listOf(
-                    identity("${model.adapterArgument}-1", "${base}1", model.productIds.first()),
-                    identity("${model.adapterArgument}-2", "${base}2", model.productIds.first())
-                )
-            } else {
-                listOf(identity(model.adapterArgument, serial!!, model.productIds.first()))
+            model.productIds.flatMap { productId ->
+                val base = "%014d".format(index * 10 + productId % 10 + 1)
+                if (model.bridgeCount == 2) {
+                    listOf(
+                        identity("/dev/bus/usb/001/%03d".format(pathIndex++), "${base}1", productId),
+                        identity("/dev/bus/usb/001/%03d".format(pathIndex++), "${base}2", productId)
+                    )
+                } else {
+                    listOf(identity(
+                        "/dev/bus/usb/001/%03d".format(pathIndex++),
+                        "%015d".format(index + 100), productId
+                    ))
+                }
             }
         }
         val plan = Px4DeviceSelector.plan(identities)
 
         assertTrue(plan.rejections.isEmpty())
-        assertEquals(Px4DeviceModel.entries.size, plan.enclosures.size)
-        assertEquals(profileCases.values.sumOf { it.second.first }, plan.tuners.size)
+        assertEquals(expectedProducts.size, plan.enclosures.size)
+        assertEquals(expectedProducts.keys.sumOf { expectedProducts.getValue(it).receiverCount }, plan.tuners.size)
         assertEquals(Px4DeviceModel.entries.toSet(), plan.enclosures.map { it.model }.toSet())
+        val mlt5Enclosures = plan.enclosures.filter { it.model == Px4DeviceModel.MLT5 }
+        assertEquals(setOf(0x024e, 0x924e), mlt5Enclosures.map { it.first.productId }.toSet())
+        assertEquals(2, mlt5Enclosures.map { it.instanceToken }.toSet().size)
         plan.enclosures.forEach { enclosure ->
             assertEquals(enclosure.model.bridgeCount, enclosure.devices.size)
             assertEquals(enclosure.model.receiverCount,
@@ -288,5 +337,5 @@ class Px4DeviceSelectorTest {
     }
 
     private fun identity(name: String, serial: String, productId: Int) =
-        Px4DeviceIdentity(name, serial, productId)
+        Px4DeviceIdentity(px4TestDeviceName(name), serial, productId)
 }

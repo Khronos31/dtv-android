@@ -11,15 +11,17 @@ import java.util.concurrent.atomic.AtomicBoolean
 /** Owns the USB device or permitted USB pair for one px4d generation. */
 internal class Px4UsbHandle(
     val fd: Int,
-    private val parcel: ParcelFileDescriptor,
+    private val parcel: ParcelFileDescriptor?,
     private val closeConnection: () -> Unit
 ) : Closeable {
+    internal constructor(fd: Int, closeConnection: () -> Unit) : this(fd, null, closeConnection)
+
     private val closed = AtomicBoolean(false)
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         try {
-            parcel.close()
+            parcel?.close()
         } finally {
             closeConnection()
         }
@@ -406,7 +408,7 @@ internal class Px4DaemonSupervisor(
     private val runtimeDir: File,
     private val onStateChanged: () -> Unit,
     private val onDaemonFailure: () -> Unit,
-    private val testOwnerFactory: ((Px4Enclosure) -> Px4EnclosureRunner)? = null
+    private val testOwnerFactory: ((Px4Enclosure, (Px4DeviceIdentity) -> Px4UsbHandle) -> Px4EnclosureRunner)? = null
 ) {
     private class IdentitySource(var value: List<Px4DeviceIdentity>)
     private data class Owner(val identitySource: IdentitySource, val daemon: Px4EnclosureRunner)
@@ -438,7 +440,7 @@ internal class Px4DaemonSupervisor(
             plan.enclosures.forEach { enclosure ->
                 if (owners.containsKey(enclosure.instanceToken)) return@forEach
                 val source = IdentitySource(enclosure.devices)
-                val daemon = testOwnerFactory?.invoke(enclosure) ?: Px4EnclosureDaemon(
+                val daemon = testOwnerFactory?.invoke(enclosure, openDevice) ?: Px4EnclosureDaemon(
                     executable = executable,
                     ctlExecutable = ctlExecutable,
                     firmware = firmware,
@@ -507,12 +509,13 @@ internal fun px4TunersFromInventory(
     enclosure: Px4Enclosure,
     status: UserlandStatusInventory
 ): List<Px4TunerPlan> {
-    require(status.ready && status.product == "px4-userland")
+    require(status.ready && status.product == "px4-userland" && status.instance == enclosure.instanceToken)
     return status.receivers.orEmpty().filter { it.present && it.state !in setOf("absent", "error") }.map { receiver ->
+        require(receiver.id in 0 until enclosure.model.receiverCount)
         Px4TunerPlan(
-            name = "PX4-${enclosure.model.adapterArgument.uppercase()}-${enclosure.serial}-R${receiver.id}",
+            name = Px4DeviceSelector.tunerName(enclosure, receiver.id),
             model = enclosure.model,
-            instanceToken = status.instance ?: error("ready inventory has no instance"),
+            instanceToken = enclosure.instanceToken,
             receiver = receiver.id,
             supportsTerrestrial = BroadcastSystem.ISDB_T in receiver.systems,
             supportsSatellite = BroadcastSystem.ISDB_S in receiver.systems

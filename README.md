@@ -213,7 +213,14 @@ ASICEN は [asicen-userland](https://github.com/Khronos31/asicen-userland) の�
 
 上表の各 PX4 product profile は機器ごとの `px4d` instance と PX4 adapter が管理します。
 2ブリッジ機種は同じ14桁baseのUSBシリアル末尾 `1`/`2` のペア、1ブリッジ機種は15桁
-シリアルの単一USBデバイスとして識別します。
+シリアルと Android の USB attachment path を組み合わせて識別します。1ブリッジ機種の
+生成 tuner 名と IPC instance 名には USB bus/device suffix が加わります。再接続で Android
+が別の bus/device path を割り当てた場合は新しい instance として扱います。同じ物理機器を
+再接続後も同一とみなす永続 ID は保証しません。保存済み地上波設定には tuner 名ではなく
+チャンネル番号が記録されるため、この名前変更でチャンネル設定は変わりません。
+1ブリッジ機種の IPC token は product ID・canonical serial・USB attachment path を使う短い形式です。
+Q3系の2ブリッジ token と pairing 条件は変更しません。endpoint は上流 Core の
+`px4-userland/v1/<instance>/<endpoint>` layout を使い、Android Unix socket path のNUL込み108 byte制限に収めます。
 
 対応チューナーの接続・切断では、生成済みの tuner 構成を反映するため上流
 mirakc を再起動します。この間は配信や録画ジョブが中断する場合があります。
